@@ -106,6 +106,17 @@
       <AppSwitch v-model="notifyEnabled" label="系统通知" />
     </div>
 
+    <!-- 关闭到托盘：写入 settings.close_to_tray，缺省开启。
+         开启时点窗口关闭按钮（含 Alt+F4 / 任务栏右键）只隐藏窗口，
+         应用驻留托盘继续后台刷新；真退出走托盘菜单「退出」。 -->
+    <div class="setting">
+      <div class="setting-info">
+        <h4>关闭到托盘</h4>
+        <p>点击窗口关闭按钮时隐藏到系统托盘，应用继续在后台刷新；通过托盘菜单退出</p>
+      </div>
+      <AppSwitch v-model="closeToTray" label="关闭到托盘" />
+    </div>
+
     <div class="divider"></div>
 
     <!-- 文章保留策略：写入 settings.article_retention_days 与 retention_keep_unread -->
@@ -139,7 +150,7 @@
  *
  * # 职责
  * 主题 / 主题色 / 界面与内容字体 / 阅读字号 / RSSHub 实例 / 刷新频率 /
- * 系统通知 / 文章保留策略，以及"立即清理旧文章"的手动入口。
+ * 系统通知 / 关闭到托盘 / 文章保留策略，以及"立即清理旧文章"的手动入口。
  *
  * # 与外部的边界
  * - 表单状态完全自持；「保存」按钮在模态底部（SettingsModal 的 `.m-foot`），
@@ -214,6 +225,8 @@ const retentionDays = ref('30')
 const keepUnread = ref(true)
 /** 系统通知开关：缺省开启，落库为 settings.notify_enabled（"1" / "0"） */
 const notifyEnabled = ref(true)
+/** 关闭到托盘开关：缺省开启，落库为 settings.close_to_tray（"1" / "0"） */
+const closeToTray = ref(true)
 /** 按来源自动分组开关：缺省开启，落库为 settings.auto_group_by_source（"0" 为关） */
 const autoGroup = ref(true)
 /** 存量整理是否正在执行（防重复点击 + 按钮忙碌文案） */
@@ -376,6 +389,8 @@ watch(
     keepUnread.value = settingsStore.getSetting('retention_keep_unread') !== '0'
     // 系统通知：缺省开启，只有显式存过 "0" 才算关闭（与 Rust 侧 notify.rs 判据一致）
     notifyEnabled.value = settingsStore.getSetting('notify_enabled') !== '0'
+    // 关闭到托盘：缺省开启，只有显式存过 "0" 才算关闭（与 Rust 侧 win_close 判据一致）
+    closeToTray.value = settingsStore.getSetting('close_to_tray') !== '0'
     // 按来源自动分组：缺省开启，只有显式存过 "0" 才算关闭（与 Rust 侧 feeds_add 判据一致）
     autoGroup.value = settingsStore.getSetting('auto_group_by_source') !== '0'
     savedGeneral.value = ''
@@ -458,6 +473,7 @@ async function saveGeneral() {
       settingsStore.setSetting('article_retention_days', retentionDays.value),
       settingsStore.setSetting('retention_keep_unread', keepUnread.value ? '1' : '0'),
       settingsStore.setSetting('notify_enabled', notifyEnabled.value ? '1' : '0'),
+      settingsStore.setSetting('close_to_tray', closeToTray.value ? '1' : '0'),
       settingsStore.setSetting('auto_group_by_source', autoGroup.value ? '1' : '0'),
     ])
     // 主题与字体即时生效（映射集中在 utils/appearance.ts，与启动时同一入口）

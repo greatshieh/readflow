@@ -301,6 +301,30 @@ pub fn run() {
             });
             Ok(())
         })
+        // 拦截系统关窗路径（Alt+F4 / 任务栏右键 / DE 菜单）：这些不走前端 `win_close`
+        // 命令，若不在此拦截，「关闭到托盘」设置对它们不生效。
+        // 与 `win_close` 共用 `should_close_to_tray` 判定，保证两个入口行为一致。
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // 阻断默认的销毁流程；注意这里不能直接 await（回调是同步上下文），
+                // 判定是异步读库——用 spawn 把判定与隐藏甩到异步运行时里完成。
+                let window = window.clone();
+                tauri::async_runtime::spawn(async move {
+                    if should_close_to_tray().await {
+                        if let Err(e) = window.hide() {
+                            eprintln!("隐藏窗口失败（退回直接关闭）: {}", e);
+                        }
+                    } else {
+                        // 设置关闭：用 destroy 直接收尾——close() 会再次触发
+                        // CloseRequested，若在这里再调 close 就成了无限循环。
+                        if let Err(e) = window.destroy() {
+                            eprintln!("销毁窗口失败: {}", e);
+                        }
+                    }
+                });
+                api.prevent_close();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             // Feed 相关命令
             feeds_list,
@@ -2516,11 +2540,39 @@ async fn win_toggle_maximize(_app: tauri::AppHandle) -> Result<bool, String> {
     }
 }
 
-/// 关闭当前窗口（退出应用）
+/// 判断「关闭到托盘」是否开启
+///
+/// 读设置项 `close_to_tray`，语义与 `notify_enabled` / `auto_group_by_source` 一致：
+/// 「不等于 "0" 才算开」，键缺失或读取失败都按默认开启处理——RSS 阅读器的价值
+/// 就在后台刷新，缺省宁可多隐藏一次，也不要在用户已选择后台运行时直接退出。
+///
+/// # 返回值
+/// `true` 表示关闭按钮应隐藏到托盘，`false` 表示应真正退出。
+async fn should_close_to_tray() -> bool {
+    let pool = match db_pool().await {
+        Ok(pool) => pool,
+        Err(_) => return true,
+    };
+    match db::Setting::get(&pool, "close_to_tray").await {
+        Ok(Some(v)) => v != "0",
+        _ => true,
+    }
+}
+
+/// 关闭当前窗口
+///
+/// 「关闭到托盘」开启时只隐藏主窗口（应用继续在后台刷新，托盘图标常驻，
+/// 通过托盘菜单退出）；关闭时真正销毁窗口退出应用。
+/// 与 `on_window_event` 里的 `CloseRequested` 拦截共用 [`should_close_to_tray`] 判定，
+/// 保证自定义标题栏按钮与系统关窗路径（Alt+F4 / 任务栏右键）行为一致。
 #[tauri::command]
 async fn win_close(_app: tauri::AppHandle) -> Result<(), String> {
     let window = _app.get_webview_window("main").ok_or("主窗口未找到")?;
-    window.close().map_err(|e| e.to_string())
+    if should_close_to_tray().await {
+        window.hide().map_err(|e| e.to_string())
+    } else {
+        window.close().map_err(|e| e.to_string())
+    }
 }
 
 // ─── 全局数据库连接池 ──────────────────────────────────────────────────────────

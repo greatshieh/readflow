@@ -14,15 +14,11 @@
 //!   左键专用于 toggle。两者共用左键会让用户每次点击都先看到菜单，违背托盘预期。
 //!
 //! # 图标约定
-//! 托盘图标是**单色标记**（不含琥珀底板圆角方块）而非应用图标的缩小版：
-//! 托盘可用高度只有 16–24px，把"底板 + 渐变 + 标记"三层一起缩进去会糊成灰点。
-//! 去掉容器后只剩品牌标记本身，配合 `icon_as_template` 交由系统着色，
-//! 可自动适配浅色 / 深色任务栏。
-//!
-//! 品牌标记本身与 `src/components/AppLogo.vue`、`icons/logo.svg` 同源
-//! （同一段流动弧线 + chevron），保证三处形状完全一致。
+//! 托盘图标直接复用应用图标（[`tauri::App::default_window_icon`]，取自
+//! tauri.conf.json 的 icon 清单）：图标资产由 `tauri icon` 工作流统一管理，
+//! 本模块不持有图标文件、不做明暗/颜色切换；也刻意不启用 `icon_as_template`
+//! ——那是单色标记配合 macOS 系统着色的机制，用在彩色应用图标上会被遮罩成剪影。
 
-use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, Runtime};
@@ -148,15 +144,15 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
         ],
     )?;
 
-    // 托盘图标用单色标记版（无容器），尺寸 32@1x / 64@2x 供高分屏取用。
-    // 编译期内嵌进二进制，运行时不依赖外部文件路径。
-    let icon = Image::from_bytes(include_bytes!("../icons/tray-icon.png"))?;
+    // 托盘图标复用应用图标（tauri.conf.json 的 icon 清单）：随 `tauri icon`
+    // 工作流更新，本模块不持有任何图标资产、不做明暗切换。
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .ok_or_else(|| tauri::Error::AssetNotFound("应用默认图标缺失".into()))?;
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
-        // 模板图标：交由系统按当前菜单栏 / 任务栏主题着色，自动适配明暗。
-        // macOS 菜单栏与 Linux GNOME 面板会把它渲染成当前前景色。
-        .icon_as_template(true)
         .tooltip("ReadFlow")
         .menu(&menu)
         // 左键专用于 toggle 窗口，不弹菜单
