@@ -22,6 +22,43 @@ use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
 use tauri::Manager;
 
+/// 订阅源的 AI 配置（feed-specific 提示词模板）
+///
+/// 对应 `feed_ai_configs` 表。每个订阅源可独立覆盖全局 AI 摘要/提取的 prompt，
+/// 实现"配方系统"：不同行业/风格的源可配专属指令（如"重点抽取财务数据"、
+/// "用 bullet points 输出"等）。空串表示不覆盖全局默认，保持行为向后兼容。
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct FeedAiConfig {
+    /// 唯一标识符（自增主键）
+    pub id: i64,
+    /// 所属订阅源 ID（外键，级联删除）
+    pub feed_id: i64,
+    /// 摘要自定义指令（空=全局默认）
+    pub summary_prompt: String,
+    /// 提取自定义指令
+    pub extract_prompt: String,
+    /// 语言偏好：auto / zh / en
+    pub language: String,
+    /// 创建时间
+    pub created_at: DateTime<Utc>,
+    /// 更新时间
+    pub updated_at: DateTime<Utc>,
+}
+
+impl Default for FeedAiConfig {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            feed_id: 0,
+            summary_prompt: String::new(),
+            extract_prompt: String::new(),
+            language: "auto".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+}
+
 /// 订阅源数据模型
 ///
 /// 对应 `feeds` 表。注意本结构体只映射业务常用字段，
@@ -82,6 +119,8 @@ pub struct Article {
     pub read_progress: f64,
     /// 是否已收藏
     pub is_bookmarked: bool,
+    /// 用户偏好标记：'like' = 喜欢（提升权重），'skip' = 跳过（降低权重），NULL = 未标记
+    pub user_preference: Option<String>,
     /// 是否有 AI 摘要（与 `ai_summary` 冗余，供列表页快速判断，避免读大文本）
     pub has_ai_summary: bool,
     /// 是否有翻译
@@ -642,20 +681,26 @@ impl ResearchEvent {
             "SELECT e.name AS entity_name, \
                     r.id, r.article_id, r.entity_id, r.event_type, r.event_date, \
                     r.fact, r.evidence, r.source_model, r.created_at, \
-                    a.title AS article_title, a.link AS article_link \
+                    a.title AS article_title, a.link AS article_link, \
+                    COALESCE(es.sentiment, 'neutral') AS sentiment, \
+                    COALESCE(es.confidence, 0.0) AS sentiment_confidence \
              FROM research_events r \
              JOIN entities e ON e.id = r.entity_id \
              LEFT JOIN articles a ON a.id = r.article_id \
+             LEFT JOIN event_sentiments es ON es.event_id = r.id \
              WHERE r.created_at >= datetime('now', '-' || ? || ' days') \
              ORDER BY e.name ASC, r.event_date DESC, r.id DESC"
         } else {
             "SELECT e.name AS entity_name, \
                     r.id, r.article_id, r.entity_id, r.event_type, r.event_date, \
                     r.fact, r.evidence, r.source_model, r.created_at, \
-                    a.title AS article_title, a.link AS article_link \
+                    a.title AS article_title, a.link AS article_link, \
+                    COALESCE(es.sentiment, 'neutral') AS sentiment, \
+                    COALESCE(es.confidence, 0.0) AS sentiment_confidence \
              FROM research_events r \
              JOIN entities e ON e.id = r.entity_id \
              LEFT JOIN articles a ON a.id = r.article_id \
+             LEFT JOIN event_sentiments es ON es.event_id = r.id \
              ORDER BY e.name ASC, r.event_date DESC, r.id DESC"
         };
         let mut query = sqlx::query_as::<_, EventWithContext>(sql);
@@ -697,6 +742,290 @@ pub struct EventWithContext {
     pub article_title: Option<String>,
     /// 来源文章链接（LEFT JOIN）
     pub article_link: Option<String>,
+    /// 事件情感倾向（LEFT JOIN event_sentiments，无记录时 COALESCE 为 neutral）
+    pub sentiment: String,
+    /// 情感置信度（LEFT JOIN event_sentiments，无记录时 COALESCE 为 0.0）
+    pub sentiment_confidence: f64,
+}
+
+/// 事件情感分析结果
+///
+/// 对应 `event_sentiments` 表。记录每条研究事件的情感倾向与置信度。
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct EventSentiment {
+    /// 唯一标识符
+    pub id: i64,
+    /// 关联的事件 ID（外键）
+    pub event_id: i64,
+    /// 情感倾向：positive / negative / neutral
+    pub sentiment: String,
+    /// 置信度（0.0-1.0）
+    pub confidence: f64,
+    /// 入库时间
+    pub created_at: DateTime<Utc>,
+}
+
+impl EventSentiment {
+    /// 按事件 ID 查询情感数据
+    pub async fn get_by_event_id(pool: &SqlitePool, event_id: i64) -> Result<Option<Self>, String> {
+        sqlx::query_as::<_, Self>(
+            "SELECT id, event_id, sentiment, confidence, created_at FROM event_sentiments WHERE event_id = ? LIMIT 1"
+        )
+        .bind(event_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// 批量查询多条事件的情感数据
+    pub async fn get_by_event_ids(pool: &SqlitePool, event_ids: &[i64]) -> Result<Vec<Self>, String> {
+        if event_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let placeholders: Vec<&str> = std::iter::repeat("?").take(event_ids.len()).collect();
+        let sql = format!(
+            "SELECT id, event_id, sentiment, confidence, created_at FROM event_sentiments WHERE event_id IN ({})",
+            placeholders.join(",")
+        );
+        let mut query = sqlx::query_as::<_, Self>(&sql);
+        for id in event_ids {
+            query = query.bind(id);
+        }
+        query.fetch_all(pool).await.map_err(|e| e.to_string())
+    }
+
+    /// 写入或更新情感数据（UPSERT）
+    pub async fn upsert(pool: &SqlitePool, event_id: i64, sentiment: &str, confidence: f64) -> Result<i64, String> {
+        let result = sqlx::query(
+            "INSERT INTO event_sentiments (event_id, sentiment, confidence) VALUES (?, ?, ?)
+             ON CONFLICT(event_id) DO UPDATE SET sentiment = excluded.sentiment, confidence = excluded.confidence"
+        )
+        .bind(event_id)
+        .bind(sentiment)
+        .bind(confidence)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok(result.last_insert_rowid())
+    }
+
+    /// 按实体 ID 聚合查询该实体的最新情感状态
+    /// 通过 JOIN research_events 表，统计实体关联事件中的最新情感
+    pub async fn get_by_entity(pool: &SqlitePool, entity_id: i64) -> Result<Option<Self>, String> {
+        sqlx::query_as::<_, Self>(
+            r#"SELECT es.id, es.event_id, es.sentiment, es.confidence, es.created_at
+               FROM event_sentiments es
+               INNER JOIN research_events re ON es.event_id = re.id
+               WHERE re.entity_id = ?
+               ORDER BY es.created_at DESC
+               LIMIT 1"#
+        )
+        .bind(entity_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())
+    }
+}
+
+/// 财务数据抽取结果
+///
+/// 对应 `financial_data` 表。记录从文章中抽取的结构化财务指标。
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct FinancialData {
+    /// 唯一标识符
+    pub id: i64,
+    /// 来源文章 ID
+    pub article_id: i64,
+    /// 关联实体 ID
+    pub entity_id: i64,
+    /// 指标键名（如 revenue, profit, growth_rate）
+    pub metric_key: String,
+    /// 指标值（原始文本）
+    pub metric_value: String,
+    /// 数值形式（便于排序比较）
+    pub metric_numeric: f64,
+    /// 币种（如 CNY, USD）
+    pub currency: String,
+    /// 时期（如 2026Q3）
+    pub period: String,
+    /// 原文证据片段
+    pub evidence: String,
+    /// 抽取所用模型
+    pub source_model: String,
+    /// 入库时间
+    pub created_at: DateTime<Utc>,
+}
+
+impl FinancialData {
+    /// 按文章 ID 查询该文章的所有财务数据
+    pub async fn list_by_article(pool: &SqlitePool, article_id: i64) -> Result<Vec<Self>, String> {
+        sqlx::query_as::<_, Self>(
+            "SELECT * FROM financial_data WHERE article_id = ? ORDER BY id ASC"
+        )
+        .bind(article_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// 按实体 ID 查询该实体的所有财务数据
+    pub async fn list_by_entity(pool: &SqlitePool, entity_id: i64) -> Result<Vec<Self>, String> {
+        sqlx::query_as::<_, Self>(
+            "SELECT * FROM financial_data WHERE entity_id = ? ORDER BY created_at DESC"
+        )
+        .bind(entity_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// 批量写入财务数据（UPSERT）
+    ///
+    /// 根据 (article_id, entity_id, metric_key) 唯一键去重
+    pub async fn upsert_batch(pool: &SqlitePool, data: &[(i64, i64, &str, &str, f64, &str, &str, &str)]) -> Result<usize, String> {
+        let mut count = 0usize;
+        for &(article_id, entity_id, key, value, numeric, currency, period, evidence) in data {
+            let result = sqlx::query(
+                "INSERT INTO financial_data (article_id, entity_id, metric_key, metric_value, metric_numeric, currency, period, evidence)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(article_id, entity_id, metric_key) DO UPDATE SET
+                 metric_value = excluded.metric_value,
+                 metric_numeric = excluded.metric_numeric,
+                 currency = excluded.currency,
+                 period = excluded.period,
+                 evidence = excluded.evidence"
+            )
+            .bind(article_id)
+            .bind(entity_id)
+            .bind(key)
+            .bind(value)
+            .bind(numeric)
+            .bind(currency)
+            .bind(period)
+            .bind(evidence)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+            count += result.rows_affected() as usize;
+        }
+        Ok(count)
+    }
+}
+
+/// 文章预览结构（供前端展示用，不含正文）
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ArticlePreview {
+    /// 文章 ID
+    pub id: i64,
+    /// 文章标题
+    pub title: String,
+    /// 原文链接
+    pub link: String,
+}
+
+impl ResearchEvent {
+    /// 按实体 ID 查询该实体关联的所有文章预览
+    pub async fn list_articles_by_entity(pool: &SqlitePool, entity_id: i64, limit: i64) -> Result<Vec<ArticlePreview>, String> {
+        sqlx::query_as::<_, ArticlePreview>(
+            r#"SELECT DISTINCT a.id, a.title, a.link
+               FROM research_events re
+               JOIN articles a ON a.id = re.article_id
+               WHERE re.entity_id = ?
+               ORDER BY re.created_at DESC
+               LIMIT ?"#
+        )
+        .bind(entity_id)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// 按实体 ID 查询多源交叉验证条目（同一实体在不同订阅源中的报道）
+    ///
+    /// 一次 JOIN 同时取回事件本体 + 来源文章标题/链接 + 订阅源名称 + 情感，
+    /// 供「来源验证」视图并列展示同一事件在不同来源中的报道差异。
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    /// * `entity_id` - 实体 ID
+    /// * `days` - 时间窗口天数（按事件入库时间过滤，0 表示全部）
+    /// * `limit` - 返回条数上限
+    ///
+    /// # 返回值
+    /// 按事件入库时间倒序的交叉验证条目列表
+    ///
+    /// # 错误
+    /// 数据库查询失败时返回错误信息
+    pub async fn list_cross_reference(
+        pool: &SqlitePool,
+        entity_id: i64,
+        days: i64,
+        limit: i64,
+    ) -> Result<Vec<CrossReferenceEntry>, String> {
+        let sql = if days > 0 {
+            r#"SELECT r.id AS event_id, r.article_id, r.event_type, r.fact, r.event_date,
+                      r.created_at,
+                      a.title AS article_title, a.link AS article_link,
+                      f.name AS source_name,
+                      COALESCE(es.sentiment, 'neutral') AS sentiment
+               FROM research_events r
+               LEFT JOIN articles a ON a.id = r.article_id
+               LEFT JOIN feeds f ON f.id = a.feed_id
+               LEFT JOIN event_sentiments es ON es.event_id = r.id
+               WHERE r.entity_id = ?
+                 AND r.created_at >= datetime('now', '-' || ? || ' days')
+               ORDER BY r.created_at DESC
+               LIMIT ?"#
+        } else {
+            r#"SELECT r.id AS event_id, r.article_id, r.event_type, r.fact, r.event_date,
+                      r.created_at,
+                      a.title AS article_title, a.link AS article_link,
+                      f.name AS source_name,
+                      COALESCE(es.sentiment, 'neutral') AS sentiment
+               FROM research_events r
+               LEFT JOIN articles a ON a.id = r.article_id
+               LEFT JOIN feeds f ON f.id = a.feed_id
+               LEFT JOIN event_sentiments es ON es.event_id = r.id
+               WHERE r.entity_id = ?
+               ORDER BY r.created_at DESC
+               LIMIT ?"#
+        };
+        let mut query = sqlx::query_as::<_, CrossReferenceEntry>(sql);
+        query = query.bind(entity_id);
+        if days > 0 {
+            query = query.bind(days);
+        }
+        query.bind(limit).fetch_all(pool).await.map_err(|e| e.to_string())
+    }
+}
+
+/// 多源交叉验证条目（「来源验证」视图用）
+///
+/// [`ResearchEvent`] 的投影子集：携带来源文章标题/链接、订阅源名称与情感倾向，
+/// 由 `list_cross_reference` 的 JOIN 查询产出；不映射任何单表，只实现 FromRow。
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct CrossReferenceEntry {
+    /// 事件 ID
+    pub event_id: i64,
+    /// 来源文章 ID
+    pub article_id: i64,
+    /// 事件类型（枚举同 research_events 表）
+    pub event_type: String,
+    /// 客观事实一句话
+    pub fact: String,
+    /// 事件发生日期（空串表示未知）
+    pub event_date: String,
+    /// 事件入库时间
+    pub created_at: DateTime<Utc>,
+    /// 来源文章标题（LEFT JOIN，文章可能已被清理）
+    pub article_title: Option<String>,
+    /// 来源文章链接（LEFT JOIN）
+    pub article_link: Option<String>,
+    /// 订阅源名称（LEFT JOIN feeds，文章无源时为 NULL）
+    pub source_name: Option<String>,
+    /// 事件情感倾向（LEFT JOIN event_sentiments，无记录时 COALESCE 为 neutral）
+    pub sentiment: String,
 }
 
 /// 自动化任务（定时提取 / 定时报告等后台自动化的一份配置记录）
@@ -1058,6 +1387,16 @@ pub async fn init_db(app: &tauri::AppHandle) -> Result<SqlitePool, sqlx::Error> 
     
     // 创建表结构（IF NOT EXISTS 保证幂等）
     create_tables(&pool).await?;
+    // 追加新表（不修改已有表结构）
+    if let Err(e) = ensure_feed_ai_configs_table(&pool).await {
+        eprintln!("创建 feed_ai_configs 表失败（不影响启动）: {}", e);
+    }
+    if let Err(e) = ensure_event_sentiments_table(&pool).await {
+        eprintln!("创建 event_sentiments 表失败（不影响启动）: {}", e);
+    }
+    if let Err(e) = ensure_financial_data_table(&pool).await {
+        eprintln!("创建 financial_data 表失败（不影响启动）: {}", e);
+    }
     
     // 种子化默认设置：失败仅告警不阻断启动（与"局部失败容忍"一致）
     if let Err(e) = seed_default_settings(&pool).await {
@@ -1267,6 +1606,8 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
             read_progress REAL NOT NULL DEFAULT 0,
             is_bookmarked INTEGER DEFAULT 0,
             entity_score INTEGER DEFAULT NULL,
+            /** 用户偏好标记：'like' = 喜欢（提升权重），'skip' = 跳过（降低权重），NULL = 未标记 */
+            user_preference TEXT DEFAULT NULL,
             has_ai_summary INTEGER DEFAULT 0,
             has_ai_translation INTEGER DEFAULT 0,
             ai_summary TEXT,
@@ -1527,6 +1868,23 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
     .execute(pool)
     .await?;
 
+    // 事件情感分析表：存储每条事件的正面/负面/中性情感及其置信度
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS event_sentiments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id INTEGER NOT NULL,
+            sentiment TEXT NOT NULL DEFAULT 'neutral',
+            confidence REAL DEFAULT 0.0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (event_id) REFERENCES research_events(id) ON DELETE CASCADE,
+            UNIQUE(event_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // 自动化任务表：任务即数据——定时提取、定时报告等后台自动化都以行记录存在这里，
     // 由 scheduler 侧的执行器按 task_type 分发，新增自动化能力只需加 task_type 而非改框架。
     // config 存 JSON（按 task_type 结构不同）；last_* 三列回写最近一次运行的结果，
@@ -1599,11 +1957,115 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
     .execute(pool)
     .await?;
 
+    // 订阅源 AI 配置表：允许对单个订阅源覆盖全局 AI 摘要/提取 prompt，
+    // 实现"配方系统"（feed-specific AI template）。每源一行，UNIQUE(feed_id)
+    // 保证一对一；删除源时 CASCADE 清除配置。
+    //
+    // 前端在 FeedManageModal 的「AI 配置」tab 中维护本表；
+    // 后端 ai_generate_summary / research_extract_article 在调用 AI 前优先
+    // 读取本表的 prompt 字段，若为空则回退到全局默认 behavior。
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS feed_ai_configs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            feed_id INTEGER NOT NULL UNIQUE,
+            summary_prompt TEXT DEFAULT '',      -- 摘要自定义指令（空=全局默认）
+            extract_prompt TEXT DEFAULT '',      -- 提取自定义指令
+            language TEXT DEFAULT 'auto',        -- auto/zh/en
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (feed_id) REFERENCES feeds(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // 全部表结构与索引已在上方按最终形态一次性定义完毕（CREATE ... IF NOT EXISTS）。
     // 设计约定：项目未发布，schema 演进采取"改定义 + 重置开发库"的方式，
     // 不引入运行时补列（ALTER TABLE）等补丁式迁移，保证建表语句即完整真相。
 
     Ok(())
+}
+
+// ─── Feed AI 配置相关表（在 main 初始化时调用）────────────────────────────────
+
+/// 动态创建 feed_ai_configs 表（若不存在）
+///
+/// 用于支持订阅源级别的 AI 提示词配置（配方系统）。
+/// 注意：此函数与 create_tables 是分开的，因为它是追加功能。
+pub async fn ensure_feed_ai_configs_table(pool: &SqlitePool) -> Result<(), String> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS feed_ai_configs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            feed_id INTEGER NOT NULL UNIQUE,
+            summary_prompt TEXT DEFAULT '',
+            extract_prompt TEXT DEFAULT '',
+            language TEXT DEFAULT 'auto',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (feed_id) REFERENCES feeds(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())
+    .map(|_| ())
+}
+
+/// 动态创建 event_sentiments 表（若不存在）
+///
+/// 用于存储事件情感分析结果（正/负/中性）。
+pub async fn ensure_event_sentiments_table(pool: &SqlitePool) -> Result<(), String> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS event_sentiments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id INTEGER NOT NULL,
+            sentiment TEXT NOT NULL DEFAULT 'neutral',
+            confidence REAL DEFAULT 0.0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (event_id) REFERENCES research_events(id) ON DELETE CASCADE,
+            UNIQUE(event_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())
+    .map(|_| ())
+}
+
+/// 动态创建 financial_data 表（若不存在）
+///
+/// 用于存储从文章中抽取的结构化财务数据。
+pub async fn ensure_financial_data_table(pool: &SqlitePool) -> Result<(), String> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS financial_data (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            article_id INTEGER NOT NULL,
+            entity_id INTEGER NOT NULL,
+            metric_key TEXT NOT NULL,
+            metric_value TEXT NOT NULL,
+            metric_numeric REAL DEFAULT 0.0,
+            currency TEXT DEFAULT '',
+            period TEXT DEFAULT '',
+            evidence TEXT NOT NULL DEFAULT '',
+            source_model TEXT DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE,
+            FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+            UNIQUE(article_id, entity_id, metric_key)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())
+    .map(|_| ())
 }
 
 // ─── Feed CRUD ────────────────────────────────────────────────────────────────
@@ -1789,6 +2251,114 @@ impl Feed {
         Ok(ids)
     }
 
+    /// 获取订阅源的 AI 配置（若不存在则返回空默认值）
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    /// * `feed_id` - 订阅源 ID
+    ///
+    /// # 返回值
+    /// 配置对象（字段为空串表示使用全局默认）；数据库查询失败时返回错误
+    pub async fn get_ai_config(pool: &SqlitePool, feed_id: i64) -> Result<FeedAiConfig, String> {
+        match sqlx::query_as::<_, FeedAiConfig>(
+            "SELECT id, feed_id, COALESCE(summary_prompt, '') as summary_prompt, \
+             COALESCE(extract_prompt, '') as extract_prompt, \
+             COALESCE(language, 'auto') as language, \
+             created_at, updated_at \
+             FROM feed_ai_configs WHERE feed_id = ?",
+        )
+        .bind(feed_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?
+        {
+            Some(cfg) => Ok(cfg),
+            None => Ok(FeedAiConfig {
+                id: 0,
+                feed_id,
+                summary_prompt: String::new(),
+                extract_prompt: String::new(),
+                language: "auto".to_string(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            }),
+        }
+    }
+
+    /// 保存或更新订阅源的 AI 配置（UPSERT）
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    /// * `feed_id` - 订阅源 ID
+    /// * `config` - 要保存的配置对象（summary_prompt / extract_prompt / language 均支持空串）
+    ///
+    /// # 返回值
+    /// 配置行 ID（新建或已有则返回原 ID）
+    ///
+    /// # 错误
+    /// 数据库写入失败时返回错误信息
+    pub async fn save_ai_config(
+        pool: &SqlitePool,
+        feed_id: i64,
+        config: &FeedAiConfig,
+    ) -> Result<i64, String> {
+        // UPSERT：有则更新，无则插入
+        // 注意：summary_prompt / extract_prompt 允许存空串（表示"不覆盖全局默认"），
+        // 因此不能用 COALESCE 回退——必须显式写库
+        let result = sqlx::query(
+            r#"INSERT INTO feed_ai_configs (feed_id, summary_prompt, extract_prompt, language, updated_at)
+               VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(feed_id) DO UPDATE SET
+                   summary_prompt = excluded.summary_prompt,
+                   extract_prompt = excluded.extract_prompt,
+                   language = excluded.language,
+                   updated_at = CURRENT_TIMESTAMP"#,
+        )
+        .bind(feed_id)
+        .bind(&config.summary_prompt)
+        .bind(&config.extract_prompt)
+        .bind(&config.language)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        Ok(result.last_insert_rowid())
+    }
+
+    /// 删除订阅源的 AI 配置（恢复到全局默认）
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    /// * `feed_id` - 订阅源 ID
+    ///
+    /// # 错误
+    /// 数据库删除失败时返回错误信息（行不存在视为静默成功）
+    pub async fn delete_ai_config(pool: &SqlitePool, feed_id: i64) -> Result<(), String> {
+        sqlx::query("DELETE FROM feed_ai_configs WHERE feed_id = ?")
+            .bind(feed_id)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 获取全部订阅源的 AI 配置列表
+    ///
+    /// # 返回值
+    /// 配置列表，按 feed_id 升序排列
+    pub async fn list_ai_configs(pool: &SqlitePool) -> Result<Vec<FeedAiConfig>, String> {
+        sqlx::query_as::<_, FeedAiConfig>(
+            "SELECT id, feed_id, COALESCE(summary_prompt, '') as summary_prompt, \
+             COALESCE(extract_prompt, '') as extract_prompt, \
+             COALESCE(language, 'auto') as language, \
+             created_at, updated_at \
+             FROM feed_ai_configs ORDER BY feed_id ASC",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())
+    }
+
     /// 更新未读文章计数
     ///
     /// 直接写入给定数值（覆盖式），调用方需保证数值来源正确；
@@ -1963,6 +2533,7 @@ impl Article {
         sort: ArticleSort,
         limit: i64,
         offset: i64,
+        user_preference: Option<&str>,
     ) -> Result<Vec<Article>, String> {
         // ORDER BY 片段来自 ArticleSort 的常量表，拼进 SQL 不构成注入口；
         // WHERE 片段同理——只拼列名与占位符，任何用户输入都走 bind
@@ -1983,6 +2554,16 @@ impl Article {
         if unread == Some(true) {
             // 同书签：常量条件，不含占位符
             wheres.push("is_read = 0");
+        }
+        if let Some(pref) = user_preference {
+            // 按用户偏好过滤：'like' = 只显示喜欢的，'skip' = 只显示跳过的（与 like 对称，
+            // 便于检查与纠正错标的文章；「日常阅读中隐藏跳过」是默认行为之外的需求，
+            // 由前端在渲染层处理，不进 SQL）
+            match pref {
+                "like" => wheres.push("user_preference = 'like'"),
+                "skip" => wheres.push("user_preference = 'skip'"),
+                _ => {}
+            }
         }
         let where_sql = if wheres.is_empty() {
             String::new()
@@ -2297,6 +2878,51 @@ impl Article {
             // 文章已被删除（或 ID 非法）时明确报错，避免前端误以为切换成功
             None => Err("文章不存在".to_string()),
         }
+    }
+
+    /// 设置文章的用户偏好标记（喜欢/跳过/取消）
+    ///
+    /// `preference` 只接受 `"like"` / `"skip"` / `""`（清空）三个合法值，
+    /// 其余视为无效输入并报错——这样前端不会误传异常状态。
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    /// * `id` - 文章 ID
+    /// * `preference` - `"like"`（喜欢）/ `"skip"`（跳过）/ `""`（取消标记）
+    ///
+    /// # 错误
+    /// 文章不存在、数据库写入失败、或 preference 非法时返回错误信息
+    pub async fn set_user_preference(
+        pool: &SqlitePool,
+        id: i64,
+        preference: &str,
+    ) -> Result<(), String> {
+        // 校验输入：只允许三种合法值
+        match preference {
+            "like" | "skip" | "" => {}
+            _ => return Err(format!("非法偏好值: {}", preference)),
+        }
+
+        // 先确认文章存在
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM articles WHERE id = ?)")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        if !exists {
+            return Err("文章不存在".to_string());
+        }
+
+        // 写回用户偏好（空字符串表示取消标记，存为 NULL）
+        let pref_value: Option<&str> = if preference.is_empty() { None } else { Some(preference) };
+        sqlx::query("UPDATE articles SET user_preference = ? WHERE id = ?")
+            .bind(pref_value)
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(())
     }
 
     /// 批量插入文章（忽略重复）
@@ -4222,7 +4848,7 @@ mod tests {
         let other = insert_scored_article(&pool, "无标签", "摘要", 0).await;
         Tag::set_for_article(&pool, tagged, &[tag]).await.expect("打标失败");
 
-        let list = Article::list_by_feed(&pool, None, Some(tag), None, None, ArticleSort::Latest, 50, 0)
+        let list = Article::list_by_feed(&pool, None, Some(tag), None, None, ArticleSort::Latest, 50, 0, None)
             .await
             .expect("列表查询失败");
         assert_eq!(list.len(), 1, "只应返回带该标签的文章");
@@ -4259,7 +4885,7 @@ mod tests {
         let now = Article::toggle_bookmark(&pool, marked).await.expect("收藏失败");
         assert!(now, "切换后应处于已收藏状态");
 
-        let only = Article::list_by_feed(&pool, None, None, Some(true), None, ArticleSort::Latest, 50, 0)
+        let only = Article::list_by_feed(&pool, None, None, Some(true), None, ArticleSort::Latest, 50, 0, None)
             .await
             .expect("书签查询失败");
         assert_eq!(only.len(), 1, "书签范围只应返回 1 篇");
@@ -4270,11 +4896,66 @@ mod tests {
         // 这里刻意断言 `Some(false)` 也返回全部——若有人日后把 false 译成
         // `is_bookmarked = 0`，本断言会立刻失败，从而挡住这次语义分叉。
         for flag in [None, Some(false)] {
-            let all = Article::list_by_feed(&pool, None, None, flag, None, ArticleSort::Latest, 50, 0)
+            let all = Article::list_by_feed(&pool, None, None, flag, None, ArticleSort::Latest, 50, 0, None)
                 .await
                 .expect("全量查询失败");
             assert_eq!(all.len(), 3, "flag={:?} 时不应过滤书签", flag);
         }
+    }
+
+    /// 用户偏好范围：'like' / 'skip' 均为**只显示该标记**的对称语义，
+    /// 未标记（NULL）与 `None`（不过滤）互不干扰
+    ///
+    /// 此前 skip 分支曾写成 `!= 'skip' AND IS NOT NULL`（实际只显示 liked，
+    /// 与工具栏「仅显示跳过的」按钮语义矛盾），本用例把对称口径钉死。
+    #[tokio::test]
+    async fn user_preference_scope_filters_list() {
+        let pool = setup_digest().await;
+        let liked = insert_scored_article(&pool, "被喜欢", "摘要", 0).await;
+        let skipped = insert_scored_article(&pool, "被跳过", "摘要", 0).await;
+        let untouched = insert_scored_article(&pool, "未标记", "摘要", 0).await;
+
+        Article::set_user_preference(&pool, liked, "like")
+            .await
+            .expect("设置喜欢失败");
+        Article::set_user_preference(&pool, skipped, "skip")
+            .await
+            .expect("设置跳过失败");
+
+        // 'like'：只返回被喜欢的 1 篇
+        let only_liked = Article::list_by_feed(&pool, None, None, None, None, ArticleSort::Latest, 50, 0, Some("like"))
+            .await
+            .expect("like 查询失败");
+        assert_eq!(only_liked.len(), 1, "like 范围只应返回 1 篇");
+        assert_eq!(only_liked[0].id, liked);
+
+        // 'skip'：只返回被跳过的 1 篇（对称语义；未标记篇不得混入）
+        let only_skipped = Article::list_by_feed(&pool, None, None, None, None, ArticleSort::Latest, 50, 0, Some("skip"))
+            .await
+            .expect("skip 查询失败");
+        assert_eq!(only_skipped.len(), 1, "skip 范围只应返回 1 篇");
+        assert_eq!(only_skipped[0].id, skipped, "未标记与被喜欢的文章不得出现在 skip 范围");
+
+        // None（不过滤）：3 篇全部返回
+        let all = Article::list_by_feed(&pool, None, None, None, None, ArticleSort::Latest, 50, 0, None)
+            .await
+            .expect("全量查询失败");
+        assert_eq!(all.len(), 3, "未指定偏好不应过滤任何文章");
+
+        // 取消标记（空串 → NULL）后，skip 范围不再返回它
+        Article::set_user_preference(&pool, skipped, "")
+            .await
+            .expect("取消标记失败");
+        let after_clear = Article::list_by_feed(&pool, None, None, None, None, ArticleSort::Latest, 50, 0, Some("skip"))
+            .await
+            .expect("取消后查询失败");
+        assert!(after_clear.is_empty(), "取消标记后 skip 范围应为空");
+        // 全量仍在（未标记不等于消失）
+        let still = Article::list_by_feed(&pool, None, None, None, None, ArticleSort::Latest, 50, 0, None)
+            .await
+            .expect("全量查询失败");
+        assert_eq!(still.len(), 3);
+        assert_eq!(still.iter().filter(|a| a.id == untouched).count(), 1, "未标记文章不受影响");
     }
 
     /// 书签范围可与标签范围叠加（AND），且分页在过滤之后生效
@@ -4291,18 +4972,18 @@ mod tests {
         Article::toggle_bookmark(&pool, hit).await.expect("收藏失败");
         Article::toggle_bookmark(&pool, bm_only).await.expect("收藏失败");
 
-        let both = Article::list_by_feed(&pool, None, Some(tag), Some(true), None, ArticleSort::Latest, 50, 0)
+        let both = Article::list_by_feed(&pool, None, Some(tag), Some(true), None, ArticleSort::Latest, 50, 0, None)
             .await
             .expect("组合查询失败");
         assert_eq!(both.len(), 1, "两个范围应取交集（AND）");
         assert_eq!(both[0].id, hit);
 
         // limit 作用在过滤之后：书签共 2 篇，取第 1 页 1 条后应仍有下一页
-        let page1 = Article::list_by_feed(&pool, None, None, Some(true), None, ArticleSort::Latest, 1, 0)
+        let page1 = Article::list_by_feed(&pool, None, None, Some(true), None, ArticleSort::Latest, 1, 0, None)
             .await
             .expect("分页查询失败");
         assert_eq!(page1.len(), 1, "每页 1 条");
-        let page2 = Article::list_by_feed(&pool, None, None, Some(true), None, ArticleSort::Latest, 1, 1)
+        let page2 = Article::list_by_feed(&pool, None, None, Some(true), None, ArticleSort::Latest, 1, 1, None)
             .await
             .expect("分页查询失败");
         assert_eq!(page2.len(), 1, "第 2 页应还有 1 条（证明 limit 在过滤之后）");
@@ -4319,7 +5000,7 @@ mod tests {
         Article::set_read(&pool, read, true).await.expect("标记已读失败");
 
         let only =
-            Article::list_by_feed(&pool, None, None, None, Some(true), ArticleSort::Latest, 50, 0)
+            Article::list_by_feed(&pool, None, None, None, Some(true), ArticleSort::Latest, 50, 0, None)
                 .await
                 .expect("未读查询失败");
         assert_eq!(only.len(), 2, "未读范围只应返回 2 篇");
@@ -4334,7 +5015,7 @@ mod tests {
         // 若有人日后把 false 译成 `is_read = 1`，本断言会立刻失败，挡住这次语义分叉。
         for flag in [None, Some(false)] {
             let all =
-                Article::list_by_feed(&pool, None, None, None, flag, ArticleSort::Latest, 50, 0)
+                Article::list_by_feed(&pool, None, None, None, flag, ArticleSort::Latest, 50, 0, None)
                     .await
                     .expect("全量查询失败");
             assert_eq!(all.len(), 3, "flag={:?} 时不应过滤未读", flag);
@@ -4360,7 +5041,7 @@ mod tests {
             .expect("标记已读失败");
 
         let both =
-            Article::list_by_feed(&pool, None, Some(tag), None, Some(true), ArticleSort::Latest, 50, 0)
+            Article::list_by_feed(&pool, None, Some(tag), None, Some(true), ArticleSort::Latest, 50, 0, None)
                 .await
                 .expect("组合查询失败");
         assert_eq!(both.len(), 1, "未读 ∩ 标签 应只有 1 篇");
@@ -4526,5 +5207,127 @@ mod tests {
         assert!(graph.nodes.is_empty());
         assert!(graph.edges.is_empty());
         assert_eq!(graph.scanned_articles, 0, "没有实体就不必扫描文章");
+    }
+
+    /// 插入一条研究事件并返回事件 ID（交叉验证用例的专用夹具）
+    ///
+    /// 直接裸插 `research_events`：被测函数 `list_cross_reference` 走的是
+    /// JOIN 投影（articles + feeds + event_sentiments），夹具越是绕开业务层，
+    /// 断言越贴近 SQL 本身的口径。
+    async fn insert_research_event(
+        pool: &SqlitePool,
+        article_id: i64,
+        entity_id: i64,
+        fact: &str,
+        days_ago: i64,
+    ) -> i64 {
+        sqlx::query(
+            "INSERT INTO research_events (article_id, entity_id, event_type, fact, evidence, created_at) \
+             VALUES (?, ?, 'strategy', ?, '', datetime('now', '-' || ? || ' days'))",
+        )
+        .bind(article_id)
+        .bind(entity_id)
+        .bind(fact)
+        .bind(days_ago)
+        .execute(pool)
+        .await
+        .expect("插入事件失败")
+        .last_insert_rowid()
+    }
+
+    /// 多源交叉验证：按实体取回不同来源的报道行，JOIN 带出订阅源名与情感；
+    /// 时间窗外的老事件被过滤；无情感记录时回退 neutral
+    #[tokio::test]
+    async fn cross_reference_joins_source_and_filters_by_days() {
+        let pool = setup_digest().await;
+        let entity = insert_entity(&pool, "OpenAI", 1).await;
+        let other = insert_entity(&pool, "别的实体", 1).await;
+
+        // 两个订阅源各一篇报道：source_name 必须各自带出
+        sqlx::query("INSERT INTO feeds (id, name, url) VALUES (2, '科技日报', 'https://tech.example.com/feed')")
+            .execute(&pool)
+            .await
+            .expect("插入第二订阅源失败");
+        let a1 = insert_scored_article(&pool, "OpenAI 发布新模型", "摘要", 0).await; // feed 1 = 测试源
+        let a2: i64 = sqlx::query(
+            "INSERT INTO articles (feed_id, guid, link, title, summary, published_at) \
+             VALUES (2, 'g2', 'https://tech.example.com/2', 'OpenAI 融资十亿', '摘要', CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .expect("插入第二源文章失败")
+        .last_insert_rowid();
+
+        // 三条事件：近事件 ×2（不同源，错开 1 天保证排序确定）+ 一条 300 天前的老事件 + 一条别人实体的事件
+        let e1 = insert_research_event(&pool, a1, entity, "发布新模型", 1).await;
+        let e2 = insert_research_event(&pool, a2, entity, "完成新一轮融资", 0).await;
+        insert_research_event(&pool, a1, entity, "三百日前的旧闻", 300).await;
+        insert_research_event(&pool, a1, other, "别的实体的事件", 0).await;
+
+        // 只给 e1 写 negative 情感：e2 应回退 neutral
+        EventSentiment::upsert(&pool, e1, "negative", 0.9)
+            .await
+            .expect("写情感失败");
+
+        // 不限时间：该实体 3 条（含老事件），别人的事件不得混入
+        let all = ResearchEvent::list_cross_reference(&pool, entity, 0, 50)
+            .await
+            .expect("交叉验证查询失败");
+        assert_eq!(all.len(), 3, "别的实体的事件不得出现在结果里");
+        // 按入库时间倒序：两条今日事件在前，老事件沉底
+        assert_eq!(all[0].event_id, e2, "最新事件应排最前");
+        assert_eq!(all[2].fact, "三百日前的旧闻");
+
+        // 来源名与情感：e2 来自第二源且无情感记录 → source=科技日报 / neutral
+        assert_eq!(all[0].source_name.as_deref(), Some("科技日报"));
+        assert_eq!(all[0].sentiment, "neutral", "无情感记录应回退 neutral");
+        assert_eq!(all[0].article_title.as_deref(), Some("OpenAI 融资十亿"));
+        // e1 来自测试源且有 negative 情感
+        assert_eq!(all[1].event_id, e1);
+        assert_eq!(all[1].source_name.as_deref(), Some("测试源"));
+        assert_eq!(all[1].sentiment, "negative");
+
+        // 近 30 天窗口：老事件被过滤，只剩 2 条
+        let recent = ResearchEvent::list_cross_reference(&pool, entity, 30, 50)
+            .await
+            .expect("交叉验证查询失败");
+        assert_eq!(recent.len(), 2, "300 天前的事件应在时间窗外");
+
+        // limit 上限：截断后只留最新的 1 条
+        let capped = ResearchEvent::list_cross_reference(&pool, entity, 0, 1)
+            .await
+            .expect("交叉验证查询失败");
+        assert_eq!(capped.len(), 1);
+        assert_eq!(capped[0].event_id, e2, "截断应保留最新的事件");
+
+        // 没有任何事件的实体返回空列表而不是错误
+        let empty_entity = insert_entity(&pool, "无事件实体", 1).await;
+        let empty = ResearchEvent::list_cross_reference(&pool, empty_entity, 0, 50)
+            .await
+            .expect("空实体查询不应失败");
+        assert!(empty.is_empty());
+    }
+
+    /// 多源交叉验证：文章被清理（外键级联删除）后行内文章字段回退 NULL
+    ///
+    /// LEFT JOIN 的存在意义就在这里：物理删除文章时事件随级联删掉，
+    /// 但若未来改成软删（文章行还在、feed 不在），查询也不应报错。
+    #[tokio::test]
+    async fn cross_reference_survives_missing_article() {
+        let pool = setup_digest().await;
+        let entity = insert_entity(&pool, "孤儿实体", 1).await;
+        let article = insert_scored_article(&pool, "将被删除的文章", "摘要", 0).await;
+        insert_research_event(&pool, article, entity, "孤儿事件", 0).await;
+
+        // 级联删除文章 → 事件随之消失，结果为空而非报错
+        sqlx::query("DELETE FROM articles WHERE id = ?")
+            .bind(article)
+            .execute(&pool)
+            .await
+            .expect("删除文章失败");
+        let rows = ResearchEvent::list_cross_reference(&pool, entity, 0, 50)
+            .await
+            .expect("级联删除后的查询不应失败");
+        assert!(rows.is_empty(), "事件随文章级联删除，应无返回行");
     }
 }

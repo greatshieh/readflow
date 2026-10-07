@@ -20,8 +20,19 @@
       </nav>
     </aside>
 
-    <!-- 右列：tab 面板（滚动区）+ 底部操作区 -->
+    <!-- 右列：固定标题栏 + 滚动内容区 + 底部操作区 -->
     <div class="side-main">
+      <!-- 固定标题栏：标题居中，关闭按钮在右侧，不随内容滚动 -->
+      <div class="m-titlebar">
+        <span class="m-titlebar-title">{{ tabTitle }}</span>
+        <button class="btn-icon" @click="close" aria-label="关闭" title="关闭">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+
       <!-- 各 tab 面板：v-if 链保证同一时刻只挂载一个（与拆分前一致）。
            「打开即回填」由各面板自己监听 open 完成 —— 切 tab 即重新挂载，
            故面板内的回填监听带 immediate，不依赖父组件统一触发。
@@ -85,7 +96,7 @@
  * - emits.close：请求关闭模态（由父组件置 open=false）
  */
 
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import BaseModal from './BaseModal.vue'
 import SettingsGeneralTab from './SettingsGeneralTab.vue'
 import SettingsAiTab from './SettingsAiTab.vue'
@@ -99,6 +110,18 @@ const emit = defineEmits<{ close: [] }>()
 
 /** 当前激活的 tab：默认落在「常规」（主题 / 字体 / 刷新频率等外观与基础设置，最常访问） */
 const tab = ref<'general' | 'ai' | 'obsidian' | 'automation' | 'data'>('general')
+
+/** 标题栏显示的 tab 名称 */
+const tabTitle = computed(() => {
+  const titles: Record<string, string> = {
+    general: '常规',
+    ai: 'AI 设置',
+    obsidian: 'Obsidian',
+    automation: '自动化',
+    data: '数据',
+  }
+  return titles[tab.value] ?? '设置'
+})
 
 /**
  * 当前挂载 tab 暴露给外壳的接口
@@ -180,22 +203,51 @@ function close() {
 .side-tab:hover { background: var(--fill); color: var(--text-primary); }
 .side-tab.active { background: var(--primary-fg); color: var(--primary); font-weight: 500; }
 
-/* 右列：tab 面板（滚动区）+ 底部操作区（不随内容滚动） */
+/* 右列：固定标题栏 + 滚动内容区 + 底部操作区 */
 .side-main {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
 }
-/* 主体：占满右列剩余高度并内部滚动。
-   `min-height: 0` 不可省：flex 子项默认 min-height:auto 会被内容撑破父容器。
-   顶部预留出 BaseModal side 布局右上角关闭钮的高度（--side-close-reserve），
-   否则首行内容（数据 tab 的统计卡等）会顶进按钮区被遮挡。 */
+/* 固定标题栏：不随内容滚动，关闭按钮在右侧 */
+.m-titlebar {
+  height: 40px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--sp-5);
+  border-bottom: 1px solid var(--border);
+}
+.m-titlebar-title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.btn-icon {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: none;
+  border-radius: var(--r-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  transition: all 0.15s;
+}
+.btn-icon:hover {
+  background: var(--fill);
+  color: var(--text-primary);
+}
+/* 主体：占满剩余高度并内部滚动，顶部预留标题栏高度 */
 .m-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding-top: var(--side-close-reserve, 48px);
+  padding-top: var(--sp-2);
 }
 
 /* 底部操作区：固定在右列底部（是滚动区 .m-body 的兄弟节点，不随内容滚动） */

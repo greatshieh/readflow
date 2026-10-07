@@ -76,6 +76,15 @@ pub struct ExtractedEvent {
     /// 原文片段（证据，用于溯源与反幻觉校验）
     #[serde(default)]
     pub evidence: String,
+    /// 事件情感倾向：positive / negative / neutral（可选，由模型判断）
+    #[serde(default)]
+    pub sentiment: Option<String>,
+    /// 情感判断置信度（0.0-1.0，可选）
+    #[serde(default)]
+    pub sentiment_confidence: Option<f64>,
+    /// 财务指标列表（可选，如 {"revenue": "100亿", "growth": "+15%"}）
+    #[serde(default)]
+    pub financial_metrics: Option<Vec<(String, String)>>,
 }
 
 /// 执行一次自动化任务（cron 与手动触发的公共执行器）

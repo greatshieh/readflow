@@ -51,6 +51,9 @@
             <span class="event-type" :class="`type-${ev.event_type}`">
               {{ typeLabel(ev.event_type) }}
             </span>
+            <span class="event-sentiment" :class="getSentimentClass(ev.sentiment)">
+              {{ sentimentLabel(ev.sentiment) }}
+            </span>
             <span class="event-date">{{ ev.event_date || '日期未知' }}</span>
             <span class="event-fact">{{ ev.fact }}</span>
             <span class="expand-arrow">{{ expandedEventId === ev.id ? '▾' : '▸' }}</span>
@@ -174,14 +177,41 @@ const TYPE_LABELS: Record<string, string> = {
   industry_signal: '行业信号'
 }
 
+/** 情感枚举 → 中文标签 */
+const SENTIMENT_LABELS: Record<string, string> = {
+  positive: '利好',
+  negative: '利空',
+  neutral: '中性'
+}
+
+/** 情感枚举 → CSS class */
+const SENTIMENT_CLASSES: Record<string, string> = {
+  positive: 'positive',
+  negative: 'negative',
+  neutral: 'neutral'
+}
+
 /**
- * 事件类型的中文标签
- *
- * @param type - 事件类型枚举值
- * @returns 中文标签；未知类型原样返回（后端扩展枚举时前端不崩）
+ * 获取事件类型的中文标签
  */
 function typeLabel(type: string): string {
   return TYPE_LABELS[type] ?? type
+}
+
+/**
+ * 获取情感的中文标签
+ */
+function sentimentLabel(sentiment?: string): string {
+  if (!sentiment) return ''
+  return SENTIMENT_LABELS[sentiment] ?? sentiment
+}
+
+/**
+ * 获取情感的 CSS class
+ */
+function getSentimentClass(sentiment?: string): string {
+  if (!sentiment) return ''
+  return `sentiment-${SENTIMENT_CLASSES[sentiment] ?? 'neutral'}`
 }
 
 /**
@@ -342,6 +372,19 @@ watch([filterDays, filterEntityId], async () => {
   font-size: var(--fs-sm);
   color: var(--text-tertiary);
 }
+
+/* 情感徽标：与 .event-type 同几何，但语义色用 positive/negative/neutral */
+.event-sentiment {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  padding: var(--sp-025) var(--sp-2);
+  border-radius: var(--r-sm);
+  line-height: 1.4;
+}
+.sentiment-positive { color: var(--tone-fg); background: var(--entity-product); }
+.sentiment-negative { color: var(--tone-fg); background: var(--entity-regulatory); }
+.sentiment-neutral   { color: var(--tone-fg); background: var(--entity-other); }
 
 /* 事件条目 */
 .event-item {

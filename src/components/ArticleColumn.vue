@@ -51,6 +51,7 @@
           :article="article"
           :active="selectedArticle?.id === article.id"
           @select="handleSelectArticle"
+          @preference="handlePreference"
         />
       </template>
 
@@ -342,6 +343,18 @@ const groupedArticles = computed<ArticleGroup[]>(() => {
 function handleSelectArticle(article: Article) {
   articlesStore.selectArticle(article.id)
   showArticleList.value = false
+}
+
+/**
+ * 用户点击偏好按钮：调用 store 更新偏好，刷新列表以应用过滤
+ *
+ * @param articleId - 文章 ID
+ * @param preference - 'like' | 'skip'
+ */
+async function handlePreference(articleId: number, preference: 'like' | 'skip') {
+  await articlesStore.setPreference(articleId, preference)
+  // 重新加载列表以应用新的过滤条件
+  await articlesStore.loadArticles(feedsStore.selectedFeed?.id ?? null)
 }
 
 /** 刷新当前范围：有选中源时只刷该源，否则刷新全部；完成后重载当前列表取回新文章 */

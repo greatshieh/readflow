@@ -15,13 +15,13 @@
          加载中用骨架屏而非纯文字：占位块按真实 .feed-item 几何（28px 头像 + 标题行）铺排，
          加载完成切换时列表不跳版；空态与错误态复用全局 .state-block。 -->
     <div class="feed-list">
-      <div v-if="feedsStore.error" class="state-block is-error">
+      <div v-if="feedsStore.feedError" class="state-block is-error">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
           <circle cx="12" cy="12" r="10"></circle>
           <line x1="12" y1="8" x2="12" y2="12"></line>
           <line x1="12" y1="16" x2="12.01" y2="16"></line>
         </svg>
-        <span>{{ feedsStore.error }}</span>
+        <span>{{ feedsStore.feedError }}</span>
       </div>
       <div v-else-if="feedsStore.loading" class="skeleton-list" aria-hidden="true">
         <div v-for="i in 6" :key="i" class="skeleton-row">

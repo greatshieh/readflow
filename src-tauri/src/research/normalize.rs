@@ -198,7 +198,48 @@ pub async fn normalize_and_store_events(
         });
     }
 
-    ResearchEvent::insert_batch(pool, &rows).await
+    ResearchEvent::insert_batch(pool, &rows).await?;
+
+    // 写入情感分析和财务数据
+    for (row_idx, event) in events.iter().enumerate() {
+        if row_idx >= rows.len() {
+            break;
+        }
+        let event_id = rows[row_idx].id;
+        // 写入情感分析（无数据时默认 neutral）
+        let sentiment = event.sentiment.as_deref().unwrap_or("neutral");
+        let confidence = event.sentiment_confidence.unwrap_or(0.5);
+        sqlx::query(
+            "INSERT OR REPLACE INTO event_sentiments (event_id, sentiment, confidence) VALUES (?, ?, ?)"
+        )
+        .bind(event_id)
+        .bind(sentiment)
+        .bind(confidence)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        // 写入财务数据（若有）
+        if let Some(ref metrics) = event.financial_metrics {
+            for (key, value) in metrics {
+                let numeric: f64 = value.trim().parse().unwrap_or(0.0);
+                sqlx::query(
+                    "INSERT OR REPLACE INTO financial_data (article_id, entity_id, metric_key, metric_value, metric_numeric, evidence, source_model) VALUES (?, ?, ?, ?, ?, ?, ?)"
+                )
+                .bind(article_id)
+                .bind(rows[row_idx].entity_id)
+                .bind(key)
+                .bind(value)
+                .bind(numeric)
+                .bind(&event.evidence)
+                .bind(source_model)
+                .execute(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+
+    Ok(rows.len() as u64)
 }
 
 /// 把模型给出的别称合并进已有实体的别名表

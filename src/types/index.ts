@@ -53,6 +53,8 @@ export interface Article {
   read_progress: number
   /** 是否已收藏 */
   is_bookmarked: boolean
+  /** 用户偏好标记：'like' = 喜欢，'skip' = 跳过，null = 未标记 */
+  user_preference: 'like' | 'skip' | null
   /** 是否有 AI 摘要 */
   has_ai_summary: boolean
   /** 是否有翻译 */
@@ -294,6 +296,10 @@ export interface ResearchEventWithContext extends ResearchEvent {
   article_title: string | null
   /** 来源文章链接（同上） */
   article_link: string | null
+  /** 情感倾向（positive / negative / neutral，可选） */
+  sentiment?: string
+  /** 情感置信度（0.0-1.0，可选） */
+  sentiment_confidence?: number
 }
 
 /** 自动化任务（任务即数据：定时提取 / 定时报告等） */
@@ -394,4 +400,116 @@ export interface ChatMessage {
    * 否则用户会把一段被截断的话当成完整回答。
    */
   stopped?: boolean
+}
+
+/**
+ * 订阅源 AI 配置（配方系统）
+ *
+ * 对应 `feed_ai_configs` 表。允许对特定订阅源设置专属的摘要/提取 prompt，
+ * 实现"不同源用不同指令"的配方功能。
+ */
+export interface FeedAiConfig {
+  /** 配置 ID */
+  id: number
+  /** 所属订阅源 ID */
+  feed_id: number
+  /** 摘要自定义指令（空串表示使用全局默认） */
+  summary_prompt: string
+  /** 提取自定义指令（空串表示使用全局默认） */
+  extract_prompt: string
+  /** 语言偏好：auto / zh / en */
+  language: string
+  /** 创建时间 */
+  created_at: string
+  /** 更新时间 */
+  updated_at: string
+}
+
+/**
+ * 事件情感分析数据
+ *
+ * 对应 `event_sentiments` 表。记录每条研究事件的情感倾向与置信度。
+ */
+export interface EventSentiment {
+  /** 唯一标识符 */
+  id: number
+  /** 关联的事件 ID */
+  event_id: number
+  /** 情感倾向：positive / negative / neutral */
+  sentiment: string
+  /** 置信度（0.0-1.0） */
+  confidence: number
+  /** 入库时间 */
+  created_at: string
+}
+
+/**
+ * 财务数据抽取结果
+ *
+ * 对应 `financial_data` 表。记录从文章中抽取的结构化财务指标。
+ */
+export interface FinancialData {
+  /** 唯一标识符 */
+  id: number
+  /** 来源文章 ID */
+  article_id: number
+  /** 关联实体 ID */
+  entity_id: number
+  /** 指标键名（如 revenue, profit, growth_rate） */
+  metric_key: string
+  /** 指标值（原始文本，如 "100亿"） */
+  metric_value: string
+  /** 数值形式（便于排序比较，零值表示无法解析为数字） */
+  metric_numeric: number
+  /** 币种（如 CNY, USD, 空串表示无币种） */
+  currency: string
+  /** 时期（如 2026Q3） */
+  period: string
+  /** 原文证据片段 */
+  evidence: string
+  /** 抽取所用模型 */
+  source_model: string
+  /** 入库时间 */
+  created_at: string
+}
+
+/**
+ * 文章预览（不含正文，用于快速展示）
+ */
+export interface ArticlePreview {
+  /** 文章 ID */
+  id: number
+  /** 文章标题 */
+  title: string
+  /** 原文链接 */
+  link: string
+}
+
+/**
+ * 多源交叉验证条目（「来源验证」视图用）
+ *
+ * 后端 `research_cross_reference` 命令的返回行：某实体在不同订阅源中的
+ * 报道事件，携带来源信息与情感倾向，供并列对比各来源的报道口径。
+ */
+export interface CrossReferenceEntry {
+  /** 事件 ID */
+  event_id: number
+  /** 来源文章 ID */
+  article_id: number
+  /** 事件类型（product / executive / ma / regulatory / strategy / competition / industry_signal） */
+  event_type: string
+  /** 客观事实一句话 */
+  fact: string
+  /** 事件发生日期（空串表示未知） */
+  event_date: string
+  /** 事件入库时间 */
+  created_at: string
+  /** 来源文章标题（文章可能已被清理，此时为 null） */
+  article_title: string | null
+  /** 来源文章链接 */
+  article_link: string | null
+  /** 订阅源名称（文章无源时为 null） */
+  source_name: string | null
+  /** 事件情感倾向：positive / negative / neutral */
+  sentiment: string
 }

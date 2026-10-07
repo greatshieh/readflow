@@ -29,7 +29,7 @@
 
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { Feed, Folder } from '@/types'
+import type { Feed, Folder, FeedAiConfig } from '@/types'
 
 /** 刷新进度事件载荷（与 Rust 端 `RefreshProgress` 对应，Tauri 事件键为 camelCase） */
 interface RefreshProgressPayload {
@@ -566,6 +566,38 @@ export const useFeedsStore = defineStore('feeds', () => {
     }
   }
 
+  /**
+   * 获取指定订阅源的 AI 配置
+   */
+  async function getFeedAiConfig(feedId: number): Promise<FeedAiConfig> {
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<FeedAiConfig>('feed_ai_config_get', { feedId })
+  }
+
+  /**
+   * 保存订阅源的 AI 配置
+   */
+  async function saveFeedAiConfig(config: FeedAiConfig): Promise<number> {
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<number>('feed_ai_config_save', { config })
+  }
+
+  /**
+   * 删除订阅源的 AI 配置
+   */
+  async function deleteFeedAiConfig(feedId: number): Promise<void> {
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<void>('feed_ai_config_delete', { feedId })
+  }
+
+  /**
+   * 获取全部订阅源的 AI 配置列表
+   */
+  async function listFeedAiConfigs(): Promise<FeedAiConfig[]> {
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<FeedAiConfig[]>('feed_ai_configs_list')
+  }
+
   return {
     feeds,
     selectedFeed,
@@ -573,7 +605,6 @@ export const useFeedsStore = defineStore('feeds', () => {
     refreshing,
     refreshProgress,
     refreshError,
-    error,
     feedError,
     clearFeedError,
     folders,
@@ -593,6 +624,10 @@ export const useFeedsStore = defineStore('feeds', () => {
     updateFolder,
     deleteFolder,
     moveFeedToFolder,
-    autoGroupBySource
+    autoGroupBySource,
+    getFeedAiConfig,
+    saveFeedAiConfig,
+    deleteFeedAiConfig,
+    listFeedAiConfigs
   }
 })

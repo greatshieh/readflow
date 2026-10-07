@@ -28,7 +28,10 @@ import type {
   AutomationTask,
   ReportMeta,
   ReportGenResult,
-  EntityGraph
+  EntityGraph,
+  EventSentiment,
+  FinancialData,
+  CrossReferenceEntry
 } from '@/types'
 
 export const useResearchStore = defineStore('research', () => {
@@ -357,6 +360,64 @@ export const useResearchStore = defineStore('research', () => {
     }
   }
 
+  // ─── 情感分析与财务数据 ──────────────────────────────────────────────────
+
+  /**
+   * 获取事件的情感分析数据
+   *
+   * @param eventId - 事件 ID
+   * @returns 情感分析数据，不存在时返回 null
+   */
+  async function getEventSentiment(eventId: number): Promise<EventSentiment | null> {
+    const result = await invoke<EventSentiment | null>('event_sentiment_get', { eventId })
+    return result
+  }
+
+  /**
+   * 获取文章关联的财务数据
+   *
+   * @param articleId - 文章 ID
+   * @returns 财务指标列表
+   */
+  async function getFinancialData(articleId: number): Promise<FinancialData[]> {
+    return invoke<FinancialData[]>('financial_data_list', { articleId })
+  }
+
+  /**
+   * 获取实体关联的财务数据
+   *
+   * @param entityId - 实体 ID
+   * @returns 财务指标列表（按时间倒序）
+   */
+  async function getFinancialDataByEntity(entityId: number): Promise<FinancialData[]> {
+    return invoke<FinancialData[]>('financial_data_list_by_entity', { entityId })
+  }
+
+  /**
+   * 获取实体的最新情感分析数据
+   *
+   * @param entityId - 实体 ID
+   * @returns 情感分析数据，不存在时返回 null
+   */
+  async function getEntitySentiment(entityId: number): Promise<EventSentiment | null> {
+    const result = await invoke<EventSentiment | null>('entity_sentiment', { entityId })
+    return result
+  }
+
+  /**
+   * 获取某实体的多源交叉验证条目（同一实体在不同订阅源中的报道）
+   *
+   * @param entityId - 实体 ID
+   * @param days - 时间窗天数（0 = 全部）
+   * @returns 按事件入库时间倒序的交叉验证条目列表
+   */
+  async function getCrossReference(
+    entityId: number,
+    days: number
+  ): Promise<CrossReferenceEntry[]> {
+    return invoke<CrossReferenceEntry[]>('research_cross_reference', { entityId, days })
+  }
+
   return {
     events,
     eventsLoading,
@@ -389,6 +450,11 @@ export const useResearchStore = defineStore('research', () => {
     readReport,
     closeReport,
     loadGraph,
-    reloadGraph
+    reloadGraph,
+    getEventSentiment,
+    getFinancialData,
+    getFinancialDataByEntity,
+    getEntitySentiment,
+    getCrossReference
   }
 })
