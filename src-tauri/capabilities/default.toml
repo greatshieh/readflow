@@ -1,0 +1,7 @@
+identifier = "default"
+description = "Default Tauri capability"
+windows = ["main"]
+permissions = [
+  "core:default",
+  "shell:allow-open"
+]

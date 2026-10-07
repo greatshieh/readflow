@@ -1,0 +1,958 @@
+/* Global styles */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  /* ── 强调色 ────────────────────────────────────────────────
+     默认预设为「石墨蓝灰」。其余 4 套蓝灰系预设见下方 [data-accent] 变量组，
+     由 src/utils/appearance.ts 读取 settings.accent 写入 html[data-accent] 生效。
+     four 件套语义：primary=主色；primary-hover=深一档；
+     primary-soft=极浅底色（选中态 / 徽标底）；primary-fg=半透明叠色（选区 / 悬浮高亮） */
+  --primary: #5a6b82;
+  --primary-hover: #4a5a70;
+  --primary-soft: #eef1f5;
+  --primary-fg: rgba(90, 107, 130, 0.1);
+
+  /* ── 色调板（彩色标记的唯一色值来源）──
+     徽章、类型标签、状态点这些"传达状态而非品牌"的元素此前各自写死 hex，
+     同一个"成功绿"在设置页与研究面板里取值不同。这里收敛成一份色调板：
+     组件一律引用 `--tone-*` / 语义别名，不再出现字面色值。 */
+  --tone-green: #10b981;
+  --tone-indigo: #6366f1;
+  --tone-amber: #f59e0b;
+  --tone-red: #e5484d;
+  --tone-sky: #0ea5e9;
+  --tone-violet: #8b5cf6;
+  --tone-slate: #64748b;
+  /* 实色块（徽章 / 类型标签 / 主按钮）上的文字色：恒定取白，深浅主题通用 */
+  --tone-fg: #ffffff;
+  /* 内嵌网页视图的画布底色：网页自身假定白底，因此不随应用主题变暗 */
+  --page-canvas: #ffffff;
+  /* 模态遮罩：四种弹窗此前各自写 0.3 / 0.35 / 0.4 三种浓度，统一为一档 */
+  --overlay-scrim: rgba(0, 0, 0, 0.4);
+  /* 全屏灯箱遮罩（图片预览）：比弹窗遮罩更重一档，让图片成为唯一视觉焦点。
+     与 --overlay-scrim 分开是因为两者遮挡面积差一个数量级，同一浓度会让
+     小弹窗"太透"而灯箱"不够沉"。 */
+  --scrim-heavy: rgba(0, 0, 0, 0.82);
+  /* 小元素的内描边环（头像底 / 缩略图 / 色板圆点）：用 inset box-shadow 而非
+     border，避免改变盒模型尺寸导致相邻元素错位。 */
+  --ring-inset: inset 0 0 0 1px rgba(16, 24, 40, 0.06);
+  /* 窗口关闭按钮的悬浮红：Windows 原生语义色，不随主题与强调色变化 */
+  --win-close: #e81123;
+
+  /* ── 品牌色（应用标志的唯一色值来源）──
+     刻意不随强调色预设变化：应用图标是品牌锚点，用户在设置里换主题色时
+     标志不应跟着变（Linear / Notion 等产品同样把 logo 与主题色解耦）。
+     但深色主题下需提亮一档——原来的亮琥珀落在 #121212 标题栏上会与底色
+     产生同频闪烁，提亮后既保持品牌识别又稳住对比。
+     组件一律通过 AppLogo.vue 消费这两个变量，禁止再写字面色值。 */
+  --brand-from: #f59e0b;
+  --brand-to: #b45309;
+
+  /* ── 状态色（语义别名，指向色调板）── */
+  --success: var(--tone-green);
+  --warning: var(--tone-amber);
+  --info: var(--tone-sky);
+
+  /* ── 研究事件类型色（与后端 `research::extract` 的 EVENT_TYPES 一一对应）──
+     同一类型在研究面板的类型徽章、正文栏的事件圆点、时间线标记上必须同色，
+     因此集中定义，三处只引用不写字面值。 */
+  --entity-product: var(--tone-green);
+  --entity-executive: var(--tone-indigo);
+  --entity-ma: var(--tone-amber);
+  --entity-regulatory: var(--tone-red);
+  --entity-strategy: var(--tone-sky);
+  --entity-competition: var(--tone-violet);
+  --entity-industry_signal: var(--tone-slate);
+
+  /* ── 危险色（语义色，不随强调色预设变化）──
+     此前项目里从未定义过 --danger / --danger-fg，各组件只能写
+     `var(--danger, #ef4444)` 各自兜底，同一个"删除"语义在不同弹窗里取到不同色值。
+     这里补上正式定义：--danger 用于描边与文字，--danger-fg 用于悬浮底色。 */
+  --danger: var(--tone-red);
+  --danger-fg: rgba(229, 72, 77, 0.1);
+
+  /* ── 正文高亮色（语义色，不随强调色预设变化）──
+     4 档柔光底色，供「选中正文 → 高亮」使用。高亮块内的文字统一用 --hl-fg：
+     浅色底上恒用深色文字，避免暗色主题下白字压在浅色高亮块上看不见。 */
+  --hl-yellow: #fde68a;
+  --hl-green: #bbf7d0;
+  --hl-blue: #bfdbfe;
+  --hl-pink: #fbcfe8;
+  --hl-fg: #1f2328;
+
+  /* ── 中性色 ──
+     --bg 刻意比 --surface 深一档：让三栏白色面板"浮"在底色之上形成层级，
+     这是整套现代化观感的基础。底色取冷调浅蓝而非中性灰（实测参考 WorkBuddy
+     为 #f5f9ff），蓝色底让白色面板的边界更清晰、整体更通透。 */
+  --bg: #f5f9ff;
+  --surface: #ffffff;
+  --surface-muted: #f7f9fb;
+  --text-primary: #191c22;
+  --text-secondary: #565d6b;
+  --text-tertiary: #8b93a3;
+  --border: #e6eaf0;
+  --fill: #f2f5f8;
+  --fill-secondary: #e8ecf2;
+  /* 面板 hairline 描边：浮岛分隔的主手段——投影只负责"微浮起"，
+     真正的边界由这根冷蓝色细线勾出（仿 WorkBuddy 实测色 #dce8ff）。
+     好处是不依赖投影浓度，栏间缝隙不会被压成深色凹槽。 */
+  --panel-border: #dce8ff;
+  /* 自绘标题栏的底色：毛玻璃材质，与新版冷调底色融合 */
+  --titlebar-bg: rgba(245, 249, 255, 0.86);
+
+  /* ── 圆角阶梯（整体放宽，圆润是现代 UI 的关键直觉）── */
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 10px;
+  --r-xl: 14px;
+  --r-panel: 16px;
+  --r-pill: 999px;
+
+  /* ── 交互态底色 ──
+     悬停高亮的统一底色。此前 ResearchModal（4 处）与 DigestModal（1 处）
+     写的是 `var(--hover-bg)`，但这个变量**从未定义也从未赋值**——
+     CSS 里 `var(--未定义)` 会让整条 background 声明失效，
+     导致这 5 处悬停完全没有视觉反馈（鼠标移上去没反应）。
+     指向 --fill 而非写死色值：--fill 本身已随明暗主题各自取值，
+     这里定义一次即可两个主题都正确。 */
+  --hover-bg: var(--fill);
+
+  /* ── 间距阶梯 ──────────────────────────────────────────────────────────
+     以 4px 为主栅格，另设半步档（05/15/025）承载"再挤一点就贴上"的
+     紧凑场景。半步档不是偷懒——6px 与 10px 原本各有十余处在用且分布均匀，
+     把它们硬掰到 4px 网格会让界面整体松散；这里是明确承认这是一个独立档位。
+
+     选值纪律：
+     - 组件内**布局性**间距（gap / padding / margin）一律引用本阶梯；
+     - 尺寸类（控件宽高、圆角、边框粗细）不属于本阶梯，仍直接写 px；
+     - 图标 glyph 与徽章微字（9 / 10 / 15 / 20px 等）也不属于本阶梯——
+       它们是"图形尺寸"而非"排版间距"，塞进来会让语义变浑。
+
+     以下 px 是**有意保留**的，不要顺手改成 token：
+     - `11px`（ArticleColumn 的 `.article-item` 与其骨架屏 `11px 16px 11px 12px`）：
+       刻意的不对称——左侧 12px 是为抵消未读圆点的 14px 悬挂缩进，
+       使"卡片左缘→标题文字"与右侧留白视觉等距。改动会让标题左偏，
+       且**骨架屏必须与真实条目逐值一致**，否则加载完成时列表跳版。
+     - `1px` / `3px` / `5px`：徽章与紧凑控件的微内边距，低于阶梯最小档 2px 的意义。
+     - `18px` / `22px`：正文排版区（引文边距、表格单元格、摘要卡）的宽松留白，
+       刻意与 `--sp-4` 拉开，属阅读节奏而非界面栅格。
+     - `-1px`：光学回拉，用于抵消边框叠加产生的视觉加粗。 */
+  --sp-025: 2px;   /* 半步：图标与文字贴合 */
+  --sp-05: 6px;    /* 半步：紧凑内间距（标签内、徽章内） */
+  --sp-15: 10px;   /* 半步：中等内间距（浮层、卡片内） */
+  --sp-35: 14px;   /* 半步：弹窗头尾内边距（2/6/10/14 构成 +4 递增的半步序列） */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+
+  /* ── 阴影层级 ──
+     从 xs（贴地微凸起）到 pop（弹层），统一取冷灰而非纯黑的 rgba，
+     避免浅色界面下阴影显脏 */
+  --shadow-xs: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04), 0 2px 6px rgba(16, 24, 40, 0.05);
+  /* 面板投影只保留"一档弱浮起"：栏间窄缝会同时承接相邻两块面板的投影，
+     模糊半径/透明度稍大就会在缝里叠成一条深色凹槽，看起来像面板边缘错位
+     （实测 24px/.06 时缝隙被压暗到比底色深一档）。现在弱到 4px 12px/.035，
+     既守住浮岛层次，又不污染缝隙；面板边界改由 --panel-border 承担。 */
+  --shadow-panel: 0 1px 2px rgba(16, 24, 40, 0.03), 0 4px 12px rgba(16, 24, 40, 0.035);
+  --shadow-hover: 0 2px 4px rgba(16, 24, 40, 0.06), 0 10px 24px rgba(16, 24, 40, 0.1);
+  --shadow-pop: 0 12px 40px rgba(16, 24, 40, 0.14);
+
+  /* 基础字体栈：全应用"系统默认字体"的唯一定义处 */
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  /* 界面字体族：由「设置 → 常规 → 界面字体」写入内联变量（可指向任意系统字体）。
+     默认值等于 --font；用户选择"系统默认"时 appearance.ts 会移除该内联变量，
+     于是自动回落到这里的声明值。 */
+  --ui-font: var(--font);
+  /* ── 字号阶梯 ──
+     xs 起用于元信息（时间、来源名），md 是全应用正文基准，
+     xl 起进入标题区。2xl 供正文内 h1 与弹窗标题使用。
+     ⚠️ 2xl 曾被 ContentColumn 的 `.content-body h1` 引用但**从未定义**——
+        CSS 里 `var(--未定义)` 会让整条声明失效，导致正文 h1 静默继承 body 的
+        --fs-md（13px），渲染成与普通段落同大。补上定义即修复。 */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 18px;
+  --fs-2xl: 22px;
+  --tb-h: 42px;
+  /* 滚动条占位宽度：必须与下方 ::-webkit-scrollbar 的 width 保持一致。
+     所有可滚动容器都要按这个值补一个等宽左内边距做"视觉配重"，
+     否则内容左侧贴面板边、右侧却被滚动条又吃掉同样宽度，
+     hover / active 的高亮块与居中阅读列看起来都会偏左。 */
+  --sb-w: 4px;
+  /* 动效统一基准：所有 hover/active 过渡共用同一时长与缓动，避免观感杂乱 */
+  --dur: 0.18s;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  /* 阅读区最大宽度：限制正文/标题/摘要卡片的列宽，让宽屏下两侧自然留白（仿 Folo 居中阅读列） */
+  --read-max: 760px;
+  /* 界面字体缩放：由「设置 → 常规 → 界面字体大小」写入（zoom 作用于整个应用根节点） */
+  --ui-zoom: 1;
+  /* 正文阅读字体族：由「设置 → 常规 → 内容字体」写入。
+     默认 inherit = 跟随界面字体（即继承 body 的 --ui-font）。 */
+  --reading-font: inherit;
+}
+
+/* ─── 暗黑主题（html[data-theme="dark"]）─────────────────────────────────────
+   仅覆盖颜色类变量：圆角 / 字号 / 布局尺寸与主题无关，无需重复声明。
+   由 src/utils/appearance.ts 依据 settings.theme（light/dark/system）切换。
+   强调色在此给出"石墨蓝灰（默认预设）"的暗色取值；其余预设见下方 [data-accent]。 */
+html[data-theme="dark"] {
+  --primary: #93a6c0;
+  --primary-hover: #a6b6cc;
+  --primary-soft: #23262d;
+  --primary-fg: rgba(147, 166, 192, 0.16);
+  /* 危险色：暗底上需要更高明度才够对比，底色相应提高透明度 */
+  --danger: #ff6369;
+  --danger-fg: rgba(255, 99, 105, 0.16);
+  /* 模态遮罩：暗色主题下底色本就深，遮罩需要更重才能拉开层级 */
+  --overlay-scrim: rgba(0, 0, 0, 0.6);
+  --scrim-heavy: rgba(0, 0, 0, 0.88);
+  --ring-inset: inset 0 0 0 1px rgba(255, 255, 255, 0.09);
+  /* 品牌色的暗色取值：整体提亮一档，避免在近黑标题栏上与底色同频闪烁 */
+  --brand-from: #fbbf24;
+  --brand-to: #d97706;
+  /* 正文高亮色：暗底上改用低透明度叠色（纯浅底会刺眼），文字色交回主题文本色 */
+  --hl-yellow: rgba(253, 230, 138, 0.26);
+  --hl-green: rgba(187, 247, 208, 0.24);
+  --hl-blue: rgba(191, 219, 254, 0.24);
+  --hl-pink: rgba(251, 207, 232, 0.24);
+  --hl-fg: #e6e8ec;
+  /* 底色优化：用更接近纯黑的深灰替代偏蓝黑，提升面板对比度与浮岛感 */
+  --bg: #121212;
+  --surface: #1e1e1e;
+  --surface-muted: #252525;
+  --text-primary: #e6e6e6;
+  --text-secondary: #a3a3a3;
+  --text-tertiary: #737373;
+  --border: #333333;
+  --fill: #2a2a2a;
+  --fill-secondary: #333333;
+  /* 暗色下的面板 hairline：冷蓝描边在此不可见，改用低透明度白线勾边 */
+  --panel-border: rgba(255, 255, 255, 0.08);
+  --titlebar-bg: rgba(18, 18, 18, 0.88);
+  /* 暗色下阴影不可见，改用更深的不透明度制造"浮起"错觉；
+     同样收窄作用域（16px/.28），避免栏间缝隙被压得更黑 */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.24);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 6px rgba(0, 0, 0, 0.26);
+  --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 16px rgba(0, 0, 0, 0.28);
+  --shadow-hover: 0 2px 4px rgba(0, 0, 0, 0.34), 0 10px 24px rgba(0, 0, 0, 0.4);
+  --shadow-pop: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+/* ─── 强调色预设（html[data-accent]）────────────────────────────────────────
+   9 套取自主流产品的蓝灰系 + 暖色系，用户在「设置 → 常规 → 主题色」切换。
+   每套都声明浅色与暗色两组取值：暗色下主色需提亮一档，
+   否则在深色面板上的对比度不足、按钮与图标会"糊"成一团。 */
+
+/* 石墨蓝灰（默认）— Notion 的冷静中性 */
+html[data-accent="graphite"] {
+  --primary: #5a6b82;
+  --primary-hover: #4a5a70;
+  --primary-soft: #eef1f5;
+  --primary-fg: rgba(90, 107, 130, 0.1);
+}
+html[data-theme="dark"][data-accent="graphite"] {
+  --primary: #93a6c0;
+  --primary-hover: #a6b6cc;
+  --primary-soft: #23262d;
+  --primary-fg: rgba(147, 166, 192, 0.16);
+}
+
+/* 靛青（Linear 的招牌蓝紫） */
+html[data-accent="indigo"] {
+  --primary: #5e6ad2;
+  --primary-hover: #4f5abf;
+  --primary-soft: #efeffe;
+  --primary-fg: rgba(94, 106, 210, 0.1);
+}
+html[data-theme="dark"][data-accent="indigo"] {
+  --primary: #8c96ec;
+  --primary-hover: #a0a9f2;
+  --primary-soft: #23243a;
+  --primary-fg: rgba(140, 150, 236, 0.16);
+}
+
+/* 海蓝（GitHub / Microsoft 的稳重蓝） */
+html[data-accent="azure"] {
+  --primary: #1f6feb;
+  --primary-hover: #1b62d4;
+  --primary-soft: #e8f0fe;
+  --primary-fg: rgba(31, 111, 235, 0.1);
+}
+html[data-theme="dark"][data-accent="azure"] {
+  --primary: #5b96f5;
+  --primary-hover: #7daaf7;
+  --primary-soft: #1b2536;
+  --primary-fg: rgba(91, 150, 245, 0.16);
+}
+
+/* 天青（X / Twitter 明亮通透的蓝） */
+html[data-accent="sky"] {
+  --primary: #1d9bf0;
+  --primary-hover: #1a8cd8;
+  --primary-soft: #e6f4fe;
+  --primary-fg: rgba(29, 155, 240, 0.1);
+}
+html[data-theme="dark"][data-accent="sky"] {
+  --primary: #59bdf5;
+  --primary-hover: #7ccbf7;
+  --primary-soft: #14293a;
+  --primary-fg: rgba(89, 189, 245, 0.16);
+}
+
+/* 青碧（Notion / Slack 的冷静青） */
+html[data-accent="teal"] {
+  --primary: #128a86;
+  --primary-hover: #0e736f;
+  --primary-soft: #e4f4f3;
+  --primary-fg: rgba(18, 138, 134, 0.1);
+}
+html[data-theme="dark"][data-accent="teal"] {
+  --primary: #35b3ae;
+  --primary-hover: #55c4c0;
+  --primary-soft: #12302f;
+  --primary-fg: rgba(53, 179, 174, 0.16);
+}
+
+/* 琥珀（温暖有活力，适合资讯类） */
+html[data-accent="amber"] {
+  --primary: #d97706;
+  --primary-hover: #b45309;
+  --primary-soft: #fef3c7;
+  --primary-fg: rgba(217, 119, 6, 0.1);
+}
+html[data-theme="dark"][data-accent="amber"] {
+  --primary: #fbbf24;
+  --primary-hover: #fcd34d;
+  --primary-soft: #3d2c0a;
+  --primary-fg: rgba(251, 191, 36, 0.16);
+}
+
+/* 紫罗兰（现代科技感） */
+html[data-accent="violet"] {
+  --primary: #7c3aed;
+  --primary-hover: #6d28d9;
+  --primary-soft: #ede9fe;
+  --primary-fg: rgba(124, 58, 237, 0.1);
+}
+html[data-theme="dark"][data-accent="violet"] {
+  --primary: #a78bfa;
+  --primary-hover: #c4b5fd;
+  --primary-soft: #1e1540;
+  --primary-fg: rgba(167, 139, 250, 0.16);
+}
+
+/* 玫红（个性鲜明） */
+html[data-accent="rose"] {
+  --primary: #db2777;
+  --primary-hover: #be185d;
+  --primary-soft: #ffe4f6;
+  --primary-fg: rgba(219, 39, 119, 0.1);
+}
+html[data-theme="dark"][data-accent="rose"] {
+  --primary: #f472b6;
+  --primary-hover: #f9a8d4;
+  --primary-soft: #3d0a28;
+  --primary-fg: rgba(244, 114, 182, 0.16);
+}
+
+/* 翠绿（自然清新） */
+html[data-accent="emerald"] {
+  --primary: #059669;
+  --primary-hover: #047857;
+  --primary-soft: #d1fae5;
+  --primary-fg: rgba(5, 150, 105, 0.1);
+}
+html[data-theme="dark"][data-accent="emerald"] {
+  --primary: #34d399;
+  --primary-hover: #6ee7b7;
+  --primary-soft: #064e3b;
+  --primary-fg: rgba(52, 211, 153, 0.16);
+}
+
+/* 暗黑主题下的滚动条：thumb 底色 --border 已是暗色取值，无需覆盖；
+   仅把 hover 态换成半透明白，保证暗面板上仍有可感知的加深反馈 */
+html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+body {
+  /* 界面字体族：由 --ui-font 提供（默认 var(--font)，即系统默认栈）。
+     正文阅读区另由 --reading-font 覆盖，两者互不影响。 */
+  font-family: var(--ui-font);
+  font-size: var(--fs-md);
+  color: var(--text-primary);
+  background: var(--bg);
+  overflow: hidden;
+  height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  /* 界面字体缩放：CSS zoom 整体缩放应用 UI（含布局），由「界面字体大小」设置驱动；
+     正文阅读区另有独立的 --reading-scale 字号缩放，两者互不影响 */
+  zoom: var(--ui-zoom, 1);
+}
+
+/* 三栏主体：订阅栏 | 文章列表栏 | 正文栏，真正并列（对齐 Folo）。
+   padding-top 让位 fixed 定位的 TitleBar（高度由 --tb-h 统一控制）。
+   左右与底部各留 10px —— 配合灰底 --bg 让三块白色圆角面板形成"浮岛"，
+   取代原先"白底 + 1px 边框"的扁平拼贴观感。 */
+.app-body {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  background: var(--bg);
+  padding: var(--tb-h) var(--sp-15) var(--sp-15);
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* 订阅栏在 flex 行中不压缩，宽度由拖拽分隔条控制（默认 260px，对齐 Folo 的 feedColWidth） */
+.feed-panel { flex-shrink: 0; width: var(--feed-w, 260px); }
+
+/* 列宽拖拽分隔条：位于"订阅栏 ↔ 文章列表栏"、"文章列表栏 ↔ 正文栏"之间，可拖拽调整列宽（对齐 Folo 的 PanelSplitter）。
+   浮岛布局下它同时充当"栏间空隙"，因此自身加宽到 18px（仿 WorkBuddy 实测 16~24px 的缝宽）：
+   缝越宽，相邻面板的投影越有机会衰减掉，缝隙中心才露得出底色本身；常态全透明（看不出造物），
+   hover / 拖拽时才滑出一条主色圆角细条作为抓手提示。 */
+.col-resizer {
+  flex-shrink: 0;
+  width: 18px;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s ease;
+}
+.col-resizer:hover {
+  background: var(--fill);
+  border-radius: var(--r-md);
+}
+.col-resizer::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  width: 3px;
+  height: 36px;
+  border-radius: var(--r-pill);
+  background: var(--primary);
+  opacity: 0;
+  transform: translateY(-50%);
+  transition: opacity var(--dur) var(--ease), height var(--dur) var(--ease);
+}
+.col-resizer:hover::after,
+.col-resizer.active::after {
+  opacity: 0.45;
+  height: 64px;
+}
+/* 专注模式下隐藏分隔条（订阅栏与文章列表栏已隐藏，无可拖拽列宽） */
+.app.focus-mode .col-resizer { display: none; }
+
+/* 专注阅读模式：隐藏订阅栏与文章列表栏，正文栏独占整屏宽度，减少干扰便于长文阅读。 */
+.app.focus-mode .feed-panel,
+.app.focus-mode .article-column {
+  display: none;
+}
+
+/* Scrollbar（全应用统一风格）
+   以订阅列表 / 文章列表长期使用的"细条"形态为准：4px 宽、--border 浅灰、
+   全圆角胶囊，安静地贴在面板右缘，不与内容抢注意力。
+   此前各组件曾各自重写过一套更粗的样式，导致正文栏、弹窗、代码块与两个列表
+   风格不一致，现已统一收敛到这一处——组件内不再出现 ::-webkit-scrollbar。
+   注意 --sb-w 必须与此处的 width 同步，供容器做左侧配重。 */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--fill-secondary);
+}
+
+/* ─── 微交互基线 ────────────────────────────────────────────────────────────
+   全局兜底：未显式定义动效的按钮继承统一手感（hover 抬升、按下回弹），
+   表单控件 focus 时统一出现主色光环。组件自定义动效会用更高特异性的规则覆盖这里。 */
+button {
+  font-family: inherit;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease),
+    transform var(--dur) var(--ease), opacity var(--dur) var(--ease);
+}
+button:not(:disabled):active { transform: scale(0.96); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* 文本输入类控件默认不继承字体（浏览器按控件自带字体渲染），统一显式继承，
+   这样「设置 → 常规 → 界面字体」才能全局生效；组件内更具体的规则仍可覆盖。 */
+input,
+textarea,
+select {
+  font-family: inherit;
+}
+
+/* ─── 按钮体系（.btn 族）─────────────────────────────────────────────────────
+   收敛前：RulesModal / FeedPanel / GlobalModal / SettingsModal 各自复制了一份
+   `.btn` 基类（内边距 6px 或 7px、高度 30/32px 不一），并各自重复定义
+   `.btn-primary`，ResearchModal 又另起一套 `.btn-secondary` / `.btn-back`。
+
+   关键陷阱：`.btn-primary` 是"修饰类"，它只覆盖配色，圆角 / 内边距 / 边框 /
+   字号全部来自基类 `.btn`。模板一旦漏写基类（写成 `class="btn-primary"`），
+   按钮就退化成浏览器原生外观（方角、系统内边距）——这正是「过滤规则」添加
+   按钮看起来像系统控件的根因。现在类族收敛到全局单一来源，组件内只保留
+   布局性声明（flex 容器、对齐等），从结构上消除"漏写基类"的可能。
+
+   使用约定：
+   - `.btn` 基类**自身即次级按钮外观**，可单独使用（如各弹窗的「取消」）；
+   - `.btn-primary` / `.btn-danger` / `.btn-danger-text` 为修饰类，必须与 `.btn` 同用；
+   - 尺寸档 `.btn-sm` / `.btn-mini` 同样叠加在 `.btn` 之上。 */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
+  height: 32px;
+  padding: 0 var(--sp-35);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+/* 默认（次级）按钮的悬浮反馈：描边与文字转主色，与列表项 hover 语言一致。
+   过场动画继承上方全局 `button` 基线的 transition，无需在此重复声明。 */
+.btn:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* 次级按钮的两个别名：GlobalModal 用 .btn-secondary、SettingsModal 用 .btn-default，
+   语义与外观完全一致，故合并声明并保留两个名字，避免改动既有模板。
+   悬浮改用浅灰底 + 深字（比描边变色更"安静"，适合弹窗底部的取消类按钮），
+   声明位置在基类之后，靠同特异性下的源码顺序覆盖 .btn:hover。 */
+.btn-default,
+.btn-secondary {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+.btn-default:hover:not(:disabled),
+.btn-secondary:hover:not(:disabled) {
+  border-color: var(--border);
+  background: var(--fill);
+  color: var(--text-primary);
+}
+
+/* 主操作按钮：实心主色。悬浮统一用 --primary-hover 而非 filter 提亮，
+   这样 5 套强调色预设各自的暗色取值都能自动生效。 */
+.btn-primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+  color: #fff;
+}
+
+/* 危险操作（删除等）：常显危险色描边，提示"这一步不可逆"。
+   注意悬浮态必须把 border-color/color 一并写全——`.btn:hover:not(:disabled)`
+   的特异性（0,3,0）高于 `.btn-danger`（0,1,0），只写 background 会被它抢走配色。 */
+.btn-danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.btn-danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: var(--danger-fg);
+}
+
+/* 弱危险：默认中性、仅在悬浮时透出危险色。用于列表行内的删除按钮——
+   整列常显红字会造成视觉噪音，这里刻意"安静"。 */
+.btn-danger-text:hover:not(:disabled) {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: var(--danger-fg);
+}
+
+/* 尺寸档：弹窗底部操作区用默认 32px，列表行内用 sm(28px) / mini(24px) */
+.btn-sm {
+  height: 28px;
+  padding: 0 var(--sp-3);
+  font-size: 12px;
+}
+.btn-mini {
+  height: 24px;
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-xs);
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+
+/* ─── 下拉选择器 ────────────────────────────────────────────────────────────
+   全应用的下拉统一用 AppSelect 组件（src/components/AppSelect.vue），
+   其触发器 / 浮层 / 箭头 / focus 光环的样式都封装在组件自身的 scoped 样式里，
+   跟随设计令牌，原生 <select> 不再直接裸用，因此这里不保留全局下拉样式。 */
+
+/* ─── 骨架屏（全局工具类）─────────────────────────────────────────────────────
+   三个列表的加载态 + AI 摘要生成中态共用同一套视觉语言。此前 `.sk-line`
+   定义在 ContentColumn 的 scoped 样式里，订阅栏与文章列表够不着，
+   各自只能退化成纯文字「加载中...」——同一应用里两种加载语态。
+   现在提升为全局，三处引用同一份定义。
+
+   载荷约定：骨架块的**行数与宽度由调用方决定**（用 .sk-line / .sk-line-short
+   组合），本类只负责"一根条"的基础外观——底色、圆角、掠光动画。
+   组件内再用 scoped 样式调条高与容器布局，以贴合各自的真实行高。 */
+.sk-line {
+  height: 10px;
+  border-radius: var(--r-pill);
+  background: linear-gradient(
+    90deg,
+    var(--fill) 0%,
+    var(--fill-secondary) 50%,
+    var(--fill) 100%
+  );
+  background-size: 200% 100%;
+  animation: sk-shimmer 1.4s ease-in-out infinite;
+}
+/* 短条：模拟列表里"次要信息行"的长度不均，避免机械等宽显得假 */
+.sk-line-short { width: 62%; }
+
+/* 骨架屏容器（全局工具类）：文章列表 / 订阅栏 / 关系图加载态共用布局基座。
+   只定义 flex 纵排——行间距、内边距与真实条目的几何对齐仍由各组件 scoped 覆盖
+  （scoped 带属性选择器，特异性高于此处）。
+   注：关系图加载态此前没有任何容器样式（.sk-line 是行内元素、高度不生效，
+   骨架屏实际不可见），提升为全局后顺带修复。 */
+.skeleton-list {
+  display: flex;
+  flex-direction: column;
+}
+.skeleton-row {
+  display: flex;
+  align-items: center;
+}
+
+@keyframes sk-shimmer {
+  0% { background-position: 150% 0; }
+  100% { background-position: -50% 0; }
+}
+
+/* 无障碍：尊重系统的"减少动态效果"设置。
+   掠光是纯装饰动画，关掉后骨架屏仍是静态浅条，不影响"正在加载"的表达。 */
+@media (prefers-reduced-motion: reduce) {
+  .sk-line { animation: none; }
+}
+
+/* ─── 转圈指示器（全局工具类）─────────────────────────────────────────────────
+   AI 相关的"进行中"状态共用同一个转圈：正文栏标题状态行、AI 摘要卡、研究事件 FAB。
+   这三处分属不同组件（ContentColumn / ArticleSummaryCard / ResearchFab），
+   scoped 样式跨不过组件边界，故与 .sk-line 同理提升为全局类——
+   各调用方只用 scoped 样式收尺寸（如 `.summary-card .ai-spinner { … }`）。
+
+   `@keyframes ai-spin` 必须与它同处一份样式表：scoped 下 Vue 会给 keyframes 名
+   带上作用域后缀，若规则在全局、keyframes 留在某个组件里，动画名就会对不上而静默失效。 */
+.ai-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: ai-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes ai-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ─── 设置面板表单原语（全局工具类）─────────────────────────────────────────────
+   「设置」弹窗的五个 tab 各是独立组件（SettingsGeneralTab / SettingsAiTab /
+   SettingsObsidianTab / SettingsAutomationTab / SettingsDataTab），下面这些排版
+   原语被其中多个共用；scoped 样式跨不过组件边界，故与 .sk-line / .state-block
+   同惯例提升为全局类。已核实：这些类名全项目只在「设置」弹窗系列出现，
+   提为全局不会波及其它组件（组件内只需保留各自独有的样式）。 */
+.tab-pane { padding: var(--sp-4) var(--sp-5) var(--sp-5); }
+
+/* 设置行（开关型） */
+.setting {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--border);
+}
+.setting:last-of-type { border-bottom: none; }
+.setting-info h4 { font-size: var(--fs-md); font-weight: 500; margin-bottom: var(--sp-025); }
+.setting-info p { font-size: var(--fs-sm); color: var(--text-tertiary); }
+
+/* 表单 */
+.form-group { margin-bottom: var(--sp-4); }
+.form-label {
+  display: block;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  margin-bottom: var(--sp-05);
+  font-weight: 500;
+}
+.form-input {
+  width: 100%;
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 0 var(--sp-15);
+  font-size: var(--fs-md);
+  background: var(--surface);
+  color: var(--text-primary);
+  outline: none;
+  transition: border-color 0.15s;
+  /* 输入框不继承字体是浏览器默认行为，显式 inherit 才能跟随「界面字体」设置 */
+  font-family: inherit;
+}
+.form-input:focus { border-color: var(--primary); }
+.form-input::placeholder { color: var(--text-tertiary); }
+.form-hint { font-size: var(--fs-xs); color: var(--text-tertiary); margin-top: var(--sp-1); }
+
+/* 内容分隔线（同一 tab 内不同分组之间） */
+.divider { height: 1px; background: var(--border); margin: var(--sp-3) 0; }
+
+/* 等宽按钮组（常规 tab 的「立即清理」与数据 tab 的备份 / OPML 共用） */
+.opml-actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+.opml-actions .btn { flex: 1; justify-content: center; }
+
+/* 保存 / 操作结果提示 */
+.save-hint {
+  font-size: var(--fs-sm);
+  color: var(--primary);
+  margin-top: var(--sp-1);
+  /* 导出/备份成功后会显示文件的绝对路径，必须允许在任意字符处折行，
+     否则长路径会把设置面板撑出横向滚动条 */
+  overflow-wrap: anywhere;
+}
+
+/* ─── 研究工作台共用原语（全局工具类）─────────────────────────────────────────
+   被 ResearchModal 拆出的多个 tab 组件共用，scoped 样式跨不过组件边界故提升至此。
+   提升前已 grep 确认：.filter-bar / .extract-msg 全项目唯一；.empty-state 与
+   DigestModal 的 scoped 定义同值、ContentColumn 的 scoped 版覆盖了这里全部属性
+   （scoped 特异性更高），提为全局对二者零波及。 */
+
+/* 筛选条（时间线 / 关系图的参数条） */
+.filter-bar { display: flex; align-items: center; gap: var(--sp-2); }
+
+/* 操作结果提示（时间线的提取/删除 / 报告的生成/读取共用同一套提示位） */
+.extract-msg {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  /* 结果描述含绝对路径（长且无空格），必须允许任意位置折行，否则会撑破工具条 */
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.extract-msg.error { color: var(--danger); }
+
+/* 空态（时间线 / 报告 / 实体管理） */
+.empty-state { text-align: center; padding: var(--sp-10) 0; color: var(--text-tertiary); }
+.empty-state p { margin: 0 0 var(--sp-2); font-size: var(--fs-base); }
+.empty-state .hint { font-size: var(--fs-sm); }
+
+/* ─── 关系图舞台共用原语（全局工具类）────────────────────────────────────────
+   原为 ResearchGraphTab 的 scoped 样式；主屏关系图视图（GraphView）出现后
+   成为两个组件共用，按「≥2 组件用就提升全局」的约定搬到这里。 */
+
+/* 参数条：时间窗 / 最小共现数 / 统计文案 / 重算按钮（主屏视图另加返回按钮） */
+.graph-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+/* 统计文案：节点数 / 边数 / 参与扫描的文章数 */
+.graph-stat {
+  font-size: var(--fs-sm);
+  color: var(--text-tertiary);
+}
+
+/* 计算失败提示 */
+.graph-error {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}
+
+/* 画布舞台：flex:1 + min-height:0 是画布能在容器内正确收缩的关键；
+   min-height 兜底：容器很矮时不至于把图画成一条缝 */
+.graph-stage {
+  flex: 1;
+  min-height: 260px;
+  display: flex;
+}
+
+/* 画布与状态占位都直接铺满舞台：`.state-block` 自身只按内容撑高，
+   不加这条会让空态缩在左上角，与加载完成后铺满的画布形成跳版 */
+.graph-stage > * {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ─── 未读数角标（全局工具类）─────────────────────────────────────────────────
+   侧边栏三个位置共用（FeedListItem 条目行 / FeedPanel 文件夹分组头 / 标签行），
+   故从 FeedPanel 的 scoped 提升为全局。纯数字 + 主色，不用 pill 背景。 */
+.feed-item-count {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-pill);
+  background: var(--primary-soft);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--primary);
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─── 列表状态占位（空 / 错误）────────────────────────────────────────────────
+   订阅栏与文章列表的空态、无结果态此前只有裸文字（部分类名甚至没有任何样式定义），
+   与已实现的骨架屏风格割裂。这里统一：居中 + 三级文字色 + 标志位，
+   三个列表共用同一套状态表达。 */
+.state-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-15);
+  padding: var(--sp-12) var(--sp-6);
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+/* 状态区的品牌标志位：只给主空状态用（小尺寸列表不放，避免过度使用） */
+.state-logo {
+  margin-bottom: var(--sp-05);
+  opacity: 0.85;
+  line-height: 0;
+}
+/* 补充引导：主文案下方的次级说明，用三级文字色后退一档 */
+.state-hint {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  opacity: 0.8;
+}
+/* 错误态：语义色优先于中性灰，让"出错了"和"这里是空的"在余光里就能区分 */
+.state-block.is-error { color: var(--danger); }
+
+/* ─── 标签 chip（全局工具类）──────────────────────────────────────────────────
+   标签的颜色由后端存"颜色名"，调用方通过内联自定义属性 `--tag-c`（见 `stores/tags.ts`
+   的 `tagColorVar`）注入实际色值；这里只定义形状与排版，不写任何字面色值。
+   缺省回退到中性 slate，保证"新建时未选色"的标签也有确定外观，
+   而不是让 `var(--tag-c)` 落空导致整条 background 声明作废。 */
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 96px;
+  height: 16px;
+  padding: 0 var(--sp-05);
+  border-radius: var(--r-pill);
+  background: var(--tag-c, var(--tone-slate));
+  color: var(--tone-fg);
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+/* 「+N」折叠 chip：不承载标签本身，用中性填充与次级文字色退出视觉竞争 */
+.tag-chip-more {
+  background: var(--fill-secondary);
+  color: var(--text-secondary);
+}
+
+::selection {
+  background: var(--primary-fg);
+}
+
+/* Responsive Layout */
+@media (max-width: 1024px) {
+  /* 窄屏下列布局退化为抽屉/堆叠，分隔条拖拽无意义，故隐藏 */
+  .col-resizer {
+    display: none;
+  }
+  .feed-panel {
+    position: fixed;
+    left: -220px;
+    top: var(--tb-h);
+    bottom: 0;
+    z-index: 400;
+    transition: left 0.25s ease;
+    box-shadow: 2px 0 8px rgba(0,0,0,0.1);
+  }
+  .feed-panel.open {
+    left: 0;
+  }
+}
+
+@media (min-width: 769px) and (max-width: 1024px) {
+  .feed-panel {
+    width: 180px;
+  }
+}
+
+@media (max-width: 768px) {
+  .feed-item, .article-item {
+    padding: var(--sp-3) var(--sp-4);
+    min-height: 48px;
+  }
+}
+
+.panel-overlay {
+  position: fixed;
+  inset: var(--tb-h) 0 0 0;
+  background: rgba(0,0,0,0.3);
+  z-index: 250;
+  display: none;
+}
+
+.panel-overlay.show {
+  display: block;
+}

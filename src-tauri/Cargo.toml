@@ -1,0 +1,44 @@
+[package]
+name = "readflow"
+version = "0.1.0"
+description = "A local-first AI RSS reader"
+authors = ["greatshieh"]
+license = "MIT"
+rust-version = "1.70"
+edition = "2021"
+
+[lib]
+name = "readflow_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0.0", features = [] }
+
+[dependencies]
+# tray-icon：系统托盘图标（src/tray.rs）
+# image-png：让 tauri::image::Image 具备 PNG 解码能力，托盘图标用 from_bytes 读取
+tauri = { version = "2.0.0", features = ["tray-icon", "image-png"] }
+tauri-plugin-shell = "2.0.0"
+# dialog：导出 OPML / 数据库备份时弹系统「另存为」对话框，让用户自选保存路径。
+# 仅在 Rust 侧调用（见 lib.rs::pick_save_path），因此无需在 capabilities 里授权——
+# 不授权反而更安全：WebView 无法自行弹出文件对话框。
+tauri-plugin-dialog = "2.0.0"
+# notification：应用在后台时发送系统通知（刷新到新文章 / 自动化任务结束，见 src/notify.rs）。
+# 同样只在 Rust 侧调用，故 capabilities 不授权。
+# **版本必须精确锁在 2.4.0**：2.5 起要求 tauri ^2.12，而本项目的 tauri 锁在 2.11.6。
+# 若写成 "2.4"（等价 ^2.4），cargo 会取最高的 2.5.1 并顺手把整个 Tauri 框架升到 2.12，
+# 那是一次未经验证的全量重编。2.4.0 要求 tauri ^2.10，与当前锁定版本相容。
+tauri-plugin-notification = "=2.4.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "chrono", "macros"] }
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+chrono = { version = "0.4", features = ["serde"] }
+url = "2.5"
+rss = "2.0"
+tokio-cron-scheduler = "0.10"
+uuid = "1"
+dirs = "5.0"
+quick-xml = "0.31"
+ammonia = "4"
