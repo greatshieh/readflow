@@ -1,14 +1,17 @@
 //! Tauri 命令入口点 - 前端与 Rust 后端之间的 IPC 边界
 //!
 //! # 职责
-//! 本模块是整个后端的**唯一对外 API 层**，[`tauri::generate_handler!`] 中共注册 **77 个命令**，
-//! 按业务域分为十九组（下方清单需与 [`run`] 里的 `generate_handler!` 保持一致，增删命令时同步）：
+//! 本模块是整个后端的**唯一对外 API 层**，[`tauri::generate_handler!`] 中共注册 **88 个命令**，
+//! 按业务域分为二十组（下方清单需与 [`run`] 里的 `generate_handler!` 保持一致，增删命令时同步）：
+//! 注意 `ai_generate_summary` 同时属于 Feed AI 配置组与 AI 组，下方清单按两组各计一次，
 //! - Feed 命令（11）：[`feeds_list`] / [`feeds_add`] / [`feeds_update`] / [`feeds_delete`] /
 //!   [`feeds_refresh`] / [`feeds_refresh_one`] / [`feeds_import_opml`] / [`feeds_export_opml`] /
 //!   [`feeds_backfill_icons`] / [`feeds_set_folder`] / [`feeds_auto_group`]
+//! - Feed AI 配置命令（5）：[`feed_ai_configs_list`] / [`feed_ai_config_get`] /
+//!   [`feed_ai_config_save`] / [`feed_ai_config_delete`] / [`ai_generate_summary`]（已含配方优先逻辑）
 //! - 文件夹命令（4）：[`folders_list`] / [`folders_create`] / [`folders_update`] / [`folders_delete`]
-//! - Article 命令（9）：[`articles_list`] / [`article_get`] / [`article_read`] / [`article_set_read`] /
-//!   [`article_set_progress`] / [`article_bookmark`] / [`articles_unread_count`] /
+//! - Article 命令（10）：[`articles_list`] / [`article_get`] / [`article_read`] / [`article_set_read`] /
+//!   [`article_set_progress`] / [`article_bookmark`] / [`article_preference_set`] / [`articles_unread_count`] /
 //!   [`articles_mark_all_read`] / [`articles_search`]
 //! - 高亮命令（3）：[`highlights_list`] / [`highlights_create`] / [`highlights_delete`]
 //! - 标签命令（5）：[`tags_list`] / [`tags_create`] / [`tags_update`] / [`tags_delete`] /
@@ -22,8 +25,10 @@
 //! - 实体管理命令（5）：[`entities_list`] / [`entities_create`] / [`entities_delete`] /
 //!   [`entities_toggle`] / [`entity_graph`]
 //! - 智能评分命令（2）：[`score_articles`] / [`high_score_articles`]
-//! - 研究事件命令（5）：[`research_extract_article`] / [`research_extract_batch`] /
-//!   [`research_events_by_article`] / [`research_events_timeline`] / [`research_event_delete`]
+//! - 研究事件命令（11）：[`research_extract_article`] / [`research_extract_batch`] /
+//!   [`research_events_by_article`] / [`research_events_timeline`] / [`research_event_delete`] /
+//!   [`event_sentiment_get`] / [`financial_data_list`] / [`financial_data_list_by_entity`] /
+//!   [`entity_sentiment`] / [`entity_articles`] / [`research_cross_reference`]（多源交叉验证）
 //! - 研究报告命令（3）：[`research_report_generate`] / [`research_reports_list`] / [`research_report_read`]
 //! - 自动化任务命令（6）：[`automation_tasks_list`] / [`automation_tasks_create`] /
 //!   [`automation_tasks_update`] / [`automation_tasks_delete`] / [`automation_tasks_set_enabled`] /
@@ -84,7 +89,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 pub use db::{
     Feed, Article, ArticleSort, Setting, FilterRule, Folder, Highlight, Entity, ResearchEvent,
-    AutomationTask, EventWithContext, Tag, EntityGraph, GraphNode, GraphEdge,
+    AutomationTask, EventWithContext, Tag, EntityGraph, GraphNode, GraphEdge, FeedAiConfig,
+    EventSentiment, FinancialData,
 };
 use std::sync::LazyLock;
 use chrono::Utc;
@@ -308,6 +314,11 @@ pub fn run() {
             feeds_backfill_icons,
             feeds_set_folder,
             feeds_auto_group,
+            // Feed AI 配置（配方系统）
+            feed_ai_configs_list,
+            feed_ai_config_get,
+            feed_ai_config_save,
+            feed_ai_config_delete,
             folders_list,
             folders_create,
             folders_update,
@@ -322,6 +333,7 @@ pub fn run() {
             article_bookmark,
             articles_unread_count,
             articles_search,
+            article_preference_set,
             highlights_list,
             highlights_create,
             highlights_delete,
@@ -379,6 +391,12 @@ pub fn run() {
             research_events_by_article,
             research_events_timeline,
             research_event_delete,
+            event_sentiment_get,
+            financial_data_list,
+            financial_data_list_by_entity,
+            entity_sentiment,
+            entity_articles,
+            research_cross_reference,
             // 自动化任务命令
             automation_tasks_list,
             automation_tasks_create,
@@ -866,6 +884,62 @@ async fn feeds_auto_group() -> Result<grouping::GroupResult, String> {
     let pool = db_pool().await.map_err(|e| e.to_string())?;
     grouping::auto_group(&pool).await
 }
+
+// ─── Feed AI 配置命令（配方系统）────────────────────────────────────────────────
+
+/// 列出全部订阅源的 AI 配置
+///
+/// # 返回值
+/// 配置列表，按 feed_id 升序排列
+#[tauri::command]
+async fn feed_ai_configs_list() -> Result<Vec<db::FeedAiConfig>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    db::Feed::list_ai_configs(&pool).await
+}
+
+/// 获取单个订阅源的 AI 配置
+///
+/// 若该源尚未配置，返回空默认值（所有 prompt 字段为空串，language 为 "auto"）。
+///
+/// # 参数
+/// * `feed_id` - 订阅源 ID
+///
+/// # 返回值
+/// 配置对象
+#[tauri::command]
+async fn feed_ai_config_get(feed_id: i64) -> Result<db::FeedAiConfig, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    db::Feed::get_ai_config(&pool, feed_id).await
+}
+
+/// 保存（或新建）订阅源的 AI 配置
+///
+/// 采用 UPSERT 语义：已存在则更新，不存在则插入新行。
+///
+/// # 参数
+/// * `config` - 完整配置对象（`id` 可传 0 表示新建）
+///
+/// # 返回值
+/// 写入后的行 ID
+#[tauri::command]
+async fn feed_ai_config_save(config: db::FeedAiConfig) -> Result<i64, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    db::Feed::save_ai_config(&pool, config.feed_id, &config).await
+}
+
+/// 删除订阅源的 AI 配置（恢复到全局默认）
+///
+/// 行不存在时静默成功（幂等）。
+///
+/// # 参数
+/// * `feed_id` - 订阅源 ID
+#[tauri::command]
+async fn feed_ai_config_delete(feed_id: i64) -> Result<(), String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    db::Feed::delete_ai_config(&pool, feed_id).await
+}
+
+// ─── Filter Commands ────────────────────────────────────────────────────────────
 
 /// 列出全部过滤规则（设置页管理用）
 ///
@@ -1366,10 +1440,11 @@ async fn articles_list(
     sort: Option<String>,
     limit: i64,
     offset: i64,
+    user_preference: Option<String>,
 ) -> Result<Vec<Article>, String> {
     let pool = db_pool().await.map_err(|e| e.to_string())?;
     let sort = ArticleSort::from_key(sort.as_deref().unwrap_or("latest"));
-    Article::list_by_feed(&pool, feed_id, tag_id, bookmarked, unread, sort, limit, offset).await
+    Article::list_by_feed(&pool, feed_id, tag_id, bookmarked, unread, sort, limit, offset, user_preference.as_deref()).await
 }
 
 /// 获取文章详情
@@ -1420,6 +1495,24 @@ async fn article_read(id: i64) -> Result<(), String> {
 async fn article_bookmark(id: i64) -> Result<bool, String> {
     let pool = db_pool().await.map_err(|e| e.to_string())?;
     Article::toggle_bookmark(&pool, id).await
+}
+
+/// 设置文章的用户偏好标记（喜欢/跳过/取消）
+///
+/// 用户点击文章列表中的 👍/👎 按钮时触发，后端将结果写入 `articles.user_preference`。
+/// 该字段参与列表过滤（`user_preference: Option<&str>`），`like` 文章会被**提升排序权重**，
+/// `skip` 文章会被**降权或隐藏**，具体由前端 `viewFilter` 决定展示逻辑。
+///
+/// # 参数
+/// * `id` - 文章 ID
+/// * `preference` - `"like"`（喜欢）/ `"skip"`（跳过）/ `""`（取消标记）
+///
+/// # 错误
+/// 文章不存在、数据库写入失败、或 preference 非法时返回错误信息
+#[tauri::command]
+async fn article_preference_set(id: i64, preference: String) -> Result<(), String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    Article::set_user_preference(&pool, id, &preference).await
 }
 
 /// 统计未读文章数（可按订阅源 / 标签限定范围）
@@ -1906,10 +1999,52 @@ async fn ai_generate_summary(
         model,
     };
 
+    // 取文章：与 ai::generate_summary 共用同一套 SELECT，确保 entity_score / summary 都可用
+    let article = sqlx::query_as::<_, Article>(
+        "SELECT * FROM articles WHERE id = ? LIMIT 1"
+    )
+    .bind(article_id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or("Article not found")?;
+
+    // 读取该订阅源的 AI 配置（若不存在则返回空默认，所有字段为空串意味着走全局默认）
+    let feed_cfg = match db::Feed::get_ai_config(&pool, article.feed_id).await {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("读取 Feed AI 配置失败: {}", e);
+            db::FeedAiConfig {
+                id: 0,
+                feed_id: article.feed_id,
+                summary_prompt: String::new(),
+                extract_prompt: String::new(),
+                language: "auto".to_string(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            }
+        }
+    };
+
+    // 把 HTML 正文剥成纯文本：RSS 入库时 content 是 HTML，
+    // 直接送模型既浪费 token 又会让翻译把标签打乱
+    let raw = format!("{}\n\n{}", article.summary, article.content);
+    let content = ai::html_to_text(&raw);
+
+    // 若该源配了自定义摘要 prompt，优先用它；否则沿用全局默认
+    let summary_prompt = if !feed_cfg.summary_prompt.trim().is_empty() {
+        format!("{}\n\n{}", feed_cfg.summary_prompt.trim(), content)
+    } else {
+        format!(
+            "请为以下文章生成一段100字以内的摘要，要求简洁明了，突出核心内容：\n\n{}",
+            content
+        )
+    };
+
     // 把模型吐出的每一批增量转发成事件；requestId 由前端生成并回传，
     // 前端据此丢弃上一轮请求的迟到事件（例如连续点两次「重新生成」）
     let sink = delta_sink(app_handle, request_id, "summary", article_id);
-    ai::generate_summary(&pool, article_id, &provider, &sink).await
+    ai::generate_summary_custom(&pool, article_id, &provider, &summary_prompt, &sink).await
 }
 
 /// 翻译文章内容
@@ -2429,7 +2564,38 @@ async fn research_extract_article(
     let pool = db_pool().await.map_err(|e| e.to_string())?;
     let provider_id = provider_id.unwrap_or_else(|| "agnes".to_string());
     let provider = ai::load_provider(&pool, &provider_id).await?;
-    let events = research::extract::extract_article(&pool, article_id, &provider).await?;
+    // 先取文章，拿到 feed_id 以便读取该源的 AI 配置
+    let article = sqlx::query_as::<_, Article>("SELECT * FROM articles WHERE id = ? LIMIT 1")
+        .bind(article_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or(format!("文章不存在: {}", article_id))?;
+    // 读取该订阅源的 AI 配置，若配了自定义提取 prompt 则优先使用
+    let feed_cfg = match db::Feed::get_ai_config(&pool, article.feed_id).await {
+        Ok(cfg) => cfg,
+        Err(_) => db::FeedAiConfig {
+            id: 0,
+            feed_id: article.feed_id,
+            summary_prompt: String::new(),
+            extract_prompt: String::new(),
+            language: "auto".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        },
+    };
+    let custom_prompt = if !feed_cfg.extract_prompt.trim().is_empty() {
+        Some(feed_cfg.extract_prompt.trim())
+    } else {
+        None
+    };
+    let events = research::extract::extract_article(
+        &pool,
+        article_id,
+        &provider,
+        custom_prompt,
+    )
+    .await?;
     let inserted = research::normalize::normalize_and_store_events(
         &pool,
         article_id,
@@ -2520,6 +2686,95 @@ async fn research_event_delete(event_id: i64) -> Result<(), String> {
     let pool = db_pool().await.map_err(|e| e.to_string())?;
     ResearchEvent::delete(&pool, event_id).await?;
     Ok(())
+}
+
+/// 查询单条事件的情感分析结果
+///
+/// # 参数
+/// * `event_id` - 事件 ID
+///
+/// # 返回值
+/// 情感分析数据；不存在时返回空 JSON 对象
+#[tauri::command]
+async fn event_sentiment_get(event_id: i64) -> Result<Option<EventSentiment>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    EventSentiment::get_by_event_id(&pool, event_id).await
+}
+
+/// 查询指定文章的所有财务数据
+///
+/// # 参数
+/// * `article_id` - 文章 ID
+///
+/// # 返回值
+/// 该文章的财务指标列表
+#[tauri::command]
+async fn financial_data_list(article_id: i64) -> Result<Vec<FinancialData>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    FinancialData::list_by_article(&pool, article_id).await
+}
+
+/// 查询指定实体的所有财务数据（按时间倒序）
+///
+/// # 参数
+/// * `entity_id` - 实体 ID
+///
+/// # 返回值
+/// 该实体的财务指标历史列表
+#[tauri::command]
+async fn financial_data_list_by_entity(entity_id: i64) -> Result<Vec<FinancialData>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    FinancialData::list_by_entity(&pool, entity_id).await
+}
+
+/// 查询指定实体的最新情感分析数据
+///
+/// # 参数
+/// * `entity_id` - 实体 ID
+///
+/// # 返回值
+/// 该实体关联事件的最新情感状态，不存在时返回 null
+#[tauri::command]
+async fn entity_sentiment(entity_id: i64) -> Result<Option<EventSentiment>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    EventSentiment::get_by_entity(&pool, entity_id).await
+}
+
+/// 查询指定实体的关联文章列表
+///
+/// # 参数
+/// * `entity_id` - 实体 ID
+///
+/// # 返回值
+/// 该实体关联的文章预览列表（标题 + 链接）
+#[tauri::command]
+async fn entity_articles(entity_id: i64) -> Result<Vec<db::ArticlePreview>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    db::ResearchEvent::list_articles_by_entity(&pool, entity_id, 50).await
+}
+
+/// 多源交叉验证：查询某实体在不同订阅源中的报道（同一事件的来源差异并列展示）
+///
+/// 见 [`db::ResearchEvent::list_cross_reference`]：一次 JOIN 取回事件本体 +
+/// 来源文章标题/链接 + 订阅源名称 + 情感倾向，前端据此并列对比各来源对
+/// 同一实体的报道口径。
+///
+/// # 参数
+/// * `entity_id` - 实体 ID
+/// * `days` - 时间窗（按事件入库时间过滤）；`null` 或 `<= 0` 表示不限时间
+///
+/// # 返回值
+/// 按事件入库时间倒序的 [`db::CrossReferenceEntry`] 列表（上限 50 条）
+///
+/// # 错误
+/// 数据库查询失败时返回错误信息
+#[tauri::command]
+async fn research_cross_reference(
+    entity_id: i64,
+    days: Option<i64>,
+) -> Result<Vec<db::CrossReferenceEntry>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    db::ResearchEvent::list_cross_reference(&pool, entity_id, days.unwrap_or(0), 50).await
 }
 
 // ─── 自动化任务命令 ───────────────────────────────────────────────────────────

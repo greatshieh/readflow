@@ -39,7 +39,7 @@ import { useFeedsStore } from './feeds'
 import { newRequestId } from '@/utils/requestId'
 
 /** 视图筛选类型：全部 / 未读 / 书签 */
-export type ViewFilter = 'all' | 'unread' | 'bookmarked'
+export type ViewFilter = 'all' | 'unread' | 'bookmarked' | 'liked' | 'skipped'
 
 /**
  * 列表排序方式
@@ -177,6 +177,12 @@ export const useArticlesStore = defineStore('articles', () => {
       list = list.filter((a) => !a.is_read)
     } else if (viewFilter.value === 'bookmarked') {
       list = list.filter((a) => a.is_bookmarked)
+    } else if (viewFilter.value === 'liked') {
+      // 偏好过滤同书签/未读：后端已过滤，这里是切视图即时反馈与
+      // 单篇标记变化的即时移出兜底（见上方注释）
+      list = list.filter((a) => a.user_preference === 'like')
+    } else if (viewFilter.value === 'skipped') {
+      list = list.filter((a) => a.user_preference === 'skip')
     }
 
     return list
@@ -190,7 +196,7 @@ export const useArticlesStore = defineStore('articles', () => {
   /**
    * 设置视图筛选条件
    *
-   * @param v - 'all' | 'unread' | 'bookmarked'
+   * @param v - 'all' | 'unread' | 'bookmarked' | 'liked' | 'skipped'
    * @returns 无返回值；副作用为更新 `viewFilter` 并联动 `displayArticles`
    */
   function setViewFilter(v: ViewFilter) {
@@ -246,7 +252,10 @@ export const useArticlesStore = defineStore('articles', () => {
         unread: viewFilter.value === 'unread',
         sort: sortMode.value,
         limit,
-        offset
+        offset,
+        // 用户偏好过滤（后端对称语义）：'like' = 只显示喜欢的，'skip' = 只显示跳过的
+        // （便于检查与纠正错标文章；与书签/未读同理必须后端过滤，散落历史时前端必漏）
+        userPreference: viewFilter.value === 'liked' ? 'like' : viewFilter.value === 'skipped' ? 'skip' : null
       })
       if (offset === 0) {
         articles.value = data
@@ -367,6 +376,33 @@ export const useArticlesStore = defineStore('articles', () => {
     } catch (e) {
       console.error('切换收藏状态失败:', e)
       return false
+    }
+  }
+
+  /**
+   * 设置文章的用户偏好标记（喜欢/跳过/取消）
+   *
+   * 用户点击文章列表中的 👍/👎 按钮时触发。
+   * 乐观更新本地状态，避免闪烁；失败时静默忽略（不影响列表展示）。
+   *
+   * @param id - 文章 ID
+   * @param preference - 'like' | 'skip' | null（null 表示取消标记）
+   */
+  async function setPreference(id: number, preference: 'like' | 'skip' | null): Promise<void> {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      const prefValue = preference ?? ''
+      await invoke<void>('article_preference_set', { id, preference: prefValue })
+      // 乐观更新选中的文章
+      if (selectedArticle.value?.id === id) {
+        selectedArticle.value.user_preference = preference
+      }
+      // 同步更新列表中对应文章（若已加载）
+      const list = articles.value
+      const idx = list.findIndex(a => a.id === id)
+      if (idx !== -1) list[idx].user_preference = preference
+    } catch (e) {
+      console.error('设置偏好失败:', e)
     }
   }
 
@@ -734,6 +770,7 @@ export const useArticlesStore = defineStore('articles', () => {
     setProgress,
     markAllRead,
     toggleBookmark,
+    setPreference,
     generateSummary,
     generateTranslation,
     searchResults,

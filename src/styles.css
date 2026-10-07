@@ -67,6 +67,9 @@
   --entity-strategy: var(--tone-sky);
   --entity-competition: var(--tone-violet);
   --entity-industry_signal: var(--tone-slate);
+  /* 情感徽标的「中性」色：此前 `.eg-sentiment-neutral` 等三处引用了未定义的
+     --entity-other，整条 background 声明被静默作废（var 未定义规则），补上正式定义。 */
+  --entity-other: var(--tone-slate);
 
   /* ── 危险色（语义色，不随强调色预设变化）──
      此前项目里从未定义过 --danger / --danger-fg，各组件只能写

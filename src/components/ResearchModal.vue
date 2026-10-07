@@ -23,8 +23,20 @@
       </nav>
     </aside>
 
-    <!-- 右列：页签内容区（四个页签的根元素都带 class="m-body"，占满右列） -->
+    <!-- 右列：固定标题栏 + 滚动内容区 -->
     <div class="side-main">
+      <!-- 固定标题栏：页签名称居中，关闭按钮在右侧，不随内容滚动 -->
+      <div class="m-titlebar">
+        <span class="m-titlebar-title">{{ tabTitle }}</span>
+        <button class="btn-icon" @click="close" aria-label="关闭" title="关闭">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+
+      <!-- 右列：页签内容区（四个页签的根元素都带 class="m-body"，占满右列） -->
       <!-- 四个页签一律 v-show 常驻挂载（不是 v-if）：各页签的筛选参数
            （时间窗 / 实体筛选 / 报告类型与天数 / 关系图参数）在拆分前的单组件里
            天然跨页签、跨开关持久，v-if 会在每次切换时把这些状态连同 DOM 一起丢掉。
@@ -66,7 +78,7 @@
  *    `entities-changed`，外壳以 `graphEpoch` 计数转交关系图页签，
  *    由后者在自己可见时决定是否重算（不在用户看实体列表时后台全库扫描）。
  */
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import BaseModal from './BaseModal.vue'
 import ResearchTimelineTab from './ResearchTimelineTab.vue'
 import ResearchReportsTab from './ResearchReportsTab.vue'
@@ -94,6 +106,17 @@ const tab = ref<'timeline' | 'reports' | 'entities' | 'graph'>('timeline')
 
 /** 实体变更纪元：实体页签每变更一次 +1，关系图页签据此判断"图是否过期" */
 const graphEpoch = ref(0)
+
+/** 标题栏显示的页签名称 */
+const tabTitle = computed(() => {
+  const titles: Record<string, string> = {
+    timeline: '事件时间线',
+    reports: '研究报告',
+    entities: '实体管理',
+    graph: '关系图',
+  }
+  return titles[tab.value] ?? '研究工作台'
+})
 
 // 打开时确保实体列表已加载：时间线的实体筛选下拉依赖它（可能尚未加载过）
 watch(
@@ -182,10 +205,42 @@ function expandGraph() {
   display: flex;
   flex-direction: column;
 }
+/* 固定标题栏：不随内容滚动，关闭按钮在右侧 */
+.m-titlebar {
+  height: 40px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--sp-5);
+  border-bottom: 1px solid var(--border);
+}
+.m-titlebar-title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.btn-icon {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: none;
+  border-radius: var(--r-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  transition: all 0.15s;
+}
+.btn-icon:hover {
+  background: var(--fill);
+  color: var(--text-primary);
+}
 .m-body {
   /* 顶部额外预留 BaseModal side 布局右上角关闭钮的高度（--side-close-reserve），
      参数条 / 工具条等首行内容不再顶进按钮区被遮挡 */
-  padding: calc(var(--sp-4) + var(--side-close-reserve, 48px)) var(--sp-5) var(--sp-4);
+  padding: var(--sp-2) var(--sp-5) var(--sp-4);
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);

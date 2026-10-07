@@ -64,22 +64,30 @@ industry_signal（行业信号）
 4. event_date 为事件发生日期（YYYY-MM-DD）；原文未明确提到日期时留空字符串
 5. canonical_name 为实体规范名（用最通用的完整名称）；\
 aliases 列出文中出现的其他写法；entity_type 从 company/person/product/industry/other 中选择
-6. 文章中没有可抽取的事件时输出 {{\"events\": []}}；某个维度没有事实就不要编造
+6. sentiment 判断事件对市场的影响倾向（positive/negative/neutral），置信度 0-1
+7. 若文章涉及财务数据（营收、利润、增长率等），提取 financial_metrics 列表，每项为键值对
+8. 文章中没有可抽取的事件时输出 {{\"events\": []}}；某个维度没有事实就不要编造
 
 输出格式（只输出 JSON，不要任何其他文字或代码围栏）：
 {{\"events\": [{{\"canonical_name\": \"...\", \"aliases\": [\"...\"], \
 \"entity_type\": \"company\", \"event_type\": \"product\", \
-\"event_date\": \"2026-09-20\", \"fact\": \"...\", \"evidence\": \"...\"}}]}}
+\"event_date\": \"2026-09-20\", \"fact\": \"...\", \"evidence\": \"...\", \
+\"sentiment\": \"positive\", \"sentiment_confidence\": 0.85, \
+\"financial_metrics\": [[\"metric_key\", \"metric_value\"]}}]}}
 
 示例：
 文章：OpenAI 宣布以 30 亿美元收购 io Devices，CEO 奥特曼称将进军硬件领域。
 输出：{{\"events\": [{{\"canonical_name\": \"OpenAI\", \"aliases\": [], \
 \"entity_type\": \"company\", \"event_type\": \"ma\", \"event_date\": \"\", \
 \"fact\": \"OpenAI 以30亿美元收购io Devices\", \
-\"evidence\": \"OpenAI 宣布以 30 亿美元收购 io Devices\"}}, \
+\"evidence\": \"OpenAI 宣布以 30 亿美元收购 io Devices\", \
+\"sentiment\": \"positive\", \"sentiment_confidence\": 0.9, \
+\"financial_metrics\": [[\"acquisition_price\", \"30亿美元\"]}}, \
 {{\"canonical_name\": \"OpenAI\", \"aliases\": [], \"entity_type\": \"company\", \
 \"event_type\": \"strategy\", \"event_date\": \"\", \
-\"fact\": \"OpenAI 将进军硬件领域\", \"evidence\": \"奥特曼称将进军硬件领域\"}}]}}
+\"fact\": \"OpenAI 将进军硬件领域\", \"evidence\": \"奥特曼称将进军硬件领域\", \
+\"sentiment\": \"neutral\", \"sentiment_confidence\": 0.7, \
+\"financial_metrics\": []}}]}}
 
 现在处理以下文章。
 
@@ -175,6 +183,7 @@ fn validate_events(events: Vec<ExtractedEvent>) -> Vec<ExtractedEvent> {
 /// * `pool` - 数据库连接池
 /// * `article_id` - 文章 ID
 /// * `provider` - AI 提供商配置
+/// * `custom_extract_prompt` - 可选的自定义提取 prompt；若为空则使用默认 prompt
 ///
 /// # 返回值
 /// 校验通过的事件列表；文章无内容或模型无可抽取事件时为空列表
@@ -185,6 +194,7 @@ pub async fn extract_article(
     pool: &SqlitePool,
     article_id: i64,
     provider: &ai::AIProvider,
+    custom_extract_prompt: Option<&str>,
 ) -> Result<Vec<ExtractedEvent>, String> {
     let article = sqlx::query_as::<_, Article>("SELECT * FROM articles WHERE id = ? LIMIT 1")
         .bind(article_id)
@@ -203,7 +213,11 @@ pub async fn extract_article(
         text
     };
 
-    let prompt = build_extract_prompt(&article.title, &truncated);
+    let prompt = if let Some(custom) = custom_extract_prompt {
+        format!("{}\n\n现在处理以下文章。\n\n标题：{}\n\n正文：\n{}", custom, article.title, truncated)
+    } else {
+        build_extract_prompt(&article.title, &truncated)
+    };
     let raw_output = ai::chat_completion(provider, &prompt, Some(0.1)).await?;
 
     let events = validate_events(parse_events_loose(&raw_output));
@@ -276,7 +290,7 @@ pub async fn extract_batch(
     let mut processed = 0usize;
     let mut total_events: u64 = 0;
     for article_id in candidates {
-        match extract_article(pool, article_id, provider).await {
+        match extract_article(pool, article_id, provider, None).await {
             Ok(events) => {
                 // 入库失败只影响本篇：标记留在未置位状态，下一轮会重试
                 match super::normalize::normalize_and_store_events(

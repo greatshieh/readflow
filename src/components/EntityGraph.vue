@@ -81,7 +81,16 @@
       :type-label="entityTypeLabel(focus.entity_type)"
       :article-count="focus.article_count"
       :neighbors="neighbors"
+      :sentiment="entitySentiment?.sentiment ?? null"
+      :sentiment-confidence="entitySentiment?.confidence ?? null"
+      :financials="entityFinancials"
+      :loading="entityDataLoading"
+      :selected-articles="selectedArticles"
+      :articles-loading="articlesLoading"
+      :cross-refs="crossRefs"
+      :cross-refs-loading="crossRefsLoading"
       @close="selectedId = null"
+      @select-neighbor="handleNeighborClick"
     />
 
     <p v-if="showHint" class="eg-hint">拖拽节点可固定位置 · 拖拽空白平移 · 滚轮缩放</p>
@@ -114,10 +123,11 @@
  */
 
 import { ref, computed, watch, onBeforeUnmount, onMounted, nextTick } from 'vue'
-import type { GraphNode, GraphEdge } from '@/types'
+import type { GraphNode, GraphEdge, EventSentiment, FinancialData, CrossReferenceEntry } from '@/types'
 import EntityGraphDetail from './EntityGraphDetail.vue'
 import { useGraphView } from '@/composables/useGraphView'
 import { ENTITY_LEGEND, entityTypeClass, entityTypeLabel } from '@/utils/entityLabels'
+import { invoke } from '@tauri-apps/api/core'
 
 const props = defineProps<{
   /** 图节点（后端 `entity_graph` 返回） */
@@ -204,6 +214,79 @@ const neighbors = computed(() => {
 
 /** 是否显示操作提示（有节点时才提示） */
 const showHint = computed(() => nodes.value.length > 0)
+
+// ─── 选中实体数据加载 ──────────────────────────────────────────────────────
+
+/** 选中实体的情感数据 */
+const entitySentiment = ref<EventSentiment | null | undefined>(undefined)
+
+/** 选中实体的财务数据 */
+const entityFinancials = ref<FinancialData[] | undefined>(undefined)
+
+/** 数据加载状态 */
+const entityDataLoading = ref(false)
+
+/** 选中的邻居实体文章列表 */
+const selectedArticles = ref<Array<{ id: number; title: string; link: string }>>([])
+
+/** 文章加载状态 */
+const articlesLoading = ref(false)
+
+/** 选中实体的多源交叉验证条目 */
+const crossRefs = ref<CrossReferenceEntry[] | undefined>(undefined)
+
+/** 交叉验证数据加载状态 */
+const crossRefsLoading = ref(false)
+
+/**
+ * 加载选中实体的情感、财务与多源交叉验证数据
+ *
+ * @param entityId - 实体 ID
+ */
+async function loadEntityData(entityId: number): Promise<void> {
+  entityDataLoading.value = true
+  crossRefsLoading.value = true
+  crossRefs.value = undefined
+  try {
+    const [sentiment, financials, refs] = await Promise.all([
+      invoke<EventSentiment | null>('entity_sentiment', { entityId }),
+      invoke<FinancialData[]>('financial_data_list_by_entity', { entityId }),
+      invoke<CrossReferenceEntry[]>('research_cross_reference', { entityId, days: 0 })
+    ])
+    entitySentiment.value = sentiment
+    entityFinancials.value = financials
+    crossRefs.value = refs
+  } catch (e) {
+    console.error('加载实体数据失败:', e)
+    entitySentiment.value = null
+    entityFinancials.value = []
+    crossRefs.value = []
+  } finally {
+    entityDataLoading.value = false
+    crossRefsLoading.value = false
+  }
+}
+
+/**
+ * 点击邻居实体：加载该实体的关联文章列表
+ *
+ * @param neighborId - 邻居实体 ID
+ */
+async function handleNeighborClick(neighborId: number): Promise<void> {
+  articlesLoading.value = true
+  selectedArticles.value = []
+  try {
+    const articles = await invoke<Array<{ id: number; title: string; link: string }>>(
+      'entity_articles', { entityId: neighborId }
+    )
+    selectedArticles.value = articles
+  } catch (e) {
+    console.error('加载文章失败:', e)
+    selectedArticles.value = []
+  } finally {
+    articlesLoading.value = false
+  }
+}
 
 // ─── 视觉映射 ────────────────────────────────────────────────────────────────
 
@@ -473,7 +556,16 @@ function isNeighbor(id: number): boolean {
  * @param id - 节点 ID
  */
 function toggleSelect(id: number): void {
-  selectedId.value = selectedId.value === id ? null : id
+  // 切换选中态并加载对应数据
+  if (selectedId.value === id) {
+    selectedId.value = null
+    entitySentiment.value = undefined
+    entityFinancials.value = undefined
+    crossRefs.value = undefined
+  } else {
+    selectedId.value = id
+    loadEntityData(id)
+  }
 }
 
 /**

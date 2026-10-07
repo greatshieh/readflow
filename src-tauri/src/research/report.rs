@@ -675,6 +675,8 @@ mod tests {
             created_at: Utc::now(),
             article_title: None,
             article_link: None,
+            sentiment: "neutral".to_string(),
+            sentiment_confidence: 0.0,
         }
     }
 

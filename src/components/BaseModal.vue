@@ -12,15 +12,6 @@
       :aria-label="title"
       tabindex="-1"
     >
-      <!-- side 布局自带右上角关闭钮：side 面板是「左 tab 列 + 右内容列」双列，
-           宿主没有横向贯通的头部可放关闭钮；按弹窗惯例固定在面板右上角（绝对定位），
-           各宿主无需重复实现。default 布局仍由宿主头部自管关闭钮。 -->
-      <button v-if="layout === 'side'" class="side-close" @click="emit('close')" aria-label="关闭" title="关闭">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="18" y1="6" x2="6" y2="18"></line>
-          <line x1="6" y1="6" x2="18" y2="18"></line>
-        </svg>
-      </button>
       <slot />
     </div>
   </div>
@@ -313,36 +304,11 @@ onBeforeUnmount(deactivate)
    写在 size-* 之后，靠同特异性后来居上的规则覆盖宽度。
    flex 方向改为 row：宿主在默认插槽里放「aside 左列 + 主区列」两个直接子元素。 */
 .base-modal.layout-side {
-  /* 关闭钮占位高度：top(--sp-3) + 28px 钮高 + 8px 间隙。
-     宿主的内容滚动区须把这个变量加进 padding-top，否则首行内容
-     （如设置-数据 tab 的统计卡）会顶进按钮区被遮挡。 */
+  /* 关闭钮占位高度：由宿主（SettingsModal / ResearchModal）的标题栏高度决定。
+     宿主的内容滚动区须把这个变量加进 padding-top，否则首行内容会被标题栏遮挡。 */
   --side-close-reserve: 48px;
   width: min(880px, 92vw);
   height: min(80vh, 720px);
   flex-direction: row;
-}
-/* side 布局的右上角关闭钮：悬浮在右列内容区之上（右列顶部通常是页签工具条，
-   留出的 padding 足够容纳 28px 的按钮；hover 浅底提示可点） */
-.side-close {
-  position: absolute;
-  top: var(--sp-3);
-  right: var(--sp-3);
-  width: 28px;
-  height: 28px;
-  border: none;
-  border-radius: var(--r-md);
-  background: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  color: var(--text-tertiary);
-  transition: all 0.15s;
-  /* 面板圆角内收，按钮贴角也不出界；盖在内容之上需要层级 */
-  z-index: 5;
-}
-.side-close:hover {
-  background: var(--fill);
-  color: var(--text-primary);
 }
 </style>
