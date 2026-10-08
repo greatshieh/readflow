@@ -6,6 +6,7 @@
   <div
     class="article-item"
     :class="{ active, unread: !article.is_read }"
+    :data-article-id="article.id"
     @click="emit('select', article)"
   >
     <div class="feed-item-info">
@@ -156,32 +157,18 @@ function onPreferenceClick(preference: 'like' | 'skip') {
   /* 外边距 4 → 6：卡片之间的间隙与两侧留白同步放大 */
   margin: 0 var(--sp-05) var(--sp-05);
   cursor: pointer;
-  transition: background var(--dur) var(--ease), box-shadow var(--dur) var(--ease),
-    transform var(--dur) var(--ease);
+  transition: transform var(--dur) var(--ease);
   position: relative;
-  /* 卡片化：圆角取缔原先贯穿整行的 1px 分隔线 */
+  /* z-index: 1 把条目抬到滑动胶囊（z-index: 0）之上，否则胶囊会盖住文字 */
+  z-index: 1;
+  /* 卡片化：圆角取代原先贯穿整行的 1px 分隔线 */
   border-radius: var(--r-lg);
 }
-.article-item:hover {
-  background: var(--fill);
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-sm);
-}
-/* 选中项浮起成一张小卡：比背景色变化更能表达"正在读这一篇" */
-.article-item.active {
-  background: var(--surface);
-  box-shadow: var(--shadow-hover);
-}
-.article-item.active::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 22%;
-  bottom: 22%;
-  width: 3px;
-  border-radius: var(--r-pill);
-  background: var(--primary);
-}
+/* hover 底色已移除：改由 ArticleColumn 里的 hover 胶囊表达（与选中胶囊同几何）。
+   连带移除原先的 translateY(-1px) 抬升：条目一旦位移，就与静止的胶囊错开，
+   抬升表达的那点"质感"不值得换来 hover 与 active 不对齐。
+   选中态的浮起卡面与左侧竖条也已移除，统一由琥珀胶囊表达。 */
+.article-item:active { transform: scale(0.985); }
 .article-item.unread .feed-item-title { font-weight: 600; }
 .article-item:not(.unread) .feed-item-title { color: var(--text-secondary); }
 

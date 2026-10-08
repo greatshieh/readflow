@@ -294,7 +294,9 @@ async function handleSaveAi() {
 }
 .manage-tab {
   flex: 1;
-  padding: var(--sp-25) var(--sp-3);
+  /* 原为 var(--sp-25)：该令牌从未定义（间距阶梯里只有 --sp-025 / --sp-05），
+     CSS 里 var(--未定义) 会让整条 padding 声明静默作废，表现为「内间距为 0」。 */
+  padding: var(--sp-05) var(--sp-3);
   font-size: var(--fs-sm);
   color: var(--text-secondary);
   background: none;

@@ -243,15 +243,20 @@ async function closeApp() {
   height: var(--tb-h);
   /* 主题化底色：--titlebar-bg 在浅色/深色两套变量集中分别取值（见 styles.css） */
   background: var(--titlebar-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  /* 玻璃化：与两侧面板同一套玻璃令牌，底色改用 --glass-2（比面板略实，层级更高）。
+     上下各一道内边缘——上方一道是玻璃对天光的高光，下方一道与内容区分界；
+     两道都靠 --glass-* 令牌，暗色主题下自动换成低透明度白线。 */
+  box-shadow:
+    inset 0 1px 0 var(--glass-hi),
+    inset 0 -1px 0 var(--glass-lo);
+  backdrop-filter: blur(16px) saturate(1.5);
+  -webkit-backdrop-filter: blur(16px) saturate(1.5);
   display: flex;
   align-items: center;
   padding: 0 var(--sp-3);
   gap: var(--sp-15);
   z-index: 500;
   user-select: none;
-  /* 浮岛布局下标题栏直接落在灰底上：去掉底边线并用毛玻璃与面板区域自然分隔 */
 }
 
 .titlebar-app {

@@ -3,7 +3,9 @@
        顶部是操作条组件与排序栏，下方是分组后的文章列表。
        列表行渲染见 ArticleListItem.vue，头部控件见 ArticleListToolbar.vue。
        窄屏（<=768px）下整列变为抽屉，由 showArticleList 控制滑出。 -->
-  <div class="article-column" :class="{ open: showArticleList }">
+  <div class="article-column pane-glow-host" :class="{ open: showArticleList }" ref="paneRef">
+    <!-- 跟随边框：靠近指针的那一侧亮起一段 -->
+    <div class="pane-frame" ref="frameRef" aria-hidden="true"></div>
     <!-- 顶部固定操作条：搜索 / 标签范围 / 仅未读 / 仅书签 / 刷新 / 全部已读 -->
     <ArticleListToolbar
       :active-tag="activeTag"
@@ -30,8 +32,14 @@
       @change-sort="changeSort"
     />
 
-    <!-- 文章条目列表：按当前排序方式渲染（时间序按日期分组，其它排序平铺） -->
-    <div class="article-body" v-if="articles.length > 0">
+    <!-- 文章条目列表：按当前排序方式渲染（时间序按日期分组，其它排序平铺）。
+         SelectCapsule 是选中态的唯一视觉载体（琥珀描边变体），必须与条目同处
+         .article-body 这个定位基准内，且渲染在条目之前。 -->
+    <div class="article-body" v-if="articles.length > 0" ref="articleBodyRef"
+         @mouseover="onListMouseOver"
+         @mouseout="onListMouseOut"
+    >
+      <SelectCapsule ref="articleCapsule" variant="accent" :container="() => articleBodyRef" />
       <template v-for="group in groupedArticles" :key="group.label">
         <div class="date-group-header" v-if="group.label">
           <!-- 色点只在标签分组（收藏夹）下出现；「未分类」是兜底桶，没有颜色可言 -->
@@ -50,6 +58,7 @@
           :key="article.id"
           :article="article"
           :active="selectedArticle?.id === article.id"
+          :data-article-id="article.id"
           @select="handleSelectArticle"
           @preference="handlePreference"
         />
@@ -107,7 +116,7 @@
  * 与视图筛选（书签 / 未读）合成一个可比较的字符串，避免一次切换触发两轮加载。
  */
 
-import { ref, watch, computed, onMounted, onUnmounted } from 'vue'
+import { ref, watch, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useArticlesStore, type ArticleSortKey } from '@/stores/articles'
 import { useFeedsStore } from '@/stores/feeds'
 import { useTagsStore } from '@/stores/tags'
@@ -117,6 +126,8 @@ import ArticleListItem from './ArticleListItem.vue'
 import ArticleListSkeleton from './ArticleListSkeleton.vue'
 import ArticleListToolbar from './ArticleListToolbar.vue'
 import ArticleSortBar from './ArticleSortBar.vue'
+import SelectCapsule from './SelectCapsule.vue'
+import { useCursorGlow } from '@/composables/useCursorGlow'
 import type { Feed, Article, Tag } from '@/types'
 
 
@@ -339,10 +350,120 @@ const groupedArticles = computed<ArticleGroup[]>(() => {
   return groupByDate(articles.value)
 })
 
-/** 选中文章：委托 store 标记已读并写入 selectedArticle；窄屏下收起抽屉 */
+/**
+ * 选中文章：委托 store 标记已读并写入 selectedArticle；窄屏下收起抽屉
+ *
+ * **不**在这里同步胶囊：`articlesStore.selectArticle` 是async（内部 await
+ * `loadArticle` 走一次 IPC），它的`selectedArticle` 赋值发生在若干微任务之后。
+ * 若在此处 `nextTick(syncCapsule)`，读到的 `.article-item.active` 还是**上一次**
+ * 选中的那项——高亮于是滞后一次点击。
+ *
+ * 胶囊同步统一交给下面的 watch（选中态的**唯一**监听点），这里只登记"本次变化
+ * 来自用户点击"，让那条路径决定用滑动而非瞬时落位。
+ *
+ * @param article - 被点击的文章
+ * @returns 无返回值
+ */
 function handleSelectArticle(article: Article) {
-  articlesStore.selectArticle(article.id)
+  // 先置意图再调用：selectArticle 可能在 await 之后的同一轮里就改变选中态
+  clickedRecently = true
+  void articlesStore.selectArticle(article.id)
   showArticleList.value = false
+}
+
+/**
+ * 选中态变化后的胶囊同步入口
+ *
+ * # 为什么 watch 是唯一路径
+ * 曾用「点击回调里同步 + watch 里跳过」的组合，结果**高亮滞后一次点击**：
+ * 点击回调的 nextTick 早于 selectArticle 的 await，读到的是旧选中项；
+ * 而真正拿到新选中项的 watch 恰好被标记跳过。两者正好互换。
+ *
+ * 改为只保留 watch 一条路径后，选中态与胶囊永远同源，不可能错位。
+ *
+ * # clickedRecently 的作用
+ * 仅用于决定**动效**而非**同步与否**：用户点击要"滑过去"，
+ * 命令面板跳转 / 外部赋值只需瞬时落位。消费后立即复位。
+ */
+let clickedRecently = false
+watch(
+  () => selectedArticle.value?.id,
+  () => {
+    const sliding = clickedRecently
+    clickedRecently = false
+    // 等active 类落位再测量：此时 selectedArticle 已是新值，
+    // querySelector('.article-item.active') 才能取到本次点击的那一项。
+    void nextTick(() => syncCapsule(sliding))
+  },
+)
+
+/** 文章列表滚动区（滑动胶囊的定位基准） */
+const articleBodyRef = ref<HTMLElement | null>(null)
+/** 面板根元素（光斑与跟随边框的宿主） */
+const paneRef = ref<HTMLElement | null>(null)
+/** 跟随边框层 */
+const frameRef = ref<HTMLElement | null>(null)
+/** 启用面板光斑跟随 + 靠近侧边框亮起 */
+useCursorGlow(paneRef, frameRef)
+/** 选中胶囊组件实例：把琥珀胶囊滑到当前正在读的那一篇 */
+const articleCapsule = ref<InstanceType<typeof SelectCapsule> | null>(null)
+
+/**
+ * 把选中胶囊同步到当前选中文章的位置
+ *
+ * 搜索 / 换排序 / 换范围都会让条目重排，这些是"布局已变、位置直接跳过去"的场景，
+ * 必须跳过过渡（否则用户会看到胶囊从旧位置慢慢飞过来，很像卡顿）；
+ * 只有点击选中才用带过渡的滑动。
+ *
+ * @param noTransition - 是否跳过过渡直接落位
+ * @returns 无返回值
+ */
+/**
+ * 把选中胶囊同步到当前选中文章的位置
+ *
+ * @param sliding - true 表示用户主动点击，胶囊滑动过去；
+ *   false 表示布局已变（换范围 / 换排序 / 搜索），瞬时落位。
+ *   默认 false：布局变化远比点击频繁，那些场景下带过渡会被看成卡顿。
+ * @returns 无返回值
+ */
+function syncCapsule(sliding = false) {
+  const body = articleBodyRef.value
+  const capsule = articleCapsule.value
+  if (!body || !capsule) return
+  capsule.sync(body.querySelector<HTMLElement>('.article-item.active'), sliding)
+}
+
+/**
+ * 指针移动时把 hover 胶囊跟到所在条目上
+ *
+ * 用捕获型事件委托而非逐条绑定：条目列表会随加载更多 / 换排序重排，
+ * 逐条绑定需要反复解绑重绑。`mouseover` 会冒泡故可委托，`mouseenter` 不行。
+ *
+ * @param e - 鼠标事件
+ * @returns 无返回值
+ */
+function onListMouseOver(e: MouseEvent) {
+  const body = articleBodyRef.value
+  const capsule = articleCapsule.value
+  if (!body || !capsule) return
+  capsule.hover((e.target as HTMLElement | null)?.closest<HTMLElement>('.article-item') ?? null)
+}
+
+/**
+ * 指针离开列表时隐藏 hover 胶囊
+ *
+ * 若只在 mouseover 里维护，指针移出列表后胶囊会停在最后一项上不消失。
+ *
+ * @param e - 鼠标事件；用 relatedTarget 区分"真离开"与"在列表内部移动"
+ * @returns 无返回值
+ */
+function onListMouseOut(e: MouseEvent) {
+  const body = articleBodyRef.value
+  const capsule = articleCapsule.value
+  if (!body || !capsule) return
+  const to = e.relatedTarget as Node | null
+  if (to && body.contains(to)) return
+  capsule.hover(null)
 }
 
 /**
@@ -439,7 +560,35 @@ watch(scopeKey, async () => {
   const feedId = articlesStore.tagFilterId !== null ? null : (feedsStore.selectedFeed?.id ?? null)
   await articlesStore.loadArticles(feedId)
   showArticleList.value = true
+  // 列表整体换掉了，胶囊要跟着落到新列表里当前选中的那一篇
+  void nextTick(() => syncCapsule())
 })
+
+/**
+ * 响应命令面板的跳转：把琥珀胶囊滑到目标文章并播一次定位脉冲
+ *
+ * 目标文章可能不在**当前已加载的分页**里（命令面板搜的是全库）。此时条目不存在，
+ * 只能把胶囊隐藏——正文区照样会渲染该文章，定位反馈由订阅栏那一侧承担。
+ *
+ * @param e - `command-palette-jump` 事件，detail 含 articleId
+ * @returns 无返回值
+ */
+function onPaletteJump(e: Event) {
+  const articleId = (e as CustomEvent<{ articleId: number }>).detail?.articleId
+  if (typeof articleId !== 'number') return
+  const body = articleBodyRef.value
+  const capsule = articleCapsule.value
+  if (!body || !capsule) return
+  const el = body.querySelector<HTMLElement>(`.article-item[data-article-id="${articleId}"]`)
+  if (!el) {
+    capsule.sync(null)
+    return
+  }
+  // 先滚进视野，否则用户看不到胶囊落在哪
+  el.scrollIntoView({ block: 'nearest' })
+  capsule.sync(el)
+  capsule.pulse()
+}
 
 /** 监听搜索框：输入后防抖 250ms 触发后端全文检索；清空时回落本地列表 */
 let searchTimer: ReturnType<typeof setTimeout> | undefined
@@ -466,9 +615,14 @@ function clearSearch() {
 
 /** 挂载时首次取数：未选中任何源时加载全部文章统一时间线（启动默认视图） */
 onMounted(async () => {
+  window.addEventListener('command-palette-jump', onPaletteJump)
   if (!feedsStore.selectedFeed) {
     await articlesStore.loadArticles(null)
   }
+})
+
+onUnmounted(() => {
+  window.removeEventListener('command-palette-jump', onPaletteJump)
 })
 </script>
 
@@ -476,16 +630,23 @@ onMounted(async () => {
 .article-column {
   /* 列宽可由拖拽分隔条调整（见 App.vue 的 .col-resizer），默认 360px，对齐 Folo 的 entryColWidth */
   width: var(--article-w, 360px);
-  /* 作为内部绝对定位元素（操作反馈浮层 .tb-toast）的定位基准 */
+  /* 作为内部绝对定位元素（操作反馈浮层 .tb-toast、滑动胶囊）的定位基准 */
   position: relative;
-  background: var(--surface);
+  /* 玻璃化：与订阅栏同一套玻璃令牌（--glass / --glass-hi / --glass-hair），
+     保证两块面板材质一致、看起来像同一片玻璃被裁成两块。 */
+  background: var(--glass);
+  backdrop-filter: blur(var(--blur)) saturate(1.5);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.5);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  /* 浮岛化：圆角 + 弱投影浮起 + 冷蓝 hairline 描边（分隔主要靠描边，投影只负责微浮起） */
   border-radius: var(--r-panel);
-  box-shadow: var(--shadow-panel);
-  border: 1px solid var(--panel-border);
+  box-shadow:
+    inset 0 1px 0 var(--glass-hi),
+    inset 0 -1px 0 var(--glass-lo),
+    0 2px 6px rgba(31, 45, 70, 0.05),
+    0 10px 30px rgba(31, 45, 70, 0.07);
+  border: 1px solid var(--glass-hair);
   height: 100%;
   overflow: hidden;
 }
@@ -543,12 +704,18 @@ onMounted(async () => {
 
 /* 列表滚动区：左侧补一个与滚动条等宽的内边距做"视觉配重"——
    滚动条只出现在右侧并占据 --sb-w 的宽度，若不补偿，卡片左边贴面板边、
-   右边却空出 13px，hover / active 的高亮块看起来就是偏左的。 */
+   右边却空出 13px，hover / active 的高亮块看起来就是偏左的。
+
+   position: relative 是滑动胶囊的定位基准；--cap-* 决定胶囊的左右留白，
+   需与下方 .article-item 的外边距对齐。 */
 .article-body {
+  position: relative;
   flex: 1;
   overflow-y: auto;
   min-height: 0;
   padding-left: var(--sb-w, 13px);
+  --cap-left: var(--sp-05);
+  --cap-right: var(--sp-05);
 }
 /* 滚动条风格统一收敛到 styles.css 全局规则，此处不再单独重写 */
 
@@ -562,7 +729,9 @@ onMounted(async () => {
   padding-left: var(--sb-w, 13px);
 }
 
-/* 日期分组头：小号灰字 + 浅底，扫读时快速定位时间段，吸顶在列表滚动区 */
+/* 日期分组头：小号灰字 + 浅底，扫读时快速定位时间段，吸顶在列表滚动区。
+   面板已是半透明玻璃，故底色必须用**不透明**色：半透明色会让下方条目从分组头里透出来，
+   滚动时形成一片糊影。 */
 .date-group-header {
   /* 左内边距 26px = 卡片外边距 6 + 卡片左内边距 12 + 圆点悬挂缩进 14，
      让分组头的文字与下方卡片标题严格左对齐（圆点占位后标题整体右移了） */
@@ -573,10 +742,12 @@ onMounted(async () => {
   font-size: var(--fs-xs);
   font-weight: 500;
   color: var(--text-tertiary);
-  background: var(--fill);
+  background: var(--surface);
   border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
+  /* z-index 高于胶囊（0）与条目（1）：分组头吸顶时必须压住滚过去的条目，
+     否则条目会从分组头下方"穿"过来 */
   z-index: 2;
 }
 /* 注：原先这里有一条 `.date-group-header + .article-item { border-top: none }`，

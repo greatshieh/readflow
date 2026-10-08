@@ -100,31 +100,22 @@ function hideBrokenIcon(e: Event) {
   margin-bottom: var(--sp-025);
   border-radius: var(--r-md);
   cursor: pointer;
+  /* z-index: 1 把条目抬到滑动胶囊（z-index: 0）之上：胶囊是 absolute，
+     若不加这层，胶囊会盖住条目文字。 */
   position: relative;
+  z-index: 1;
   transition: background var(--dur) var(--ease), transform var(--dur) var(--ease),
     box-shadow var(--dur) var(--ease);
 }
-.feed-item:hover {
-  background: var(--fill);
-  /* 轻微右移 + 抬升：让鼠标反馈"有质感"而不只是变色 */
-  transform: translateX(2px);
-}
+/* transform 在 :active 下生效；hover 不再有位移，避免与 hover 胶囊产生位差 */
 .feed-item:active { transform: scale(0.985); }
-.feed-item.active { background: var(--primary-soft); }
-/* 选中态指示条：悬浮 drew 出主色小圆条，给"当前在读哪个源"一个明确的视觉锚点 */
-.feed-item.active::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 24%;
-  bottom: 24%;
-  width: 3px;
-  border-radius: var(--r-pill);
-  background: var(--primary);
-}
+/* 选中态的底色与左侧指示条已移除：改由 FeedPanel 里的滑动胶囊统一表达。
+   左侧竖条与胶囊会重叠成两道标记，且竖条只对源有效、对标签行无效；
+   胶囊则是同一个视觉语言，能在两类条目间连续滑动。 */
 .feed-item.unread .feed-item-title { font-weight: 600; color: var(--text-primary); }
-/* 选中态文字取主色，压过上面的未读加粗规则（同特异性靠书写顺序取胜） */
-.feed-item.active .feed-item-title { color: var(--primary); font-weight: 600; }
+/* 选中态文字取琥珀（--cap-active-fg）：与胶囊底同色系。
+   浅色主题下胶囊是实色琥珀、文字是深色；深色主题下胶囊是淡底、文字保持主题主色。 */
+.feed-item.active .feed-item-title { color: var(--cap-active-fg); font-weight: 600; }
 
 .feed-item-dot {
   width: 5px;
