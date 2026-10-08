@@ -276,7 +276,8 @@ onBeforeUnmount(deactivate)
   -webkit-backdrop-filter: blur(28px) saturate(1.7);
   border: 1px solid var(--glass-hair);
   border-radius: var(--r-xl);
-  /* 上边缘内高光是玻璃厚度的来源；--shadow-pop 提供浮起感 */
+  /* 玻璃厚度由上下两道内高光承担（浅色下外框靠 --glass-hair 的冷蓝灰勾边，
+     白描边落在近白底上等于没有边界）。--shadow-pop 提供浮起感。 */
   box-shadow:
     inset 0 1px 0 var(--glass-hi),
     inset 0 -1px 0 var(--glass-lo),
