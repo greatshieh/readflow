@@ -99,6 +99,12 @@ const SLIDE_PER_STEP_MS = 55
  */
 const MAX_WALK_MS = 620
 /**
+ * 顶部预留（px）：文章列表的日期分组头是 sticky，会盖住列表顶端
+ *
+ * 目标滚到最上缘时若不留余量，分组头会压住它上沿、看起来像"没滚到位"。
+ */
+const STICKY_GAP = 34
+/**
  * 走完后额外等待（ms）才补回 hover 胶囊
  *
  * 主体是**一条过渡走完全程**，finishWalk 已在同一时长上触发，故这里只需留一点
@@ -239,7 +245,11 @@ function sync(el: HTMLElement | null, sliding = false): void {
   cancelWalk()
 
   if (!sliding) {
-    // 瞬时落位（折叠重算、命令面板跳转等）：不要位移过渡
+    // 瞬时落位（折叠重算、命令面板跳转等）：不要位移过渡。
+    // 先滚动再落位 —— 落位必须在滚动**之后**，否则读到的几何是滚动前的值，
+    // 而 `measure` 返回的 top 含 scrollTop，顺序反了胶囊会停在旧位置。
+    const base = props.container()
+    if (base) ensureVisible(el, base)
     activeInstant.value = true
     placeActive(el)
     requestAnimationFrame(() => (activeInstant.value = false))
@@ -281,6 +291,61 @@ function measure(el: HTMLElement, base: HTMLElement): { top: number; height: num
 }
 
 /**
+ * 目标条目不在可视区时，把它滚动进视野
+ *
+ * # 为什么需要这一步
+ * 胶囊的落位只改`transform`，**不会**让浏览器自动滚动。若目标在视口外
+ * （典型场景：命令面板搜索出远端的文章后跳转），高亮会正确落在目标上，
+ * 但用户眼前什么变化都没有——"高亮了却看不到"。
+ *
+ * # 为什么不用 scrollIntoView
+ * `el.scrollIntoView()` 会连带滚动**所有**可滚祖先，在本应用里会把整个
+ * 三栏布局（乃至窗口）一起挪动，破坏"只滚列表"的直觉。这里改为直接写
+ * `scrollTop`，把滚动范围严格限制在列表容器内。
+ *
+ * # 为什么要留顶部余量
+ * 文章列表的日期分组头是 `position: sticky`，会盖住列表顶部。目标若刚好
+ * 滚到最上缘会被它压住，故顶部留 `STICKY_GAP` 的余量。
+ *
+ * @param el - 目标条目
+ * @param base - 列表滚动容器
+ * @returns 无返回值；副作用为必要时修改 base.scrollTop
+ */
+function ensureVisible(el: HTMLElement, base: HTMLElement): void {
+  // 用视口坐标判断可见性：最直观，且不受条目margin / zoom 换算的干扰。
+  const item = el.getBoundingClientRect()
+  const box = base.getBoundingClientRect()
+  // 已在可视区内（上下各留一点余量）则不动 —— 哪怕只差1px 也别滚，
+  // 否则用户点一条恰好贴边的条目时列表会突然跳一下。
+  const margin = 8
+  const fullyVisible = item.top >= box.top + margin && item.bottom <= box.bottom - margin
+  if (fullyVisible) return
+
+  // 换算到未缩放的 CSS 像素（与 measure 同理：rect 是 zoom 后的视觉值）
+  const zoom = box.height > 0 ? box.height / base.offsetHeight : 1
+  const z = zoom > 0 ? zoom : 1
+
+  // 目标顶端相对容器顶端的位置（未缩放）；顶部还要让出 sticky 头的余量
+  const itemTop = (item.top - box.top) / z + base.scrollTop
+  const itemBottom = itemTop + item.height / z
+  const viewTop = base.scrollTop + STICKY_GAP / z
+  const viewBottom = base.scrollTop + (box.height / z)
+
+  let next = base.scrollTop
+  if (itemTop < viewTop) next = itemTop - STICKY_GAP / z
+  else if (itemBottom > viewBottom) next = itemBottom - box.height / z + STICKY_GAP / z
+  else return
+
+  // 平滑滚动：与胶囊的滑动同期发生，视觉上是"列表带着高亮一起滚过去"。
+  // 若条目已在上方（next < scrollTop），浏览器会自动反向，同样平滑。
+  //
+  // 必须显式判断"减少动效"：CSS 的 @media 只能改样式，管不到 JS 调的
+  // scrollTo —— 不判断的话，开启该设置的用户仍会看到列表大幅滑动。
+  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+  base.scrollTo({ top: Math.max(0, next), behavior: reduceMotion ? 'auto' : 'smooth' })
+}
+
+/**
  * 把选中胶囊的落位写到某个条目上
  *
  * 统一入口：`walkTo` 的整块滑动与各处瞬时落位都走这里，保证 lastY 与 top 同步更新。
@@ -319,6 +384,13 @@ function walkTo(target: HTMLElement, from: HTMLElement | null): void {
     requestAnimationFrame(() => (activeInstant.value = false))
     return
   }
+
+  // 先把目标滚进可视区，再谈滑动。
+  //
+  // 点击路径的目标通常本来就在视口内（用户点的），但**起点**可能已经滚出去了
+  //（例如选中后把列表滚到别处，再点另一条）。此时若不滚动，胶囊会从屏幕外
+  // 飞进来，中途"消失再出现"；滚到位后则是列表与高亮一起平移，观感自然。
+  ensureVisible(target, box)
 
   const items = [...box.querySelectorAll<HTMLElement>(ITEM_SELECTOR)]
   // 首次点击（from 为 null）时以"列表首项"为起点，让胶囊从顶部滑下来，
@@ -442,6 +514,10 @@ function restoreHoverAfterWalk(): void {
  */
 function pulse(): void {
   if (!currentActive) return
+  // 目标可能在视口外（命令面板跳到远端文章），先把列表滚过去，
+  // 否则用户只看到列表滚动、却看不到被"定位脉冲"标出的那一条。
+  const base = props.container()
+  if (base) ensureVisible(currentActive, base)
   pulsing.value = false
   // 强制重启动画：置 false 后等一帧再置 true，否则连续两次跳转不会重播
   requestAnimationFrame(() => (pulsing.value = true))
