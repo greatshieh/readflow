@@ -144,6 +144,9 @@
   --cap-accent-bg: color-mix(in srgb, var(--brand-from) 12%, transparent);
   --cap-accent-line: color-mix(in srgb, var(--brand-from) 42%, transparent);
   --cap-accent-shadow: rgba(180, 83, 9, 0.1);
+  /* 命令面板结果行的悬停底：比选中（12% + 描边）更淡一档，
+     因为面板底是浅色玻璃，悬停若与选中同强度会分不出主次。 */
+  --pal-row-hover: color-mix(in srgb, var(--brand-from) 7%, transparent);
 
   /* ── 面板光斑与跟随边框 ────────────────────────────────────────────
      两层都由 useCursorGlow 驱动（见 src/composables/useCursorGlow.ts）：
@@ -331,6 +334,7 @@ html[data-theme="dark"] {
   --cap-accent-bg: color-mix(in srgb, var(--brand-from) 14%, transparent);
   --cap-accent-line: color-mix(in srgb, var(--brand-from) 55%, transparent);
   --cap-accent-shadow: rgba(245, 158, 11, 0.12);
+  --pal-row-hover: color-mix(in srgb, var(--brand-from) 8%, transparent);
   /* 暗色下光斑仍用白光——暗底上加光才有"发光感"，加深只会让暗底更暗（反直觉且看不见）。
      这与亮色必须加深正好相反，两套主题的取值逻辑不可互相套用。
      数值比亮色低是因为暗底对亮斑更敏感，16% 已足够明显，再高会形成脏污亮斑。 */

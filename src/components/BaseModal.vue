@@ -243,8 +243,9 @@ onBeforeUnmount(deactivate)
   align-items: center;
   justify-content: center;
   background: var(--overlay-scrim);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
+  /* 遮罩也要压暗+ 模糊，才能让弹窗"浮起来"；4px 太浅、玻璃感出不来 */
+  backdrop-filter: blur(10px) saturate(0.92);
+  -webkit-backdrop-filter: blur(10px) saturate(0.92);
   /* visibility 一起参与过渡：淡出期间就不会再挡住底层的点击 */
   opacity: 0;
   visibility: hidden;
@@ -268,10 +269,18 @@ onBeforeUnmount(deactivate)
   flex-direction: column;
   max-width: 92vw;
   max-height: 86vh;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  /* 玻璃化：比面板玻璃更实（--glass-strong），因为弹窗是**浮在最上层**的聚焦层，
+     需要比下层玻璃更明确边界；模糊半径也更大（28 vs 20px），视觉上"更靠近眼睛"。 */
+  background: var(--glass-strong);
+  backdrop-filter: blur(28px) saturate(1.7);
+  -webkit-backdrop-filter: blur(28px) saturate(1.7);
+  border: 1px solid var(--glass-hair);
   border-radius: var(--r-xl);
-  box-shadow: var(--shadow-pop);
+  /* 上边缘内高光是玻璃厚度的来源；--shadow-pop 提供浮起感 */
+  box-shadow:
+    inset 0 1px 0 var(--glass-hi),
+    inset 0 -1px 0 var(--glass-lo),
+    var(--shadow-pop);
   overflow: hidden;
   outline: none;
 }
