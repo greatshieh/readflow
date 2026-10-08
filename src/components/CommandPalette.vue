@@ -458,22 +458,32 @@ onUnmounted(() => {
   backdrop-filter: blur(34px) saturate(1.8);
   /* 命令面板是浮在最上层、承载全局搜索的聚焦层，玻璃要比普通弹窗更实一档 */
   -webkit-backdrop-filter: blur(34px) saturate(1.8);
-  border: 1px solid var(--glass-hi);
+  /* 外框用 --glass-hair（冷蓝灰）而非 --glass-hi（白）：
+     浅色主题下面板底已是 #f6f7f7，白描边落上去**完全看不见**，
+     面板与背后界面糊成一片，正是"输入框边框是白色的、没有区分"的来源。
+     玻璃厚度改由上下两道的inset 高光承担（暗色下仍主要靠 --glass-hi）。 */
+  border: 1px solid var(--glass-hair);
   box-shadow:
     inset 0 1px 0 var(--glass-hi),
+    inset 0 -1px 0 var(--glass-lo),
     var(--shadow-pop);
 }
 
 /* ── 输入行 ───────────────────────────────────────────── */
+/* 头部 = 输入区。刻意给它一块**独立底色**与下边分隔线：
+   没有这两样时，整块面板是一整片同色，输入框与结果列表之间毫无结构感，
+   看起来就"像个灰盒子"。分区之后才有"上面是搜索、下面是结果"的层次。 */
 .pal-head {
   display: flex;
   align-items: center;
   gap: var(--sp-15);
   padding: var(--sp-4) var(--sp-5);
-  border-bottom: 1px solid var(--glass-hair);
+  background: var(--glass-head-bg);
+  border-bottom: 1px solid var(--glass-divider);
   flex-shrink: 0;
 }
-.pal-ico { width: 18px; height: 18px; color: var(--text-tertiary); flex-shrink: 0; }
+/* secondary 而非 tertiary：面板底近白，tertiary 在上面只有 2.7:1 */
+.pal-ico { width: 18px; height: 18px; color: var(--text-secondary); flex-shrink: 0; }
 .pal-head input {
   flex: 1;
   min-width: 0;
@@ -481,10 +491,13 @@ onUnmounted(() => {
   outline: none;
   background: none;
   font-family: inherit;
-  font-size: var(--fs-lg);
+  /* --fs-md 而非 --fs-lg：输入文字不应比结果标题更大，否则视觉重心
+     全落在输入框上、下方真正要浏览的结果反而被压低一等。 */
+  font-size: var(--fs-md);
+  font-weight: 500;
   color: var(--text-primary);
 }
-.pal-head input::placeholder { color: var(--text-tertiary); }
+.pal-head input::placeholder { color: var(--text-secondary); opacity: 0.75; }
 /* 检索模式标签：标题段用中性色，全文段用琥珀（与文章列表的胶囊描边同源） */
 .pal-mode {
   flex-shrink: 0;
@@ -498,7 +511,16 @@ onUnmounted(() => {
 .pal-mode.full { background: var(--cap-accent-bg); color: var(--cap-accent-line); }
 
 /* ── 结果区 ───────────────────────────────────────────── */
-.pal-body { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-2); }
+/* 结果区：比面板底**压深**一档（--glass-body-bg），使"输入区/ 结果区"
+   除了分隔线之外还有底色差。浅色主题下靠加深而非加白——面板已接近白，
+   加白等于没加。 */
+.pal-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-2);
+  background: var(--glass-body-bg);
+}
 .pal-body::-webkit-scrollbar { width: var(--sb-w); }
 
 .pal-loading { display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-2); }
@@ -511,7 +533,8 @@ onUnmounted(() => {
   padding: var(--sp-10) var(--sp-4);
   text-align: center;
   font-size: var(--fs-sm);
-  color: var(--text-tertiary);
+  /* secondary 而非 tertiary：同上，tertiary 在近白底上只有 2.7:1 */
+  color: var(--text-secondary);
 }
 
 .pal-list { list-style: none; }
@@ -533,9 +556,10 @@ onUnmounted(() => {
   /* 用--cap-accent-bg 而非 --cap-solid-bg：后者在浅色主题下是**实色琥珀**
      （--brand-from），面板里的深色标题压上去会读不清。命令面板是浮层、
      不需要"实体色块"那种强锚定，描边 + 淡底已足够表达选中。 */
-  background: var(--cap-accent-bg);
+  /* 20% 琥珀底 + 58% 描边：面板底已是近白，用列表里的 12%/42% 会弱到看不见。 */
+  background: color-mix(in srgb, var(--brand-from) 20%, transparent);
   box-shadow:
-    inset 0 0 0 1px var(--cap-accent-line),
+    inset 0 0 0 1px color-mix(in srgb, var(--brand-from) 58%, transparent),
     inset 0 1px 0 var(--glass-hi);
 }
 
@@ -571,12 +595,18 @@ onUnmounted(() => {
 }
 /* 命中高亮：与品牌琥珀同源，是画面里仅有的两处饱和色之一 */
 .pal-snippet :deep(mark), .pal-title :deep(mark) {
-  background: var(--cap-accent-bg);
-  color: var(--primary);
+  /* 实色琥珀底+ 反白字，而不是 --cap-accent-bg（淡底）：
+     面板已是近白色，12% 琥珀落在上面几乎看不出"命中"，
+     搜索结果里最该被一眼看到的位置反而最弱。 */
+  background: var(--brand-from);
+  color: var(--cap-active-fg);
   border-radius: 2px;
   box-shadow: inset 0 -1px 0 var(--cap-accent-line);
   padding: 0 1px;
 }
+/* 时间用 secondary 而非 tertiary：面板底已是近白，
+   tertiary 在上面实测仅 2.7:1（低于 4.5:1），几乎读不出来。
+   来源名已是 primary系，只需把默认色从 tertiary 提到 secondary 兜底。 */
 .pal-side {
   flex-shrink: 0;
   display: flex;
@@ -584,7 +614,7 @@ onUnmounted(() => {
   align-items: flex-end;
   gap: 2px;
   font-size: var(--fs-xs);
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   padding-top: 2px;
 }
 .pal-feed { color: var(--primary); white-space: nowrap; }
@@ -596,9 +626,10 @@ onUnmounted(() => {
   align-items: center;
   gap: var(--sp-4);
   padding: var(--sp-15) var(--sp-5);
-  border-top: 1px solid var(--glass-hair);
+  border-top: 1px solid var(--glass-divider);
+  background: var(--glass-head-bg);
   font-size: var(--fs-xs);
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   flex-shrink: 0;
 }
 .pal-foot kbd {
