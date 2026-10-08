@@ -435,9 +435,14 @@ onUnmounted(() => {
   align-items: flex-start;
   justify-content: center;
   padding-top: 12vh;              /* 面板落在视觉中线偏上，符合命令面板惯例 */
-  background: var(--scrim-heavy);
-  backdrop-filter: blur(10px) saturate(0.9);
-  -webkit-backdrop-filter: blur(10px) saturate(0.9);
+  /* 用 --overlay-scrim（0.4 黑）而非 --scrim-heavy（0.82）：
+     后者是给**全屏灯箱**（图片预览）设计的，那种场景画面只有一个主体、
+     必须彻底压暗环境。而玻璃面板自身就是视觉主角，若底下压 0.82 黑，
+     面板的白色玻璃（--glass-strong 74% 白）叠上去也只有约 #e4e4e4 的灰，
+     深色标题压在上面虽仍可读，但整块玻璃失去"亮"的质感、看起来像脏灰塑料。 */
+  background: var(--overlay-scrim);
+  backdrop-filter: blur(8px) saturate(0.95);
+  -webkit-backdrop-filter: blur(8px) saturate(0.95);
 }
 
 /* ── 面板：比遮罩更模糊、更饱和 = 画面里最"厚"的一层玻璃 ────────── */
