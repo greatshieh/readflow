@@ -145,7 +145,9 @@ function toggleStarred() {
   padding: var(--sp-15) var(--sp-3);
   flex-shrink: 0;
   border-bottom: 1px solid var(--border);
-  background: var(--surface);
+  /* 透明：面板已是玻璃，这里若铺 --surface 实色会在顶部形成一条不透明横带，
+     把玻璃"截断"成上下两段。只需要一条分隔线表达边界。 */
+  background: transparent;
 }
 .tb-actions {
   display: flex;
@@ -176,7 +178,7 @@ function toggleStarred() {
   outline: none;
   transition: border-color 0.15s, background 0.15s;
 }
-.tb-search input:focus { border-color: var(--primary); background: var(--surface); }
+.tb-search input:focus { border-color: var(--primary); background: var(--cap-feed); }
 .tb-search input::placeholder { color: var(--text-tertiary); }
 .tb-search .s-icon {
   position: absolute;

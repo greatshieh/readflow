@@ -24,6 +24,8 @@
     </div>
     <!-- 设置模态：由 window 事件 `open-settings` 控制显隐 -->
     <SettingsModal :open="showSettings" @close="showSettings = false" />
+    <!-- 命令面板：Ctrl/⌘K 唤起，挂在最外层以覆盖全部界面（含主屏关系图视图） -->
+    <CommandPalette />
     <!-- 全局弹窗：confirm / prompt / alert 统一由 GlobalModal 渲染 -->
     <GlobalModal />
   </div>
@@ -62,6 +64,7 @@ import ContentColumn from './components/ContentColumn.vue'
 import GraphView from './components/GraphView.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import GlobalModal from './components/GlobalModal.vue'
+import CommandPalette from './components/CommandPalette.vue'
 
 /** 订阅源 store 实例：供 mounted 触发首次加载 */
 const feedsStore = useFeedsStore()

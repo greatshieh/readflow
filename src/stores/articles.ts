@@ -327,7 +327,18 @@ export const useArticlesStore = defineStore('articles', () => {
    * @throws 不向外抛出：`markAsRead` 内部已吞掉异常，只记录日志
    */
   async function selectArticle(id: number) {
-    const article = await loadArticle(id)
+    // 乐观更新：**先**用列表里已有的那份数据把选中态写上去，再去取详情。
+    //
+    // 为什么必须先写：`loadArticle` 走一次 IPC，返回前 selectedArticle 还是旧值。
+    // 若等详情回来再写，列表的高亮就会滞后一次点击——用户点A、高亮却还在 B，
+    // 直到 IPC 返回才跳过去。列表项本身已含标题/摘要等展示所需字段，
+    // 详情只是为了补全并持久化已读，不该成为"选中"的必要前置。
+    //
+    // 找不到本地那份（命令面板可直接跳到未加载的文章）时退回 await 详情。
+    const local = displayArticles.value.find((a) => a.id === id)
+    if (local) selectedArticle.value = local
+
+    const article = local ?? (await loadArticle(id))
     if (article) {
       selectedArticle.value = article
       // 已读状态必须持久化到后端，否则刷新后未读数会回退

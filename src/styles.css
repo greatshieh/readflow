@@ -107,6 +107,69 @@
   /* 自绘标题栏的底色：毛玻璃材质，与新版冷调底色融合 */
   --titlebar-bg: rgba(245, 249, 255, 0.86);
 
+  /* ── 液态玻璃令牌组 ────────────────────────────────────────────────
+     玻璃只用于「铬件」：顶栏 / 侧栏 / 浮层 / 选中胶囊。正文阅读区**刻意不玻璃化**
+     （见下方 --read-bg），长文要的是稳定不跳，且玻璃的背景光斑干扰会被正文面积放大三倍。
+
+     厚度感来自三条「加光」而非底色对比：
+     --glass-hi 上边缘 1px 内高光（光源来自顶部）、
+     --glass-hair 1px 微光描边、--glass 半透明白垫底。
+     浅色主题下背景本身就是浅蓝灰，白色内高光叠加后仍成立；暗色主题靠这三条同样成立。 */
+  --glass: rgba(255, 255, 255, 0.58);        /* 侧栏 / 面板 */
+  --glass-2: rgba(255, 255, 255, 0.5);        /* 顶栏（比面板略实，层级更高） */
+  --glass-strong: rgba(255, 255, 255, 0.74);  /* 命令面板：全应用最厚的一层玻璃 */
+  --glass-hair: rgba(122, 152, 192, 0.24);
+  --glass-hi: rgba(255, 255, 255, 0.88);      /* 上边缘高光 = 玻璃厚度的来源 */
+  --glass-lo: rgba(255, 255, 255, 0.42);      /* 下边缘，弱一半，避免"双线" */
+  /* ── hover / 选中胶囊（锚点色 = 品牌琥珀）────────────────────────
+     两态**不同色**，且点击后高亮才移动（见 SelectCapsule.vue 的双胶囊）。
+     锚点用品牌琥珀（--brand-from，与标题栏 logo 同源）而非强调色主色：
+     主色是石墨蓝灰这类低饱和蓝，铺在暖调玻璃上显脏；琥珀是全应用唯一高饱和色，
+     天然适合当"当前在哪儿"的锚点。
+
+     浅色 / 深色取**不同策略**（方案 C / B），这不是审美偏好而是对比度约束：
+     - 浅色面上琥珀 22% 配深字有 9.1:1，故选中可以走**实色琥珀 + 反白**，锚点最强；
+     - 深色面上琥珀混白字只有 2.5:1（13% 时2.2:1），底色越琥珀字越难读，
+       故深色只能走**淡底 + 描边**，靠形状而非底色表达"选中"。 */
+  /* 悬停：只给淡底。两套主题同值——hover 是"路过"，不需要区分强弱。 */
+  --cap-hover-bg: color-mix(in srgb, var(--brand-from) 12%, transparent);
+  /* 浅色选中（方案 C）：实色琥珀 + 深色反白 */
+  --cap-solid-bg: var(--brand-from);
+  --cap-active-fg: #241a06;
+  --cap-line: transparent;                /* 实色块不需要描边 */
+  --cap-shadow: rgba(180, 83, 9, 0.22);
+  /* 输入框聚焦态底色：比常态更实的一层白玻璃（控件自身的聚焦反馈，与胶囊体系无关） */
+  --cap-feed: rgba(255, 255, 255, 0.82);
+  /* 文章列表的选中胶囊：与订阅栏同一套琥珀，只是弱一档（见下方暗色档） */
+  --cap-accent-bg: color-mix(in srgb, var(--brand-from) 12%, transparent);
+  --cap-accent-line: color-mix(in srgb, var(--brand-from) 42%, transparent);
+  --cap-accent-shadow: rgba(180, 83, 9, 0.1);
+
+  /* ── 面板光斑与跟随边框 ────────────────────────────────────────────
+     两层都由 useCursorGlow 驱动（见 src/composables/useCursorGlow.ts）：
+     --mx/--my 是光标相对面板的百分比，供面板 ::before 的 radial-gradient 定位；
+     --ang 是光标相对面板中心的角度，供 .pane-frame 的 conic-gradient 定位。 */
+  --mx: 50%;
+  --my: 50%;
+  --ang: 0deg;
+  /* 光斑半径：故意大于面板宽度，由宿主的 overflow:hidden 裁掉溢出部分。
+     这正是"光漫过边界"与"面板内跟着一个圆点跑"的区别所在。 */
+  --pane-glow-size: 340px;
+  /* 亮色主题下光斑必须**加深**而非加亮：面板本身已是 58% 白叠在 #f5f9ff 上，
+     实际底色约 #f9fcff。再叠白光（白色 50%）与面板的对比只有 1.02:1，等于没加——
+     这正是此前"暗色下明显、亮色下看不见"的原因。
+     改为叠主色的低透明度：13% 时面板与光斑差 1.19:1，肉眼清晰可辨，
+     而正文对比度仍有 14:1（远高于 4.5:1门槛）。 */
+  --pane-glow: color-mix(in srgb, var(--primary) 13%, transparent);
+  --pane-glow-mid: color-mix(in srgb, var(--primary) 6%, transparent);
+  --pane-edge: color-mix(in srgb, var(--brand-from) 55%, transparent);
+  --blur: 20px;
+
+  /* 正文阅读区：**独立令牌，不复用 --surface**。深色下若与侧栏同色，
+     阅读区就失去"沉到界面之下"的层次，正文面积是侧栏三倍，同色会显得整块贴脸。 */
+  --read-bg: #f7f8fa;
+  --read-fg: #1f2328;
+
   /* ── 圆角阶梯（整体放宽，圆润是现代 UI 的关键直觉）── */
   --r-sm: 6px;
   --r-md: 8px;
@@ -199,6 +262,13 @@
   /* 动效统一基准：所有 hover/active 过渡共用同一时长与缓动，避免观感杂乱 */
   --dur: 0.18s;
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  /* 滑动胶囊专用：比 --dur 更慢、曲线末端带一点减速，
+     让胶囊"滑到位"有重量感，而不是匀速平移显得廉价 */
+  /* 滑动胶囊专用：比 --dur 稍长，曲线末端减速更充分。
+     之前 0.26s + cubic-bezier(.32,.72,0,1) 在跨多行时会显得"赶"——
+     位移还没走完就停住，读起来接近瞬移；0.32s 配更缓的收尾让全程都看得出移动。 */
+  --dur-slide: 0.32s;
+  --ease-slide: cubic-bezier(0.34, 0.62, 0.2, 1);
   /* 阅读区最大宽度：限制正文/标题/摘要卡片的列宽，让宽屏下两侧自然留白（仿 Folo 居中阅读列） */
   --read-max: 760px;
   /* 界面字体缩放：由「设置 → 常规 → 界面字体大小」写入（zoom 作用于整个应用根节点） */
@@ -232,20 +302,63 @@ html[data-theme="dark"] {
   --hl-green: rgba(187, 247, 208, 0.24);
   --hl-blue: rgba(191, 219, 254, 0.24);
   --hl-pink: rgba(251, 207, 232, 0.24);
-  --hl-fg: #e6e8ec;
-  /* 底色优化：用更接近纯黑的深灰替代偏蓝黑，提升面板对比度与浮岛感 */
-  --bg: #121212;
-  --surface: #1e1e1e;
-  --surface-muted: #252525;
-  --text-primary: #e6e6e6;
-  --text-secondary: #a3a3a3;
-  --text-tertiary: #737373;
-  --border: #333333;
-  --fill: #2a2a2a;
-  --fill-secondary: #333333;
+  /* 高亮块内的文字色：比 --text-primary 偏暖一点。用主题灰会在黄底上显脏。 */
+  --hl-fg: #f0e6cd;
+
+  /* ── 暗色玻璃令牌（方案 B：冷调深蓝板岩）──────────────────────────
+     底色从原先的近黑 #121212 抬到 #1b2129：不是"变浅"，而是给玻璃提供可被折射的内容。
+     深色下玻璃的难点不是"够不够亮"，而是面板与底色几乎同色；本组靠三条「加光」
+     （--glass-hi 上边缘内高光 / --glass-hair 1px 描边 / --glass 半透明白）撑厚度，
+     不依赖底色对比——这正是底色可以抬高一档而不失"深"的前提。
+     色相延续浅色主题的冷调倾向，亮暗切换时色温不跳。 */
+  --bg: #1b2129;
+  --glass: rgba(255, 255, 255, 0.055);
+  --glass-2: rgba(255, 255, 255, 0.042);      /* 顶栏比面板更透：下方就是内容区，需看清 */
+  --glass-strong: rgba(255, 255, 255, 0.075); /* 命令面板比侧栏更实，确保结果文字可读 */
+  --glass-hair: rgba(255, 255, 255, 0.1);
+  --glass-hi: rgba(255, 255, 255, 0.14);
+  --glass-lo: rgba(255, 255, 255, 0.05);
+  --cap-feed: rgba(255, 255, 255, 0.115);
+  /* 深色改走方案 B（淡底 + 描边）：琥珀混在深色底上时，白字对比只有 2.2~2.5:1，
+     底色越实字越难读，故**不能**沿用浅色的实色块。淡底保住文字对比，
+     选中态改由一道描边承担识别。 */
+  --cap-hover-bg: color-mix(in srgb, var(--brand-from) 9%, transparent);
+  --cap-solid-bg: color-mix(in srgb, var(--brand-from) 13%, transparent);
+  --cap-active-fg: var(--text-primary);
+  --cap-line: color-mix(in srgb, var(--brand-from) 58%, transparent);
+  --cap-shadow: rgba(0, 0, 0, 0.28);
+  /* 文章列表的琥珀胶囊：深色下描边再亮一档，否则在暗底上立不住 */
+  --cap-accent-bg: color-mix(in srgb, var(--brand-from) 14%, transparent);
+  --cap-accent-line: color-mix(in srgb, var(--brand-from) 55%, transparent);
+  --cap-accent-shadow: rgba(245, 158, 11, 0.12);
+  /* 暗色下光斑仍用白光——暗底上加光才有"发光感"，加深只会让暗底更暗（反直觉且看不见）。
+     这与亮色必须加深正好相反，两套主题的取值逻辑不可互相套用。
+     数值比亮色低是因为暗底对亮斑更敏感，16% 已足够明显，再高会形成脏污亮斑。 */
+  --pane-glow: rgba(255, 255, 255, 0.16);
+  --pane-glow-mid: rgba(255, 255, 255, 0.06);
+  --pane-edge: color-mix(in srgb, var(--brand-from) 50%, transparent);
+  /* 底色比 --bg 再压暗一档，让阅读区"沉"到界面之下：正文面积是侧栏三倍，
+     与侧栏同色会显得整块贴脸。 */
+  --read-bg: #161b21;
+  --read-fg: #c6ccd5;
+
+  --surface: #20262e;
+  --surface-muted: #252b33;
+  --text-primary: #e6e8ec;
+  --text-secondary: #a8b0bd;
+  /* 三级文字必须从原先的 #737373 提上来：它在玻璃面（底色叠 5.5% 白 ≈ #282d35）上
+     只有 3.47:1，不达无障碍标准；提到 #8b93a1 后为 4.47:1，达标。 */
+  --text-tertiary: #8b93a1;
+  /* 边框与填充跟随新底色的冷调：原先的中性灰 #333 / #2a2a2a 是配 #121212 的，
+     放到 #1b2129 上会让 hover 反馈与分隔线显脏。 */
+  --border: #2e353f;
+  --fill: #262d36;
+  --fill-secondary: #2f3742;
   /* 暗色下的面板 hairline：冷蓝描边在此不可见，改用低透明度白线勾边 */
   --panel-border: rgba(255, 255, 255, 0.08);
-  --titlebar-bg: rgba(18, 18, 18, 0.88);
+  /* 顶栏底改用 --glass-2：标题栏与侧栏同属铬件，两者用同一套玻璃令牌，
+     这里不再单独给深色取值（原先写死 rgba(18,18,18,.88) 会与新底色脱钩）。 */
+  --titlebar-bg: var(--glass-2);
   /* 暗色下阴影不可见，改用更深的不透明度制造"浮起"错觉；
      同样收窄作用域（16px/.28），避免栏间缝隙被压得更黑 */
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.24);
@@ -683,7 +796,67 @@ select:focus-visible {
   100% { background-position: -50% 0; }
 }
 
-/* 无障碍：尊重系统的"减少动态效果"设置。
+/* ── 面板光斑与跟随边框（全局，被三栏共用）────────────────────────────────
+   两层的坐标都由 src/composables/useCursorGlow.ts 写入 --mx/--my/--ang，
+   JS 只写变量、不做动画；实际的柔化与裁剪交给 CSS。
+
+   为什么要提为全局：订阅栏、文章列表栏、正文栏三处都要这套效果，
+   而各自的 scoped 样式里写一遍会出现三份逐渐走样的副本。
+   类名契约：宿主加 .pane-glow-host（提供定位与裁剪）+ 放一个 .pane-frame 子元素。 */
+
+.pane-glow-host { position: relative; }
+/* 光斑层：径向渐变圆心跟着指针。宽度故意大于面板（--pane-glow-size），
+   超出部分被宿主的 overflow:hidden 裁掉——这样得到"光漫过边界"的效果，
+   而非"面板内跟着一个圆点跑"。 */
+.pane-glow-host::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    var(--pane-glow-size, 340px) var(--pane-glow-size, 340px) at var(--mx) var(--my),
+    var(--pane-glow),
+    var(--pane-glow-mid) 42%,
+    transparent 70%
+  );
+  opacity: 0;
+  transition: opacity 0.3s var(--ease-slide);
+}
+.pane-glow-host.is-lit::before { opacity: 1; }
+
+/* 跟随边框：conic-gradient 沿边框铺一段亮色，起点跟着指针相对面板中心的角度。
+   padding:1px + mask-composite:exclude 只留 1px 环（content-box 之外的部分被扣掉），
+   这样无需真的 border 就能做"局部高亮的边框"。 */
+.pane-frame {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border-radius: inherit;
+  padding: 1px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.25s var(--ease-slide);
+  background: conic-gradient(
+    from calc(var(--ang) - 70deg),
+    transparent 0deg,
+    var(--pane-edge) 40deg,
+    transparent 130deg
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+.pane-frame.is-lit { opacity: 1; }
+
+/* 无障碍：关掉动效后两层仍是"静态亮起 / 熄灭"，位置与强弱表达不受影响 */
+@media (prefers-reduced-motion: reduce) {
+  .pane-glow-host::before,
+  .pane-frame { transition: opacity 0.12s linear; }
+}
+
+/* ── 无障碍：尊重系统的"减少动态效果"设置。
    掠光是纯装饰动画，关掉后骨架屏仍是静态浅条，不影响"正在加载"的表达。 */
 @media (prefers-reduced-motion: reduce) {
   .sk-line { animation: none; }

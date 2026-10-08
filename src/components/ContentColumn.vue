@@ -5,7 +5,10 @@
        未选中文章时显示空状态引导页。
        四个子组件各管一块：ContentToolbar（顶栏）、ArticleSummaryCard（摘要卡）、
        ResearchFab（研究事件 FAB + 面板）、HighlightPalette（高亮调色板）。 -->
-  <div class="content-column">
+  <div class="content-column" ref="paneRef">
+    <!-- 跟随边框：正文区保留这一层，但**不加光斑**——
+         正文是实底（--read-bg，见 .content-column），透不出光，光斑只会糊成脏斑。 -->
+    <div class="pane-frame" ref="frameRef" aria-hidden="true"></div>
     <!-- 正文内容：仅在存在选中文章时渲染 -->
     <div class="content" v-if="selectedArticle" @click="showArticleList = true">
       <!-- 顶部固定工具条：对齐 Folo 的 Entry ActionBar（标记已读/未读 · 收藏 · 标签 ·
@@ -164,6 +167,7 @@ import ContentToolbar from '@/components/ContentToolbar.vue'
 import HighlightPalette from '@/components/HighlightPalette.vue'
 import ResearchFab from '@/components/ResearchFab.vue'
 import { useHighlights, HIGHLIGHT_COLORS } from '@/composables/useHighlights'
+import { useCursorGlow } from '@/composables/useCursorGlow'
 import { useArticlesStore } from '@/stores/articles'
 import { useFeedsStore } from '@/stores/feeds'
 import { useUiStore } from '@/stores/ui'
@@ -171,6 +175,13 @@ import { useSettingsStore } from '@/stores/settings'
 import { formatFullDate } from '@/utils/format'
 import { collectTocItems, type TocItem } from '@/utils/articleToc'
 import type { Article } from '@/types'
+
+/** 正文栏根元素（跟随边框的宿主；光斑层未挂 .pane-glow-host，故不生效） */
+const paneRef = ref<HTMLElement | null>(null)
+/** 跟随边框层：靠近指针的那一侧亮起一段 */
+const frameRef = ref<HTMLElement | null>(null)
+/** 只启用跟随边框。正文是实底，加光斑会糊成脏斑，故不传 .pane-glow-host 的宿主用法 */
+useCursorGlow(paneRef, frameRef)
 
 const articlesStore = useArticlesStore()
 const feedsStore = useFeedsStore()
@@ -631,14 +642,21 @@ const {
   flex-direction: column;
   min-width: 0;
   overflow: hidden;
-  background: var(--surface);
+  /* 正文区用 --read-bg 而非 --surface：深色下必须比侧栏更暗一档，
+     让阅读区"沉"到界面之下。正文面积是侧栏三倍，与侧栏同色会显得整块贴脸。
+     这里也刻意**不做玻璃化**——玻璃的背景光斑干扰会被正文面积放大三倍，
+     长文阅读时文字底下有明暗在动。 */
+  background: var(--read-bg);
+  color: var(--read-fg);
   height: 100%;
   /* 定位上下文：研究事件悬浮按钮（.research-fab-wrap）以此为基准固定在右下角 */
   position: relative;
-  /* 浮岛化：与左右两栏同一套圆角、弱投影与冷蓝 hairline 描边 */
   border-radius: var(--r-panel);
-  box-shadow: var(--shadow-panel);
-  border: 1px solid var(--panel-border);
+  box-shadow:
+    inset 0 1px 0 var(--glass-hi),
+    0 2px 6px rgba(31, 45, 70, 0.04),
+    0 10px 30px rgba(31, 45, 70, 0.06);
+  border: 1px solid var(--glass-hair);
 }
 
 .content {
@@ -646,14 +664,16 @@ const {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--surface);
+  background: transparent;
 }
 
 .content-head {
   padding: var(--sp-4) 0;
   flex-shrink: 0;
   border-bottom: 1px solid var(--border);
-  background: var(--surface);
+  /* 与 .content-column 同一底色：正文区不再是玻璃，这层若留 --surface 会在
+     深色下与容器不同色，凭空多出一条分界 */
+  background: var(--read-bg);
   max-width: var(--read-max);
   margin: 0 auto;
   width: 100%;
@@ -730,12 +750,16 @@ const {
   margin: 0 auto;
   font-size: calc(15px * var(--reading-scale, 1));
   line-height: 1.8;
-  color: var(--text-primary);
+  /* 正文文字色走 --read-fg：它在深色下比 --text-primary 略暗一档，
+     大段正文用主色会偏亮偏累。标题等强调层级仍用 --text-primary。 */
+  color: var(--read-fg);
   word-wrap: break-word;
   overflow-wrap: break-word;
   font-family: var(--reading-font, inherit);
 }
 .content-body :deep(p) { margin: 0 0 var(--sp-4); line-height: 1.85; }
+/* 标题刻意用 --text-primary 而非 --read-fg：正文已降到略暗的一档，
+   标题再与之同色会失去层级。h5/h6 用 secondary，是正文与标题之间的过渡层。 */
 .content-body :deep(h1) { font-size: var(--fs-2xl); font-weight: 600; line-height: 1.3; margin: var(--sp-6) 0 var(--sp-3); color: var(--text-primary); }
 .content-body :deep(h2) { font-size: var(--fs-lg); font-weight: 500; margin: var(--sp-5) 0 var(--sp-15); color: var(--text-primary); }
 .content-body :deep(h3) { font-size: var(--fs-base); font-weight: 500; margin: var(--sp-4) 0 var(--sp-2); color: var(--text-primary); }
@@ -770,7 +794,9 @@ const {
   position: absolute;
   inset: 0;
   z-index: 10;
-  background: var(--surface);
+  /* 与文章视图同一底色：iframe 本身已用 --page-canvas（恒白，网页自身假定白底），
+     这层只是加载时的底衬，不该在深色下与文章视图不同色。 */
+  background: var(--read-bg);
   display: flex;
   flex-direction: column;
 }

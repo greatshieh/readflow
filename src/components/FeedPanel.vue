@@ -1,6 +1,10 @@
 <template>
   <!-- 侧边栏根容器：isOpen 仅在窄屏（配合 .open 样式）下产生抽屉效果，宽屏常驻显示 -->
-  <aside class="feed-panel" :class="{ open: isOpen }">
+  <aside class="feed-panel pane-glow-host" :class="{ open: isOpen }" ref="paneRef">
+    <!-- 跟随边框：靠近指针的那一侧亮起一段。必须是面板的直接子元素才能铺满整栏。
+         亮灭由 useCursorGlow 在面板上切 .is-lit，这里同步给边框层（它自身
+         定位在面板内，需要自己的类名来控制 opacity）。 -->
+    <div class="pane-frame" ref="frameRef" aria-hidden="true"></div>
     <!-- 订阅源搜索区：本地过滤用，不请求后端 -->
     <div class="feed-search-wrap">
       <div class="feed-search">
@@ -13,8 +17,15 @@
     </div>
     <!-- 订阅源列表：错误 / 加载中 / 空 三种状态互斥展示，正常时渲染过滤后的列表。
          加载中用骨架屏而非纯文字：占位块按真实 .feed-item 几何（28px 头像 + 标题行）铺排，
-         加载完成切换时列表不跳版；空态与错误态复用全局 .state-block。 -->
-    <div class="feed-list">
+         加载完成切换时列表不跳版；空态与错误态复用全局 .state-block。
+
+         SelectCapsule 是选中态的唯一视觉载体：条目自身只留极弱 hover 底色。
+         它必须与条目同处 .feed-list 这个定位基准内，故作为列表容器的子节点渲染在条目之前。 -->
+    <div class="feed-list" ref="feedListRef"
+      @mouseover="onListMouseOver"
+      @mouseout="onListMouseOut"
+    >
+      <SelectCapsule ref="feedCapsule" variant="solid" :container="() => feedListRef" />
       <div v-if="feedsStore.feedError" class="state-block is-error">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
           <circle cx="12" cy="12" r="10"></circle>
@@ -42,22 +53,32 @@
       <!-- 文件夹分组：按 folder_id 把订阅源归入对应文件夹，无文件夹的归入"未分类"。
            每个分组可折叠（点击分组头），分组未读总数显示在分组头右侧。 -->
       <template v-for="group in groupedFeeds" :key="group.key">
-        <div class="folder-group" v-if="group.feeds.length">
-          <div class="folder-head" @click="toggleFolder(group.key)">
-            <span class="folder-caret">{{ collapsed.has(group.key) ? '▸' : '▾' }}</span>
+        <!-- 文件夹分组：折叠结构外包一层 .folder-body（grid-template-rows: 1fr→0fr），
+             高度动画无需测量真实内容高度即可生效；.folder-caret 点击时在该点分裂出水滴。 -->
+        <div class="folder-group" :class="{ collapsed: collapsed.has(group.key) }" v-if="group.feeds.length">
+          <div class="folder-head" @click="toggleFolder(group, $event)">
+            <span class="folder-caret">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </span>
             <!-- 分组名单行截断（见 .folder-name 的 ellipsis）：title 让悬浮时能读到全称 -->
             <span class="folder-name" :title="folderLabel(group)">{{ folderLabel(group) }}</span>
             <span class="feed-item-count" v-if="group.unread > 0">{{ group.unread }}</span>
           </div>
+          <div class="folder-body">
+            <div>
             <FeedListItem
               v-for="feed in group.feeds"
-              v-show="!collapsed.has(group.key)"
               :key="feed.id"
               :feed="feed"
               :active="feedsStore.selectedFeed?.id === feed.id"
+              :data-feed-id="feed.id"
               @select="selectFeed(feed)"
               @manage="openManage(feed)"
             />
+            </div>
+          </div>
         </div>
       </template>
 
@@ -65,22 +86,29 @@
            点击标签进入标签视图（所有源中带该标签的文章），再次点击退出。
            标签与订阅源是**互斥范围**，故选中标签时会清空源选择（见 selectTag）。
            搜索订阅源时隐藏，避免与"过滤订阅源"的搜索结果混在一起造成误读。 -->
-      <div class="folder-group" v-if="!searchQuery.trim() && tagsStore.tags.length > 0">
-        <div class="folder-head" @click="tagSectionCollapsed = !tagSectionCollapsed">
-          <span class="folder-caret">{{ tagSectionCollapsed ? '▸' : '▾' }}</span>
+      <div class="folder-group" :class="{ collapsed: tagSectionCollapsed }" v-if="!searchQuery.trim() && tagsStore.tags.length > 0">
+        <div class="folder-head" @click="toggleTagSection">
+          <span class="folder-caret">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+          </span>
           <span class="folder-name">标签</span>
         </div>
-        <div
-          v-for="tag in tagsStore.tags"
-          v-show="!tagSectionCollapsed"
-          :key="tag.id"
-          class="tag-row"
-          :class="{ active: articlesStore.tagFilterId === tag.id }"
-          @click="selectTag(tag.id)"
-        >
-          <span class="tag-row-dot" :style="{ background: tagColorVar(tag.color) }"></span>
-          <span class="tag-row-name" :title="tag.name">{{ tag.name }}</span>
-          <span class="feed-item-count" v-if="tag.article_count > 0">{{ tag.article_count }}</span>
+        <div class="folder-body">
+          <div>
+            <div
+              v-for="tag in tagsStore.tags"
+              :key="tag.id"
+              class="tag-row"
+              :class="{ active: articlesStore.tagFilterId === tag.id }"
+              @click="selectTag(tag.id)"
+            >
+              <span class="tag-row-dot" :style="{ background: tagColorVar(tag.color) }"></span>
+              <span class="tag-row-name" :title="tag.name">{{ tag.name }}</span>
+              <span class="feed-item-count" v-if="tag.article_count > 0">{{ tag.article_count }}</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -212,7 +240,7 @@
  * 由 ArticleColumn 通过 watch 被动响应，无需事件广播。
  */
 
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useFeedsStore } from '@/stores/feeds'
 import { useArticlesStore } from '@/stores/articles'
 import { useTagsStore, tagColorVar } from '@/stores/tags'
@@ -224,7 +252,9 @@ import ResearchModal from './ResearchModal.vue'
 import FeedListItem from './FeedListItem.vue'
 import FeedAddModal from './FeedAddModal.vue'
 import FeedManageModal from './FeedManageModal.vue'
+import SelectCapsule from './SelectCapsule.vue'
 import AppLogo from './AppLogo.vue'
+import { useCursorGlow } from '@/composables/useCursorGlow'
 import type { Article, Feed, Folder } from '@/types'
 
 /**
@@ -318,6 +348,141 @@ const tagsStore = useTagsStore()
 /** 标签分区是否折叠（与文件夹分组同一交互范式） */
 const tagSectionCollapsed = ref(false)
 
+/** 订阅源列表容器（滑动胶囊与水滴的定位基准） */
+const feedListRef = ref<HTMLElement | null>(null)
+/** 侧栏面板根元素（光斑与跟随边框的宿主） */
+const paneRef = ref<HTMLElement | null>(null)
+/** 跟随边框层：与光斑层分离，便于各自控制显隐 */
+const frameRef = ref<HTMLElement | null>(null)
+/** 启用面板光斑跟随 + 靠近侧边框亮起 */
+useCursorGlow(paneRef, frameRef)
+/** 选中胶囊组件实例：负责把胶囊滑到当前选中的订阅源 */
+const feedCapsule = ref<InstanceType<typeof SelectCapsule> | null>(null)
+
+/**
+ * 在折叠按钮处播放水滴分裂
+ *
+ * 折叠是本组件唯一使用水滴动效的地方：点击时从按钮中分裂两枚小珠坠落淡出，
+ * 与折叠/展开的高度动画同步发生。刻意保持"全文只此一处"——水滴用在多处会变成噱头，
+ * 抢走内容注意力。
+ *
+ * @param e - 点击事件的 MouseEvent，用于取被点击的具体按钮（多分组共用同一个 ref 数组）
+ * @returns 无返回值
+ */
+function playDropSplit(e: MouseEvent) {
+  const caret = e.currentTarget as HTMLElement | null
+  if (!caret) return
+  for (let i = 0; i < 2; i++) {
+    const drop = document.createElement('span')
+    drop.className = 'folder-drop'
+    // 左右各偏一点并给随机量，避免两次点击的轨迹完全相同而显得机械
+    drop.style.setProperty('--dx', `${(i === 0 ? -1 : 1) * (7 + Math.random() * 5)}px`)
+    drop.style.setProperty('--dy', `${9 + Math.random() * 7}px`)
+    drop.addEventListener('animationend', () => drop.remove())
+    caret.appendChild(drop)
+  }
+}
+
+/**
+ * 把选中胶囊滑到当前选中的订阅源
+ *
+ * 胶囊测的是条目几何，而分组折叠 / 筛选搜索都会让条目重排，故这三处都要重新同步。
+ * `noTransition` 用于这些"布局已变、位置直接跳过去"的场景——只有用户主动点击
+ * 才需要看到滑动。
+ *
+ * 查询同时涵盖 `.feed-item.active` 与 `.tag-row.active`：标签视图与订阅源视图
+ * 是互斥范围，但两者共用这一个面板，胶囊必须跟着当前生效的那类走。
+ *
+ * @param noTransition - 是否跳过过渡直接落位
+ * @returns 无返回值
+ */
+/**
+ * 把选中胶囊同步到当前选中的订阅源
+ *
+ * @param sliding - true 表示这是一次用户主动点击，胶囊**滑动**过去（0.26s）。
+ *   默认 false：布局变化远比点击频繁（折叠、换范围、搜索都会触发），
+ *   那些场景下若带过渡，会看到胶囊从旧位置慢慢飞过来，像卡顿。
+ * @returns 无返回值
+ */
+function syncCapsule(sliding = false) {
+  const list = feedListRef.value
+  const capsule = feedCapsule.value
+  if (!list || !capsule) return
+  const active = list.querySelector<HTMLElement>('.feed-item.active, .tag-row.active')
+  capsule.sync(active, sliding)
+}
+
+/**
+ * 指针移动时把 hover 胶囊跟到所在条目上
+ *
+ * 用事件委托而非逐条绑定：条目列表会随折叠 / 筛选重排，逐条绑定需要反复解绑重绑。
+ * 捕获 `mouseover`（会冒泡）而非 `mouseenter`（不冒泡，无法委托）。
+ *
+ * @param e - 鼠标事件
+ * @returns 无返回值
+ */
+function onListMouseOver(e: MouseEvent) {
+  const list = feedListRef.value
+  const capsule = feedCapsule.value
+  if (!list || !capsule) return
+  const item = (e.target as HTMLElement | null)?.closest<HTMLElement>('.feed-item, .tag-row')
+  capsule.hover(item ?? null)
+}
+
+/**
+ * 指针离开列表时隐藏 hover 胶囊
+ *
+ * 必须处理：若只在 mouseover 里维护，指针从列表移到面板空白处后，胶囊会
+ * 停在最后一项上不消失。
+ *
+ * @param e - 鼠标事件；用 relatedTarget 判断是真的离开，还是在列表内部移动
+ * @returns 无返回值
+ */
+function onListMouseOut(e: MouseEvent) {
+  const list = feedListRef.value
+  const capsule = feedCapsule.value
+  if (!list || !capsule) return
+  // relatedTarget 非空说明只是移到了列表内部的另一个条目上，交给 mouseover 处理
+  const to = e.relatedTarget as Node | null
+  if (to && list.contains(to)) return
+  capsule.hover(null)
+}
+
+/**
+ * 折叠 / 展开某个文件夹分组
+ *
+ * 从「v-show 隐藏条目」改为「grid-template-rows 1fr→0fr 的高度动画」，故不再需要
+ * 整体替换 collapsed 集合来触发渲染——但 Set 的原地 mutate 不会被 Vue 追踪到，
+ * 仍必须整体替换一次才能让折叠态与高度动画生效。展开 / 折叠互为逆过程，复用同一条声明。
+ *
+ * @param group - 被切换的分组
+ * @param e - 点击事件（用于播放水滴）
+ * @returns 无返回值；副作用为翻转该分组的折叠态并重算胶囊位置
+ */
+function toggleFolder(group: { key: string }, e: MouseEvent) {
+  playDropSplit(e)
+  const next = new Set(collapsed.value)
+  if (next.has(group.key)) next.delete(group.key)
+  else next.add(group.key)
+  collapsed.value = next
+  // 等高度动画的样式落位后再同步胶囊，否则测到的还是动画开始前的几何
+  void nextTick(() => syncCapsule())
+}
+
+/**
+ * 折叠 / 展开标签分区
+ *
+ * 与文件夹分组同一套结构与动效，只是持久化位置不同（本地 state 而非 collapsed 集合）。
+ *
+ * @param e - 点击事件（用于播放水滴）
+ * @returns 无返回值
+ */
+function toggleTagSection(e: MouseEvent) {
+  playDropSplit(e)
+  tagSectionCollapsed.value = !tagSectionCollapsed.value
+  void nextTick(() => syncCapsule())
+}
+
 /**
  * 刷新进度文案（如 " 3/31"；无进度时为空串）
  *
@@ -400,21 +565,6 @@ function folderLabel(group: { folder: Folder | null }): string {
 }
 
 /**
- * 折叠 / 展开某个文件夹分组
- *
- * 切换时整体替换 `collapsed` 集合（而非原地 mutate），以保证 Vue 的响应式依赖被正确追踪。
- *
- * @param key - 分组唯一 key（'f<id>' 或 'uncat'）
- * @returns 无返回值；副作用为翻转 collapsed 中对应 key 的存在性
- */
-function toggleFolder(key: string) {
-  const next = new Set(collapsed.value)
-  if (next.has(key)) next.delete(key)
-  else next.add(key)
-  collapsed.value = next
-}
-
-/**
  * 刷新全部订阅源
  *
  * 委托 feedsStore.refreshFeeds()（内部 `invoke('feeds_refresh')` 拉取新文章并重载列表）。
@@ -459,7 +609,25 @@ function selectFeed(feed: Feed) {
   // 刻意不 await：刷新是后台动作，选中的界面反馈（列表切换 / 抽屉收起）不能等它
   void feedsStore.autoRefreshOnSelect(feed.id)
   isOpen.value = false
+  // 用户主动点击 → 胶囊逐格滑动过去。
+  // 同时置标记：selectedFeed 变化会触发下面的 watch，而那条路径传的是"瞬时"，
+  // 若不避开就会 cancelWalk() 把刚开始的逐格掐断（表现为"点了还是瞬移"）。
+  // 胶囊同步统一交给下面的 watch（选中态的唯一监听点）：此处若自行同步，
+  //读到的可能还是上一次的选中项，高亮会滞后一次点击。
+  clickedRecently = true
 }
+
+/**
+ * 点击后短期为真：**只用于决定动效，不用于跳过同步**
+ *
+ * 用户点击要"滑过去"，而折叠、命令面板跳转等变化只需瞬时落位。
+ * watch 消费后立即复位，故不会把后续的真实变化误判为点击。
+ *
+ * 曾经的坑：早先用它让 watch **直接 return 跳过**，而点击回调里又自行同步——
+ * 两边正好互换（点击回调早于 store 的 await、读到旧值），导致高亮滞后一次。
+ * 现改为「只有 watch 一条路径 + 标记只决定动效」，选中态与胶囊永远同源。
+ */
+let clickedRecently = false
 
 /**
  * 选中 / 取消选中一个标签（进入或退出标签视图）
@@ -479,6 +647,9 @@ function selectTag(tagId: number) {
     articlesStore.setTagFilter(tagId)
   }
   isOpen.value = false
+  // 与选订阅源同处理：标签行也是胶囊指示的对象，点击同样要滑过去。
+  // 只登记意图，胶囊同步由 watch 统一完成（见 selectFeed 处的说明）。
+  clickedRecently = true
 }
 
 /**
@@ -570,6 +741,41 @@ function handleToggleFeedPanel() {
 }
 
 /**
+ * 响应命令面板的跳转：把胶囊滑到目标订阅源并播一次定位脉冲
+ *
+ * 目标源可能落在**已折叠**的分组里，故必须先展开那一组再测位置——
+ * 否则量到的是 0 高度，胶囊会滑到列表顶部。
+ *
+ * @param e - `command-palette-jump` 事件，detail 含 feedId
+ * @returns 无返回值
+ */
+async function onPaletteJump(e: Event) {
+  const feedId = (e as CustomEvent<{ feedId: number }>).detail?.feedId
+  if (typeof feedId !== 'number') return
+
+  // 找出目标源所属分组，展开它（若已展开则 next 保持原样，Set 替换仍会触发一次重算）
+  const target = feedsStore.feeds.find((f) => f.id === feedId)
+  if (target) {
+    const key = target.folder_id ? 'f' + target.folder_id : 'uncat'
+    if (collapsed.value.has(key)) {
+      const next = new Set(collapsed.value)
+      next.delete(key)
+      collapsed.value = next
+    }
+    // 展开动画要跑完（280ms），胶囊才量得到最终位置；这里等一小段再落位
+    await new Promise((r) => setTimeout(r, 300))
+  }
+
+  const list = feedListRef.value
+  const capsule = feedCapsule.value
+  if (!list || !capsule) return
+  const el = list.querySelector<HTMLElement>(`.feed-item[data-feed-id="${feedId}"]`)
+  if (!el) return
+  capsule.sync(el)
+  capsule.pulse()
+}
+
+/**
  * 注册面板开合的事件监听
  *
  * 监听挂在 window 上（而非常规的模板事件），是因为派发方（标题栏菜单按钮）是互不关联的兄弟组件。
@@ -584,6 +790,22 @@ onMounted(() => {
   // 标签分区同样需要在挂载时取一次目录；失败仅在 store 里记 error，不影响订阅源列表
   tagsStore.loadTags()
   window.addEventListener('toggle-feed-panel', handleToggleFeedPanel)
+  window.addEventListener('command-palette-jump', onPaletteJump)
+
+  // 列表内容是异步到达的（feeds/folders 都走 invoke），首帧没有条目可测量。
+  // watch 选中态而非一次性调用：无论是挂载时的首绘、还是启动即带选中态的恢复场景，
+  // 都会在数据到达那一次触发同步。
+  watch(
+    () => [feedsStore.feeds, feedsStore.selectedFeed, collapsed.value, articlesStore.tagFilterId] as const,
+    () => {
+      // 统一在此同步胶囊：此时选中态与 DOM 的 active 类都已更新，
+      // 量到的必然是本次真正选中/变化的那一项，故不会滞后也不会错位。
+      const sliding = clickedRecently
+      clickedRecently = false
+      void nextTick(() => syncCapsule(sliding))
+    },
+    { immediate: true, deep: false },
+  )
 })
 
 /**
@@ -631,6 +853,7 @@ watch(
 
 onUnmounted(() => {
   window.removeEventListener('toggle-feed-panel', handleToggleFeedPanel)
+  window.removeEventListener('command-palette-jump', onPaletteJump)
   document.removeEventListener('click', onDocClick)
 })
 </script>
@@ -641,7 +864,11 @@ onUnmounted(() => {
      不能写死像素值：scoped 选择器带 data-v 属性，特异性压过 styles.css 的
      全局 `.feed-panel { width: var(--feed-w) }`，硬编码会让拖拽形同虚设。 */
   width: var(--feed-w, 260px);
-  background: var(--surface);
+  /* 玻璃化：半透明 + 背景模糊 + 上边缘内高光。厚度感靠 --glass-hi 那条内阴影，
+     不靠投影——栏间窄缝会同时承接相邻面板的投影，投影稍重就在缝里叠成深色凹槽。 */
+  background: var(--glass);
+  backdrop-filter: blur(var(--blur)) saturate(1.5);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.5);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -649,10 +876,13 @@ onUnmounted(() => {
      否则会形成两层叠加的内边距（两处各一个 --tb-h，视觉上出现大片空白） */
   height: 100%;
   overflow: hidden;
-  /* 浮岛化：圆角 + 弱投影浮起 + 冷蓝 hairline 描边（分隔主要靠描边，投影只负责微浮起） */
   border-radius: var(--r-panel);
-  box-shadow: var(--shadow-panel);
-  border: 1px solid var(--panel-border);
+  box-shadow:
+    inset 0 1px 0 var(--glass-hi),
+    inset 0 -1px 0 var(--glass-lo),
+    0 2px 6px rgba(31, 45, 70, 0.05),
+    0 10px 30px rgba(31, 45, 70, 0.07);
+  border: 1px solid var(--glass-hair);
 }
 
 .feed-search-wrap {
@@ -672,7 +902,7 @@ onUnmounted(() => {
   transition: background 0.15s;
 }
 .feed-search input:focus {
-  background: var(--surface);
+  background: var(--cap-feed);
   box-shadow: 0 0 0 1px var(--primary);
 }
 .feed-search input::placeholder { color: var(--text-tertiary); }
@@ -687,11 +917,18 @@ onUnmounted(() => {
 
 /* 订阅列表滚动区：右侧被滚动条占掉 --sb-w，故左侧补同等宽度做配重，
    让订阅源项的 hover / 选中背景在左右两侧留出等宽空白（否则视觉偏左）。
-   滚动条风格统一收敛到 styles.css 全局规则，此处不再单独重写。 */
+   滚动条风格统一收敛到 styles.css 全局规则，此处不再单独重写。
+
+   position: relative 是滑动胶囊的定位基准：胶囊测的是条目的 offsetTop，
+   两者必须在同一坐标系里，否则胶囊会按错误的基准偏移。 */
 .feed-list {
+  position: relative;
   flex: 1;
   overflow-y: auto;
   padding: var(--sp-1) var(--sp-2) var(--sp-1) calc(var(--sp-2) + var(--sb-w, var(--sp-1)));
+  /* 胶囊默认左右各留 8px，与条目自身 padding 对齐 */
+  --cap-left: var(--sp-2);
+  --cap-right: var(--sp-2);
 }
 
 /* 加载态骨架屏：按真实 .feed-item 的几何铺排（28px 圆形头像 + 右侧两行文字），
@@ -730,6 +967,21 @@ onUnmounted(() => {
 
 /* ─── 文件夹分组 ─────────────────────────────────────────── */
 .folder-group { margin-bottom: var(--sp-025); }
+/* 折叠容器：用 grid-template-rows: 1fr→0fr 做高度动画，
+   无需测量真实内容高度（groupedFeeds 每次都会产出新数组，测高度既贵又易错）。
+   内层 div 必须有 overflow:hidden 才会被 0fr 真正压扁。
+   展开 / 折叠互为逆过程，复用同一条声明。 */
+.folder-body {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 0.28s var(--ease-slide);
+}
+.folder-body > div { overflow: hidden; min-height: 0; }
+.folder-group.collapsed .folder-body { grid-template-rows: 0fr; }
+/* 折叠时子项淡出：单纯压扁会让文字"被挤扁"，与淡出叠加才像收起 */
+.folder-body > div > * { transition: opacity 0.16s linear; }
+.folder-group.collapsed .folder-body > div > * { opacity: 0; }
+
 .folder-head {
   display: flex;
   align-items: center;
@@ -743,12 +995,47 @@ onUnmounted(() => {
   letter-spacing: 0.03em;
 }
 .folder-head:hover { color: var(--text-secondary); }
-.folder-caret { font-size: 10px; flex-shrink: 0; }
+/* 折叠箭头：改用 SVG 图标（原先用 ▸ / ▾ 字符，宽高随字体渲染不稳定，
+   水滴需要相对它定位）。折叠时旋转 90° —— 用 transition 而非换字符，跳变更像物理开合。 */
+.folder-caret {
+  position: relative;
+  width: 12px; height: 12px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.folder-caret svg {
+  width: 9px; height: 9px;
+  transition: transform var(--dur) var(--ease);
+}
+.folder-group.collapsed .folder-caret svg { transform: rotate(-90deg); }
+
+/* 水滴：从折叠点分裂后坠落淡出。与高度动画同步发生，是全文唯一使用该动效的地方。 */
+.folder-drop {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 5px; height: 5px;
+  margin: -2.5px 0 0 -2.5px;
+  border-radius: 50%;
+  background: var(--primary);
+  pointer-events: none;
+  animation: folder-drop-split 0.46s var(--ease-slide) forwards;
+}
+@keyframes folder-drop-split {
+  0%   { transform: translate(0, 0) scale(0.3); opacity: 0; }
+  22%  { opacity: 0.9; }
+  100% { transform: translate(var(--dx), var(--dy)) scale(0.85); opacity: 0; }
+}
+/* 无障碍：关掉动效后水滴不播，但折叠本身仍有过渡，交互不受影响 */
+@media (prefers-reduced-motion: reduce) {
+  .folder-drop { animation: none; opacity: 0; }
+}
 .folder-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* 标签行：与 .feed-item 同构（hover 右移 + 选中指示条），但首元素是可着色的色点
-   而不是头像 —— 标签没有图标，用自身颜色做视觉锚点最直接。 */
+/* 标签行：与 .feed-item 同构，但首元素是可着色的色点而不是头像
+   —— 标签没有图标，用自身颜色做视觉锚点最直接。
+   选中态底色与指示条已移除：改由滑动胶囊统一表达，此处只留文字主色。 */
 .tag-row {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: var(--sp-2);
@@ -756,23 +1043,11 @@ onUnmounted(() => {
   margin-bottom: var(--sp-025);
   border-radius: var(--r-md);
   cursor: pointer;
-  position: relative;
-  transition: background var(--dur) var(--ease), transform var(--dur) var(--ease);
+  transition: background var(--dur) var(--ease);
 }
-.tag-row:hover { background: var(--fill); transform: translateX(2px); }
-.tag-row:active { transform: scale(0.985); }
-.tag-row.active { background: var(--primary-soft); }
-/* 选中态指示条：与订阅源条目保持同一视觉语言 */
-.tag-row.active::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 24%;
-  bottom: 24%;
-  width: 3px;
-  border-radius: var(--r-pill);
-  background: var(--primary);
-}
+/* hover 底色已移除：与 .feed-item 同理由 hover 胶囊接管（见 SelectCapsule.vue） */
+.tag-row:hover { background: transparent; }
+.tag-row.active { background: transparent; }
 .tag-row-dot {
   width: 8px;
   height: 8px;
@@ -788,7 +1063,9 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.tag-row.active .tag-row-name { color: var(--primary); font-weight: 600; }
+.tag-row.active .tag-row-name { color: var(--cap-active-fg); font-weight: 600; }
+/* 选中态未读点取琥珀，与订阅源条目的选中文字同源 */
+.tag-row.active .tag-row-dot { box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand-from) 28%, transparent); }
 
 /* ─── 底部工具条（单行图标） ─────────────────────────────────────────────────
    替代原先 4 个整行按钮（~170px）：一行 ~46px，列表区多出约 130px 纵向空间。
@@ -798,7 +1075,11 @@ onUnmounted(() => {
   align-items: center;
   gap: var(--sp-1);
   padding: var(--sp-2) var(--sp-3);
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--glass-hair);
+  /* 透明：面板已是玻璃，实色底会把玻璃截断成上下两段。
+     上边缘补一道内高光，代替原先靠 --surface 拉开的那层关系。 */
+  box-shadow: inset 0 1px 0 var(--glass-hi);
+  background: transparent;
 }
 .tool-btn {
   display: flex;
