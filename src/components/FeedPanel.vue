@@ -127,7 +127,7 @@
         <button
           class="tool-btn"
           :class="{ active: showMoreMenu }"
-          @click="showMoreMenu = !showMoreMenu"
+          @click="toggleMoreMenu"
           title="更多功能"
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
@@ -136,48 +136,54 @@
             <circle cx="12" cy="19" r="2"></circle>
           </svg>
         </button>
-        <div v-if="showMoreMenu" class="more-dropdown">
-          <!-- 新建文件夹：低频结构整理操作，从整行按钮降级收进本菜单 -->
-          <button class="dropdown-item" @click="showMoreMenu = false; createFolder()">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-            </svg>
-            新建文件夹
-          </button>
-          <button class="dropdown-item" @click="showRules = true; showMoreMenu = false">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
-            </svg>
-            过滤规则
-          </button>
-          <button class="dropdown-item" @click="showResearch = true; showMoreMenu = false">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M3 3v18h18"></path>
-              <path d="M18.7 8l-5.1 5.2-2.8-2.8L7 14.3"></path>
-            </svg>
-            研究工作台
-          </button>
-          <!-- 智能摘要：按关注实体分组看高分文章，属"挑着读"的低频入口 -->
-          <button class="dropdown-item" @click="showDigest = true; showMoreMenu = false">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M12 2l2 6.1L20 10l-6 1.9L12 18l-2-6.1L4 10l6-1.9z"></path>
-              <path d="M19 14l1 3 3 1-3 1-1 3-1-3-3-1 3-1z"></path>
-            </svg>
-            智能摘要
-          </button>
-          <!-- 实体关系图：切到主屏全宽展示（与文章阅读互斥的另一种主屏内容） -->
-          <button class="dropdown-item" @click="showGraphView">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="5" cy="6" r="3"></circle>
-              <circle cx="19" cy="6" r="3"></circle>
-              <circle cx="12" cy="18" r="3"></circle>
-              <line x1="7.5" y1="8" x2="10.5" y2="15.5"></line>
-              <line x1="16.5" y1="8" x2="13.5" y2="15.5"></line>
-              <line x1="8" y1="6" x2="16" y2="6"></line>
-            </svg>
-            实体关系图
-          </button>
-        </div>
+        <!-- 「···」更多菜单：Teleport 到 body。
+面板的 overflow:hidden 会裁掉向上溢出的浮层，而面板自身的
+backdrop-filter 又使 position:fixed 退化为 absolute —— 两者叠加会
+把菜单关在栏内，故必须移出该坐标系。 -->
+        <Teleport to="body">
+      <div v-if="showMoreMenu" class="more-dropdown" ref="dropdownRef" :style="dropdownStyle">
+        <!-- 新建文件夹：低频结构整理操作，从整行按钮降级收进本菜单 -->
+        <button class="dropdown-item" @click="showMoreMenu = false; createFolder()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+          </svg>
+          新建文件夹
+        </button>
+        <button class="dropdown-item" @click="showRules = true; showMoreMenu = false">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
+          </svg>
+          过滤规则
+        </button>
+        <button class="dropdown-item" @click="showResearch = true; showMoreMenu = false">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 3v18h18"></path>
+            <path d="M18.7 8l-5.1 5.2-2.8-2.8L7 14.3"></path>
+          </svg>
+          研究工作台
+        </button>
+        <!-- 智能摘要：按关注实体分组看高分文章，属"挑着读"的低频入口 -->
+        <button class="dropdown-item" @click="showDigest = true; showMoreMenu = false">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2l2 6.1L20 10l-6 1.9L12 18l-2-6.1L4 10l6-1.9z"></path>
+            <path d="M19 14l1 3 3 1-3 1-1 3-1-3-3-1 3-1z"></path>
+          </svg>
+          智能摘要
+        </button>
+        <!-- 实体关系图：切到主屏全宽展示（与文章阅读互斥的另一种主屏内容） -->
+        <button class="dropdown-item" @click="showGraphView">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="5" cy="6" r="3"></circle>
+            <circle cx="19" cy="6" r="3"></circle>
+            <circle cx="12" cy="18" r="3"></circle>
+            <line x1="7.5" y1="8" x2="10.5" y2="15.5"></line>
+            <line x1="16.5" y1="8" x2="13.5" y2="15.5"></line>
+            <line x1="8" y1="6" x2="16" y2="6"></line>
+          </svg>
+          实体关系图
+        </button>
+      </div>
+        </Teleport>
       </div>
       <span class="tool-spacer"></span>
       <button class="tool-btn" :class="{ refreshing: refreshing }" @click="refreshFeeds" title="刷新全部订阅源">
@@ -272,6 +278,15 @@ const isOpen = ref(false)
 const showMoreMenu = ref(false)
 /** 更多菜单根元素（用于计算下拉位置，预留扩展） */
 const moreMenuRef = ref<HTMLElement | null>(null)
+/** 菜单本体（Teleport 到 body，故需单独一个 ref） */
+const dropdownRef = ref<HTMLElement | null>(null)
+/**
+ * 菜单的定位样式：由触发按钮的位置实时算出
+ *
+ * Teleport 之后菜单脱离了面板的坐标系，必须自己算"该出现在哪"。
+ * 用视口坐标（fixed 的参照系）并减去菜单自身尺寸，即可让它贴在按钮上方。
+ */
+const dropdownStyle = ref<Record<string, string>>({})
 
 /**
  * 过滤规则弹窗是否打开
@@ -822,12 +837,33 @@ onMounted(() => {
  *
  * @param e - 鼠标事件
  */
+/**
+ * 打开更多菜单：先算好定位再显示
+ *
+ * 必须等菜单**已渲染**才能拿到它的高度，故nextTick 后再写样式；
+ * 否则只能按估算高度定位，菜单会偏。
+ */
+async function toggleMoreMenu() {
+  showMoreMenu.value = !showMoreMenu.value
+  if (!showMoreMenu.value) return
+  const btn = moreMenuRef.value?.querySelector('button')
+  if (!btn) return
+  const r = btn.getBoundingClientRect()
+  // 贴在按钮正上方、左侧对齐（按钮贴近面板左缘，居中会向左溢出视口）
+  dropdownStyle.value = {
+    left: `${r.left}px`,
+    top: `${r.top}px`,
+  }
+}
+
 function onDocClick(e: MouseEvent) {
   if (!showMoreMenu.value) return
   const target = e.target as Node | null
   if (!target) return
-  // 点击菜单根或其子元素时不关闭
+  // 点击触发按钮或菜单本体（含其子元素）时不关闭——
+  // 菜单已 Teleport 到 body，不再是 moreMenuRef 的子节点，两者都要判
   if (moreMenuRef.value?.contains(target)) return
+  if (dropdownRef.value?.contains(target)) return
   showMoreMenu.value = false
 }
 
@@ -1133,22 +1169,28 @@ onUnmounted(() => {
 .more-menu-wrap {
   position: relative;
 }
+/* Teleport 到 body 后改为 fixed：由 JS 按按钮的视口坐标定位（见 dropdownStyle），
+   transform: translateY(-100%) 把它推到按钮上方，8px 间距用 margin 补。 */
 .more-dropdown {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  /* 左对齐而不是居中：触发按钮「···」贴近面板左缘，160px 宽的菜单若以按钮
-     为中心会向左溢出面板（.feed-panel overflow:hidden 直接裁掉） */
-  left: 0;
+  position: fixed;
+  transform: translateY(calc(-100% - 8px));
   min-width: 160px;
-  background: var(--surface);
-  border: 1px solid var(--panel-border);
+  background: var(--glass-strong);
+  backdrop-filter: blur(24px) saturate(1.7);
+  -webkit-backdrop-filter: blur(24px) saturate(1.7);
+  border: 1px solid var(--glass-hair);
   border-radius: var(--r-lg);
-  box-shadow: var(--shadow-pop);
+  box-shadow:
+    inset 0 1px 0 var(--glass-hi),
+    var(--shadow-pop);
   padding: var(--sp-05);
   display: flex;
   flex-direction: column;
   gap: var(--sp-1);
-  z-index: 300;
+  /* Teleport 到 body 后脱离面板的层叠上下文，须给全局层级。
+     取 950：高于面板光斑等装饰层，低于 BaseModal 的 1000——
+     点菜单项打开的弹窗必须盖住菜单，否则菜单会浮在弹窗之上。 */
+  z-index: 950;
 }
 .dropdown-item {
   display: flex;
@@ -1167,7 +1209,9 @@ onUnmounted(() => {
   width: 100%;
 }
 .dropdown-item:hover {
-  background: var(--fill-secondary);
+  /* 主题色淡底而非中性灰：菜单底是玻璃，中性灰叠在上面显脏；
+     且与选中胶囊共用 --cap-hover-bg，两处 hover 是同一套语言。 */
+  background: var(--cap-hover-bg);
   color: var(--primary);
 }
 .dropdown-item svg {
