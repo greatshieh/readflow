@@ -1,7 +1,13 @@
 <template>
   <!-- 模态弹窗外壳：遮罩 + 居中面板 + 无障碍语义。
        业务弹窗只负责往默认插槽里放内容（一般是「头部 + 主体」两段），
-       遮罩点击、Esc 关闭、焦点陷阱与滚动锁都由本组件统一处理。 -->
+       遮罩点击、Esc 关闭、焦点陷阱与滚动锁都由本组件统一处理。
+
+       Teleport 到 body 是必需的，不能省：订阅栏等面板带 `backdrop-filter`，
+       而 backdrop-filter 会**创建包含块**，使内部的 position:fixed 退化为
+       absolute —— 遮罩于是被局限在面板盒子里、并被面板的 overflow:hidden 裁掉
+       （表现为弹窗被"关"在栏内）。移到 body 下即彻底脱离该坐标系。 -->
+  <Teleport to="body">
   <div class="overlay" :class="{ show: open }" @mousedown.self="emit('close')">
     <div
       ref="panelRef"
@@ -15,6 +21,7 @@
       <slot />
     </div>
   </div>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
