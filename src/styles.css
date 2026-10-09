@@ -285,7 +285,7 @@
      hover / active 的高亮块与居中阅读列看起来都会偏左。 */
   --sb-w: 4px;
   /* 动效统一基准：所有 hover/active 过渡共用同一时长与缓动，避免观感杂乱 */
-  --dur: 0.18s;
+  --dur: 0.22s;
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
   /* 滑动胶囊专用：比 --dur 更慢、曲线末端带一点减速，
      让胶囊"滑到位"有重量感，而不是匀速平移显得廉价 */
@@ -956,7 +956,7 @@ select:focus-visible {
   background: var(--surface);
   color: var(--text-primary);
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color var(--dur) var(--ease);
   /* 输入框不继承字体是浏览器默认行为，显式 inherit 才能跟随「界面字体」设置 */
   font-family: inherit;
 }
@@ -1135,7 +1135,7 @@ select:focus-visible {
     top: var(--tb-h);
     bottom: 0;
     z-index: 400;
-    transition: left 0.25s ease;
+    transition: left var(--dur) var(--ease);
     box-shadow: 2px 0 8px rgba(0,0,0,0.1);
   }
   .feed-panel.open {

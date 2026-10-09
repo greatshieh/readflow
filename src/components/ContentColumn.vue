@@ -681,6 +681,11 @@ const {
   max-width: var(--read-max);
   margin: 0 auto;
   width: 100%;
+  transition: box-shadow var(--dur) var(--ease);
+}
+/* 正文离开顶端时浮起一条向下投影：头部像「压在内容之上」而不是平铺，层次更分明 */
+.content-head.head-elevated {
+  box-shadow: 0 1px 0 var(--border), 0 10px 18px -12px rgba(0, 0, 0, 0.22);
 }
 .content-title {
   font-size: calc(24px * var(--reading-scale, 1));

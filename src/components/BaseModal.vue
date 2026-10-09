@@ -293,11 +293,11 @@ onBeforeUnmount(deactivate)
 @keyframes base-modal-in {
   from {
     opacity: 0;
-    transform: scale(0.97) translateY(8px);
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
-    transform: scale(1) translateY(0);
+    transform: translateY(0);
   }
 }
 
