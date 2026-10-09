@@ -756,6 +756,24 @@ function handleToggleFeedPanel() {
 }
 
 /**
+ * 响应「打开添加订阅弹窗」请求（`o` 快捷键 / 命令面板入口）
+ *
+ * 弹窗挂在本组件模板里、由局部状态 `showAdd` 控制，派发方 `App.vue` 够不着。
+ * 走 window 事件而非提升开关到 store：与既有的 `toggle-feed-panel`、
+ * `command-palette-jump` 同构，都是"本组件自持的瞬时展示态"。
+ *
+ * # 为什么不需要防重
+ * 弹窗一旦打开，`dialogStack` 计数立刻 +1，`App.vue` 的全局快捷键守卫
+ * 会因此整体让路——重复按 `o` 不会叠出第二个弹窗。
+ *
+ * @returns 无返回值
+ * @副作用 置位 showAdd
+ */
+function handleOpenAddFeed() {
+  showAdd.value = true
+}
+
+/**
  * 响应命令面板的跳转：把胶囊滑到目标订阅源并播一次定位脉冲
  *
  * 目标源可能落在**已折叠**的分组里，故必须先展开那一组再测位置——
@@ -797,7 +815,7 @@ async function onPaletteJump(e: Event) {
  * 选择在 onMounted 注册而非模块顶层执行，可确保组件销毁前能成对移除。
  *
  * @returns 无返回值
- * @副作用 在 window 上注册 `toggle-feed-panel` 监听
+ * @副作用 在 window 上注册 `toggle-feed-panel` / `command-palette-jump` / `open-add-feed` 监听
  */
 onMounted(() => {
   // 侧边栏分组依赖文件夹列表，挂载时拉取一次（失败仅记日志，不阻塞订阅源展示）
@@ -806,6 +824,7 @@ onMounted(() => {
   tagsStore.loadTags()
   window.addEventListener('toggle-feed-panel', handleToggleFeedPanel)
   window.addEventListener('command-palette-jump', onPaletteJump)
+  window.addEventListener('open-add-feed', handleOpenAddFeed)
 
   // 列表内容是异步到达的（feeds/folders 都走 invoke），首帧没有条目可测量。
   // watch 选中态而非一次性调用：无论是挂载时的首绘、还是启动即带选中态的恢复场景，
@@ -890,6 +909,7 @@ watch(
 onUnmounted(() => {
   window.removeEventListener('toggle-feed-panel', handleToggleFeedPanel)
   window.removeEventListener('command-palette-jump', onPaletteJump)
+  window.removeEventListener('open-add-feed', handleOpenAddFeed)
   document.removeEventListener('click', onDocClick)
 })
 </script>
