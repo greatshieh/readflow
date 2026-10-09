@@ -9,7 +9,13 @@
   <Teleport to="body">
     <transition name="pal">
       <div v-if="open" class="pal-scrim" @mousedown.self="close">
-        <div class="pal" role="dialog" aria-modal="true" aria-label="搜索文章">
+        <div
+          class="pal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="搜索文章"
+          @mousemove="onMouseMove"
+        >
           <!-- 输入行：放大镜 + 输入框 + 当前检索模式标签 -->
           <div class="pal-head">
             <svg class="pal-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -35,7 +41,7 @@
 
           <!-- 结果区：加载中 / 空态 / 结果列表 三者互斥。
                加载态必须先于空态判断，否则请求在途时会闪出"没有结果"。 -->
-          <div class="pal-body">
+          <div ref="listRef" class="pal-body">
             <div v-if="loading" class="pal-loading">
               <span v-for="i in 3" :key="i" class="pal-skel">
                 <span class="sk-line"></span>
@@ -50,7 +56,7 @@
                 :key="a.id"
                 class="pal-row"
                 :class="{ on: i === index }"
-                @mouseenter="index = i"
+                @mouseenter="onRowEnter(i)"
                 @click="jump"
               >
                 <span class="pal-av" :style="avStyle(a.feed_id)">
@@ -136,6 +142,13 @@ const loading = ref(false)
 const mode = ref<'title' | 'full'>('title')
 /** 输入框 DOM，唤起时聚焦 */
 const inputRef = ref<HTMLInputElement | null>(null)
+/**
+ * 结果滚动容器 DOM
+ *
+ * 既是 ensureVisible 的测距基准（靠 CSS 的 position: relative 成为行的 offsetParent），
+ * 也是新结果到达时要归零的那个 scrollTop 的持有者。
+ */
+const listRef = ref<HTMLElement | null>(null)
 
 const articlesStore = useArticlesStore()
 const feedsStore = useFeedsStore()
@@ -162,6 +175,23 @@ let reqSeq = 0
 
 /** 组件内在途定时器句柄（输入防抖用），卸载时统一清理 */
 let debounceTimer: ReturnType<typeof setTimeout> | undefined
+
+/**
+ * 结果集整体换掉时把列表滚回顶部
+ *
+ * 用 watch 而非在 runSearch 的两个分支里各写一次：换结果有三条路径
+ * （标题命中、全文命中、清空），漏一条就会出现"新搜索从半截开始显示"。
+ * index 归零与滚动归零必须同时发生，否则第一行不在视口里。
+ *
+ * 等 nextTick 再写：结果行要等 Vue 渲染完才在 DOM 里，早一步容器还是空的。
+ */
+watch(results, async () => {
+  // 结果集整体换掉时同样挂起 hover：列表重排会让鼠标底下换成另一行，
+  // 若不锁住，新结果刚出来的高亮会被立刻改到鼠标那一行
+  hoverLocked = true
+  await nextTick()
+  if (listRef.value) listRef.value.scrollTop = 0
+})
 
 /**
  * 打开命令面板
@@ -264,14 +294,110 @@ watch(keyword, (v) => {
 })
 
 /**
+ * 把当前高亮行滚进可视区
+ *
+ * `move()` 只改 index，容器不会自己滚——结果多于一屏时，高亮会一路走出视口，
+ * 表现就是"按了方向键没反应"。必须显式滚。
+ *
+ * # 为什么不用 scrollIntoView()
+ * 它会连带滚动**所有**可滚动祖先，容器外若还有可滚层就会把整块界面一起挪。
+ * 项目里 SelectCapsule 已因同样理由禁用过，这里保持一致：直接写容器 scrollTop，
+ * 把影响范围锁死在结果区内。
+ *
+ * # 上下各留 8px 余量
+ * 差一两像素也别滚，否则贴边的行会让列表频繁小幅抖动。
+ *
+ * @returns 无返回值；副作用为按需改写结果容器的 scrollTop
+ */
+function ensureVisible() {
+  const box = listRef.value
+  if (!box) return
+  const row = box.querySelectorAll<HTMLElement>('.pal-row')[index.value]
+  if (!row) return
+
+  const PAD = 8
+  const top = row.offsetTop
+  const bottom = top + row.offsetHeight
+  const viewTop = box.scrollTop
+  const viewBottom = viewTop + box.clientHeight
+
+  if (top - PAD < viewTop) box.scrollTop = Math.max(0, top - PAD)
+  else if (bottom + PAD > viewBottom) box.scrollTop = bottom + PAD - box.clientHeight
+}
+
+/**
+ * 键盘导航期间是否挂起"鼠标划过即高亮"
+ *
+ * # 为什么需要
+ * 结果行上挂着 `@mouseenter`，鼠标移进某行就把高亮改到那行。但 mouseenter
+ * 不只由"鼠标移动"触发，**元素移动到鼠标底下**同样触发。于是按方向键 → 列表滚动
+ * → 鼠标没动、下方却换了一行 → 补发 mouseenter → 高亮被拽回鼠标那一行，
+ * 键盘就走不动了。换结果集时列表重排，同理。
+ *
+ * # 何时解锁
+ * 只在鼠标发生**真实位移**时解除。滚动会让 Chromium 合成 mousemove，但合成事件的
+ * `movementX/Y` 恒为 0，据此过滤掉——否则滚动自己就把锁解开了。
+ *
+ * 非响应式：它只参与事件回调里的判断，不驱动渲染，用普通 let 即可。
+ */
+let hoverLocked = false
+
+/**
+ * 鼠标划过结果行时同步高亮
+ *
+ * 键盘导航挂起期间直接忽略，避免高亮在两种输入方式之间来回跳。
+ *
+ * @param i - 鼠标所在行的下标
+ * @returns 无返回值
+ */
+function onRowEnter(i: number) {
+  if (hoverLocked) return
+  index.value = i
+}
+
+/**
+ * 鼠标在面板内移动 → 解除 hover 挂起
+ *
+ * @param e - 鼠标事件；用 movementX/Y 判定是否为真实位移
+ * @returns 无返回值
+ */
+function onMouseMove(e: MouseEvent) {
+  // 位移为 0 说明是滚动合成的事件，不是用户真的动了鼠标
+  if (e.movementX === 0 && e.movementY === 0) return
+  hoverLocked = false
+}
+
+/**
  * 上下移动高亮项
+ *
+ * **不循环**：走到首项再按上、或走到末项再按下，都停在原地。此前用取模实现
+ * 环绕，结果是按到底部时高亮突然翻回第一项、列表整个滚回顶部，方向感和视线
+ * 都断了。命令面板的结果集通常是"从上往下找"，到头即止比绕圈更符合预期。
+ *
+ * 越界时仍要滚一次：用户可能先用鼠标滚轮把列表滚到别处，此时当前高亮行未必
+ * 在视口内，越界"无响应"应当表现为"高亮不动、但把它带回视野"，而不是彻底静默。
+ *
+ * 移动后也必须滚一次：index 变了不代表那一行在视口里。
+ * 等 nextTick 再量——高亮类的切换要等 Vue 渲染完，此刻 DOM 才是新的一行。
  *
  * @param d - 位移方向：1 下一项，-1 上一项
  * @returns 无返回值
  */
-function move(d: number) {
+async function move(d: number) {
   if (results.value.length === 0) return
-  index.value = (index.value + d + results.value.length) % results.value.length
+  // 键盘导航期间挂起 hover 抢占：本次移动会滚动列表，而滚动会让别的行滑到
+  // 鼠标底下、触发 mouseenter 把高亮拽回去
+  hoverLocked = true
+  const next = index.value + d
+  if (next < 0 || next >= results.value.length) {
+    // 到头停住，但把当前高亮行滚回视野
+    await nextTick()
+    ensureVisible()
+    return
+  }
+  index.value = next
+  await nextTick()
+  ensureVisible()
 }
 
 /**
@@ -536,6 +662,10 @@ onUnmounted(() => {
   overflow-y: auto;
   padding: var(--sp-2);
   background: var(--glass-body-bg);
+  /* 必须是结果行的 offsetParent：ensureVisible 用 offsetTop 量行相对滚动容器的位置。
+     不加这句，offsetTop 会以 .pal-scrim 为基准、把头部高度也算进去，滚动量就偏了。
+     与 FeedPanel 的 .feed-list 是同一个约定（胶囊测距也靠它）。 */
+  position: relative;
 }
 .pal-body::-webkit-scrollbar { width: var(--sb-w); }
 
