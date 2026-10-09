@@ -74,7 +74,9 @@
             <span><kbd>↑</kbd><kbd>↓</kbd>选择</span>
             <span><kbd>↵</kbd>跳转</span>
             <span><kbd>esc</kbd>关闭</span>
+            <!-- 可点入口：`?` 键本身没人能猜到，必须有个可见地方把它带出来 -->
             <span class="pal-hint">标题无命中时自动搜全文</span>
+            <button class="pal-action" type="button" @click="openShortcuts">快捷键</button>
           </div>
         </div>
       </div>
@@ -182,6 +184,20 @@ async function show() {
 /** 关闭命令面板 */
 function close() {
   open.value = false
+}
+
+/**
+ * 打开快捷键一览
+ *
+ * 弹窗由 `App.vue` 持有，故走 window 事件（与 `open-settings` 同构）。
+ * **必须先关本面板**：两层浮层都在 body 下，命令面板的 z-index 更高，
+ * 不关会盖住帮助弹窗的遮罩，看起来像点了没反应。
+ *
+ * @returns 无返回值
+ */
+function openShortcuts() {
+  close()
+  window.dispatchEvent(new CustomEvent('open-shortcuts'))
 }
 
 /**
@@ -642,6 +658,19 @@ onUnmounted(() => {
   box-shadow: var(--ring-inset);
 }
 .pal-hint { margin-left: auto; opacity: 0.85; }
+
+/* 底栏里的可点入口：外观贴近 .pal-hint（同为次要信息），但要有可点的反馈 */
+.pal-action {
+  border: none;
+  background: none;
+  padding: 0 var(--sp-1);
+  font: inherit;
+  font-size: inherit;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: var(--r-sm);
+}
+.pal-action:hover { color: var(--primary); background: var(--cap-feed); }
 
 /* ── 进出过渡：面板比遮罩晚一点到位，读起来像"从背景里浮起" ────────── */
 .pal-enter-active .pal, .pal-leave-active .pal { transition: transform var(--dur-slide) var(--ease-slide), opacity var(--dur) var(--ease); }
