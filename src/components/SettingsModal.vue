@@ -178,7 +178,7 @@ function close() {
   padding: var(--sp-4);
   display: flex; align-items: center;
 }
-.side-head h3 { font-size: var(--fs-base); font-weight: 500; margin: 0; }
+.side-head h3 { font-size: var(--fs-base); font-weight: 600; letter-spacing: -0.01em; margin: 0; }
 
 /* 纵排 tab：左对齐文字 + 圆角悬浮态；激活态用主题色描一层浅底 */
 .side-tabs {

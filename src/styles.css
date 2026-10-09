@@ -272,8 +272,8 @@
         CSS 里 `var(--未定义)` 会让整条声明失效，导致正文 h1 静默继承 body 的
         --fs-md（13px），渲染成与普通段落同大。补上定义即修复。 */
   --fs-xs: 11px;
-  --fs-sm: 12px;
-  --fs-md: 13px;
+  --fs-sm: 13px;
+  --fs-md: 14px;
   --fs-base: 14px;
   --fs-lg: 16px;
   --fs-xl: 18px;
@@ -934,7 +934,7 @@ select:focus-visible {
   border-bottom: 1px solid var(--border);
 }
 .setting:last-of-type { border-bottom: none; }
-.setting-info h4 { font-size: var(--fs-md); font-weight: 500; margin-bottom: var(--sp-025); }
+.setting-info h4 { font-size: var(--fs-md); font-weight: 600; margin-bottom: var(--sp-025); }
 .setting-info p { font-size: var(--fs-sm); color: var(--text-tertiary); }
 
 /* 表单 */

@@ -43,7 +43,11 @@
             <span class="ai-status-text">{{ aiStatusText }}</span>
           </template>
           <template v-else-if="articlesStore.aiError">
-            <span class="ai-err-ico">⚠</span>{{ articlesStore.aiError }}
+            <svg class="ai-err-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 3 2 20h20L12 3z" />
+              <line x1="12" y1="9.5" x2="12" y2="14.5" />
+              <circle cx="12" cy="17" r="0.9" fill="currentColor" stroke="none" />
+            </svg>{{ articlesStore.aiError }}
           </template>
         </div>
       </div>
@@ -726,7 +730,7 @@ const {
   padding: var(--sp-05) var(--sp-15);
   font-style: normal;
 }
-.ai-err-ico { margin-right: var(--sp-1); font-style: normal; }
+.ai-err-ico { width: 15px; height: 15px; flex-shrink: 0; margin-right: var(--sp-1); font-style: normal; }
 
 .content-body-area {
   flex: 1;
