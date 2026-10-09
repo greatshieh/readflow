@@ -264,7 +264,7 @@ async function closeApp() {
   flex-shrink: 0;
 }
 
-.titlebar-name { font-size: var(--fs-md); font-weight: 500; color: var(--text-primary); }
+.titlebar-name { font-size: var(--fs-md); font-weight: 600; letter-spacing: -0.01em; color: var(--text-primary); }
 
 .titlebar-center {
   flex: 1;

@@ -41,7 +41,10 @@
           :class="{ active: r.name === researchStore.activeReportName }"
           @click="handleReadReport(r.name)"
         >
-          <span class="report-icon">📄</span>
+          <svg class="report-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M14 3v4a1 1 0 0 0 1 1h4" />
+            <path d="M5 3h9l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
+          </svg>
           <span class="report-name">{{ r.name }}</span>
           <span class="report-meta">{{ r.modified }} · {{ formatSize(r.size) }}</span>
         </div>
@@ -304,10 +307,12 @@ watch(genKind, kind => {
 .report-item.active {
   outline: 1px solid var(--primary);
 }
-.report-icon { font-size: var(--fs-base); }
+.report-icon { width: 17px; height: 17px; flex-shrink: 0; color: var(--text-secondary); }
 .report-name {
   flex: 1;
   font-size: var(--fs-md);
+  font-weight: 600;
+  letter-spacing: -0.01em;
   color: var(--text-primary);
 }
 .report-meta {

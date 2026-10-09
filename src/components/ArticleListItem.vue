@@ -198,7 +198,7 @@ function onPreferenceClick(preference: 'like' | 'skip') {
 .feed-item-title {
   font-size: var(--fs-md);
   color: var(--text-primary);
-  font-weight: 400;
+  font-weight: 500;
   line-height: 1.45;
   /* 轻微收紧字距：中英混排的现代阅读器观感（负字距让标题更像"标题"） */
   letter-spacing: -0.01em;
