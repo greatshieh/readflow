@@ -1,6 +1,15 @@
 <template>
-  <!-- 根容器：专注模式下追加 focus-mode 类，隐藏订阅栏与文章列表栏（见 styles.css） -->
-  <div class="app" :class="{ 'focus-mode': uiStore.focusMode }">
+  <!-- 根容器：专注模式下追加 focus-mode 类隐藏订阅栏与文章列表栏；
+       mainView 为 graph 时追加 main-graph 类，隐藏订阅栏（见 styles.css），关系图独占整屏。
+       实体仪表盘为弹窗（点实体后弹出），不在此处控制 -->
+  <div
+    class="app"
+    :class="{
+      'focus-mode': uiStore.focusMode,
+      'main-graph': uiStore.mainView === 'graph',
+      'main-recommend': uiStore.mainView === 'recommend'
+    }"
+  >
     <!-- 顶部窗口栏：fixed 定位横跨全宽（含最小化/最大化/关闭、主题切换、设置入口） -->
     <TitleBar />
     <!-- 三栏主体：订阅栏 | 文章列表栏 | 正文栏，真正并列，各自顶部有独立操作条（对齐 Folo） -->
@@ -10,9 +19,12 @@
       <!-- 订阅栏 ↔ 右侧内容区 之间的可拖拽分隔条（对齐 Folo 的 PanelSplitter）；
            关系图视图下订阅栏右侧不再分列，分隔条随之隐藏 -->
       <div v-if="uiStore.mainView === 'articles'" class="col-resizer" :class="{ active: resizing === 'feed' }" @mousedown="startResize('feed', $event)" title="拖拽调整订阅栏宽度"></div>
-      <!-- 主屏内容二选一：文章阅读（中栏列表 + 右栏正文）或实体关系图（全宽）。
-           互斥由 uiStore.mainView 驱动，切换入口在研究工作台图页签与侧栏「更多」菜单 -->
+      <!-- 主屏内容三选一：文章阅读（中栏列表 + 右栏正文）、实体关系图（全屏）、智能推荐流（右区卡片流）。
+           互斥由 uiStore.mainView 驱动；关系图入口为「···更多」菜单与 D 键，推荐流入口为「···更多」菜单与 T 键。
+           实体仪表盘为弹窗（点实体后弹出），不在此处渲染。
+           推荐流视图保留订阅栏（区别于关系图的全屏），故不在 main-recommend 下隐藏订阅栏 -->
       <GraphView v-if="uiStore.mainView === 'graph'" />
+      <RecommendView v-else-if="uiStore.mainView === 'recommend'" />
       <template v-else>
         <!-- 中：文章列表栏（ArticleColumn，顶部固定操作条：当前源 / 搜索 / 仅未读 / 书签 / 刷新当前源 / 全部已读） -->
         <ArticleColumn />
@@ -30,6 +42,14 @@
     <CommandPalette />
     <!-- 全局弹窗：confirm / prompt / alert 统一由 GlobalModal 渲染 -->
     <GlobalModal />
+    <!-- 实体仪表盘弹窗：点实体后由 uiStore.entityDashboardOpen 控制显隐，叠在研究工作台之上 -->
+    <EntityDashboardModal
+      :open="uiStore.entityDashboardOpen"
+      :entity-id="uiStore.entityDashboardId"
+      @close="uiStore.closeEntityDashboard()"
+    />
+    <!-- 首启引导：首次启动（无 onboarded 标记）时弹出，完成 / 跳过后标记并关闭 -->
+    <OnboardingModal :open="showOnboarding" @finish="onOnboardingFinish" />
   </div>
 </template>
 
@@ -65,8 +85,11 @@ import TitleBar from './components/TitleBar.vue'
 import ArticleColumn from './components/ArticleColumn.vue'
 import ContentColumn from './components/ContentColumn.vue'
 import GraphView from './components/GraphView.vue'
+import RecommendView from './components/RecommendView.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import ShortcutsModal from './components/ShortcutsModal.vue'
+import EntityDashboardModal from './components/EntityDashboardModal.vue'
+import OnboardingModal from './components/OnboardingModal.vue'
 import GlobalModal from './components/GlobalModal.vue'
 import CommandPalette from './components/CommandPalette.vue'
 
@@ -90,6 +113,8 @@ const modalStore = useModalStore()
 const showSettings = ref(false)
 /** 快捷键一览模态显隐状态，由 `?` 键或命令面板底栏入口置为 true */
 const showShortcuts = ref(false)
+/** 首启引导显隐状态：首次启动（settings 表无 `onboarded` 标记）时由 mounted 置为 true */
+const showOnboarding = ref(false)
 
 /**
  * 打开设置模态的回调（绑定到 window 的 `open-settings` 事件，由 TitleBar 齿轮按钮派发）
@@ -108,6 +133,35 @@ function handleOpenSettings() {
  */
 function handleOpenShortcuts() {
   showShortcuts.value = true
+}
+
+/**
+ * 首启引导结束的回调（完成 / 跳过 / Esc / 点遮罩统一经 OnboardingModal 的 finish 事件）
+ *
+ * 写入 `onboarded=1` 标记避免下次启动再弹；`getSetting` 拿到的是字符串，与 `=== undefined`
+ * 比较即可判断"从未设置过"。
+ *
+ * @returns 无返回值；副作用为写入设置项并隐藏引导弹窗
+ */
+async function onOnboardingFinish(): Promise<void> {
+  await settingsStore.setSetting('onboarded', '1').catch((e) => console.error('写入引导标记失败:', e))
+  showOnboarding.value = false
+}
+
+/**
+ * 打开实体仪表盘的回调（由实体列表项 / 时间线分组头 / 关系图节点详情卡派发
+ * `open-entity-dashboard` 事件，detail 携带 entityId）
+ *
+ * 以弹窗形态承载——调用 uiStore.openEntityDashboard 打开仪表盘弹窗
+ * （区别于关系图的全屏视图），由 store 维护 entityDashboardOpen 与 entityDashboardId。
+ *
+ * @param e - 自定义事件，detail 为 `{ entityId: number }`
+ * @returns 无返回值；副作用为调用 uiStore.openEntityDashboard(id)
+ */
+function handleOpenEntityDashboard(e: Event) {
+  const detail = (e as CustomEvent<{ entityId: number }>).detail
+  if (typeof detail?.entityId !== 'number') return
+  uiStore.openEntityDashboard(detail.entityId)
 }
 
 /**
@@ -215,6 +269,8 @@ function toggleUnreadView() {
  * @returns 无返回值
  */
 function gotoAllArticles() {
+  // 回到全部文章时同步退出关系图 / 仪表盘全屏视图，否则会停在「全屏视图 + 旧列表」的错位态
+  uiStore.setMainView('articles')
   feedsStore.selectedFeed = null
   void articlesStore.loadArticles(null, 20, 0)
 }
@@ -319,6 +375,8 @@ const ACTIONS: Record<string, () => void> = {
   u: toggleUnreadView,
   g: gotoAllArticles,
   f: () => uiStore.toggleFocusMode(),
+  d: () => uiStore.toggleGraphView(),
+  t: () => uiStore.toggleRecommendView(),
   // ---- 应用 ----
   ',': () => {
     showSettings.value = true
@@ -357,10 +415,18 @@ for (let n = 1; n <= 9; n += 1) {
  * @returns 无返回值；命中接管范围内的按键时阻止默认行为并执行对应动作
  */
 function handleKeydown(e: KeyboardEvent) {
-  // Esc 退出专注模式
-  if (e.key === 'Escape' && uiStore.focusMode) {
-    uiStore.setFocusMode(false)
-    return
+  // Esc 退出全屏视图放在最前：不涉及修饰键冲突，且应当在任何情况下可用。
+  // 优先级：专注模式 > 关系图 / 推荐流（任何非文章视图） > 否则交给后续逻辑（弹窗自行处理 Esc）。
+  // mainView 非 articles 即视为"需要退出的视图"，统一回到 articles（setMainView 类型已含 recommend）。
+  if (e.key === 'Escape') {
+    if (uiStore.focusMode) {
+      uiStore.setFocusMode(false)
+      return
+    }
+    if (uiStore.mainView !== 'articles') {
+      uiStore.setMainView('articles')
+      return
+    }
   }
   // 组合键直接放行（不拦截、也不阻止默认行为）
   if (e.metaKey || e.ctrlKey || e.altKey) return
@@ -459,11 +525,14 @@ function onResizeEnd() {
 onMounted(async () => {
   window.addEventListener('open-settings', handleOpenSettings)
   window.addEventListener('open-shortcuts', handleOpenShortcuts)
+  window.addEventListener('open-entity-dashboard', handleOpenEntityDashboard)
   window.addEventListener('keydown', handleKeydown)
   // 回填存量订阅源的图标（站点 favicon 兜底，仅补空值）：必须在 loadFeeds 之前执行
   await invoke('feeds_backfill_icons').catch((e) => console.error('回填订阅源图标失败:', e))
   await feedsStore.loadFeeds()
   await settingsStore.loadSettings().catch((e) => console.error('加载设置失败:', e))
+  // 首启引导：settings 表无 `onboarded` 标记即视为首次启动（含老用户升级场景，仅弹一次）
+  if (settingsStore.getSetting('onboarded') === undefined) showOnboarding.value = true
   // 统一应用外观设置（主题 / 界面字体 / 内容字体 / 阅读字号）
   applyAppearance(settingsStore)
 })
@@ -472,6 +541,7 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('open-settings', handleOpenSettings)
   window.removeEventListener('open-shortcuts', handleOpenShortcuts)
+  window.removeEventListener('open-entity-dashboard', handleOpenEntityDashboard)
   window.removeEventListener('keydown', handleKeydown)
 })
 </script>

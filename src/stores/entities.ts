@@ -132,6 +132,38 @@ export const useEntitiesStore = defineStore('entities', () => {
     }
   }
 
+  /**
+   * 读取实体的告警规则 JSON（实体级告警 P1-F）
+   *
+   * @param id - 实体 ID
+   * @returns 规则 JSON 字符串；未配置时返回 null
+   * @throws 后端失败时原样抛出
+   */
+  async function getAlertRules(id: number): Promise<string | null> {
+    try {
+      return await invoke<string | null>('entities_get_alert_rules', { entityId: id })
+    } catch (e) {
+      console.error('读取实体告警规则失败:', e)
+      throw e
+    }
+  }
+
+  /**
+   * 写入实体的告警规则 JSON（实体级告警 P1-F）
+   *
+   * @param id - 实体 ID
+   * @param rulesJson - 规则 JSON 字符串（空串表示清空规则）
+   * @throws 后端失败时原样抛出
+   */
+  async function setAlertRules(id: number, rulesJson: string): Promise<void> {
+    try {
+      await invoke<void>('entities_set_alert_rules', { entityId: id, rulesJson })
+    } catch (e) {
+      console.error('保存实体告警规则失败:', e)
+      throw e
+    }
+  }
+
   return {
     entities,
     loading,
@@ -140,6 +172,8 @@ export const useEntitiesStore = defineStore('entities', () => {
     createEntity,
     deleteEntity,
     toggleEntity,
-    scoreArticles
+    scoreArticles,
+    getAlertRules,
+    setAlertRules
   }
 })

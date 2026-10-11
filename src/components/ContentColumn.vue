@@ -52,6 +52,19 @@
         </div>
       </div>
 
+      <!-- 媒体附件播放器：播客音频 / 视频源直接内嵌播放，置于标题与正文之间，
+           常驻可见（在滚动区之外），便于边读边听。无附件时不渲染。 -->
+      <div class="enclosure-player" v-if="enclosureUrl">
+        <div class="ep-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="6 4 20 12 6 20 6 4"></polygon>
+          </svg>
+          {{ enclosureIsVideo ? '视频' : '播客音频' }}
+        </div>
+        <audio v-if="!enclosureIsVideo" :src="enclosureUrl" controls preload="metadata"></audio>
+        <video v-else :src="enclosureUrl" controls preload="metadata" playsinline></video>
+      </div>
+
       <!-- 阅读内容区：文章视图（.reading-scroll）与网页视图（.webview-wrap）承载 -->
       <div class="content-body-area">
         <div
@@ -295,6 +308,14 @@ async function restoreProgress(): Promise<void> {
 /** 当前选中的文章 */
 const selectedArticle = computed<Article | null>(() => articlesStore.selectedArticle)
 
+/** 当前文章的媒体附件 URL（无附件时为空串） */
+const enclosureUrl = computed(() => selectedArticle.value?.enclosure_url ?? '')
+/** 附件是否为视频（按 MIME 前缀判断，决定渲染 <video> 还是 <audio>） */
+const enclosureIsVideo = computed(() => {
+  const t = selectedArticle.value?.enclosure_type ?? ''
+  return t.startsWith('video/')
+})
+
 /** 窄屏文章列表抽屉态（点击正文区视为想看列表） */
 const showArticleList = ref(false)
 /** 图片灯箱 */
@@ -459,6 +480,20 @@ const tocItems = shallowRef<TocItem[]>([])
 function rebuildToc(): void {
   tocItems.value = collectTocItems(contentBodyRef.value, selectedArticle.value?.title ?? '')
 }
+
+// 正文高亮 composable 必须在本文件所有 watch 之前初始化：下方「切换文章」watch 带
+// { immediate: true }，注册时会同步跑一次回调，回调里要写 showHighlightPalette /
+// pendingSelection；若 useHighlights 在 watch 之后才解构，回调触发时这两个 const
+// 尚处于 TDZ，会抛 "Cannot access 'X' before initialization"（见 devtools 报错）。
+// contentBodyRef / displayContent 已在上方声明，此处依赖安全。
+const {
+  showHighlightPalette,
+  pendingSelection,
+  onContentMouseUp,
+  createHighlight,
+  cancelHighlight,
+  removeHighlight
+} = useHighlights({ contentBodyRef, displayContent })
 
 // 正文变化 = 换了文章或切了原文/译文，两种情况都要按新正文重取目录
 watch(
@@ -628,14 +663,8 @@ onUnmounted(() => {
 // 这里只解构出模板与点击委托用到的状态和处理器。两块与 DOM 事件强耦合的代码
 // 留在宿主：onContentClick 里的删除分发（与链接 / 灯箱共用事件委托），以及
 // 上方切换文章 watcher 里的调色板复位与选区快照丢弃。
-const {
-  showHighlightPalette,
-  pendingSelection,
-  onContentMouseUp,
-  createHighlight,
-  cancelHighlight,
-  removeHighlight
-} = useHighlights({ contentBodyRef, displayContent })
+// 注：useHighlights() 的解构已上移到「切换文章」watch 之前（见该 watch 上方注释），
+// 避免 immediate watcher 同步触发时访问到尚处 TDZ 的 showHighlightPalette / pendingSelection。
 
 </script>
 
@@ -707,6 +736,35 @@ const {
      外层 .content-head 底部已有一条 border-bottom，两条线相距十几像素会显得重复割裂。
      14px 的作用是让元信息文字与那条外层分隔线之间留出呼吸间距。 */
   padding-bottom: var(--sp-35);
+}
+/* 媒体附件播放器：标题与正文之间常驻一块，边读边听；与正文同一最大宽度、居中。 */
+.enclosure-player {
+  max-width: var(--read-max);
+  width: 100%;
+  margin: 0 auto;
+  padding: var(--sp-2) 0;
+  flex-shrink: 0;
+}
+.ep-label {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  margin-bottom: var(--sp-1);
+}
+.ep-label svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--primary);
+}
+.enclosure-player audio,
+.enclosure-player video {
+  width: 100%;
+  max-height: 320px;
+  border-radius: var(--r-md);
+  background: var(--fill);
 }
 .content-source { color: var(--primary); }
 .content-time, .content-author { color: var(--text-tertiary); }

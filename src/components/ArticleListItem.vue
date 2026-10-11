@@ -21,6 +21,12 @@
           {{ feedName }}
         </span>
         <span class="article-time">{{ formatDistance(article.published_at) }}</span>
+        <!-- 附件徽标：播客音频 / 视频源一目了然，点击进入正文即见播放器 -->
+        <span class="enc-badge" v-if="article.enclosure_url" :title="`${enclosureLabel}附件`">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="6 4 20 12 6 20 6 4"></polygon>
+          </svg>{{ enclosureLabel }}
+        </span>
       </div>
       <!-- 标签 chip：最多直显 3 个，其余折叠为 +N -->
       <div class="feed-item-tags" v-if="article.tags && article.tags.length">
@@ -126,6 +132,13 @@ const feedIcon = computed<string>(() => {
 /** 缩略图 URL（空串表示该文无图，此时整个图片位不渲染） */
 const thumb = computed<string>(() => getThumbnail(props.article))
 
+/** 附件类型标签：有音频/视频附件时显示「音频」/「视频」徽标 */
+const enclosureLabel = computed<string>(() => {
+  const t = props.article.enclosure_type
+  if (t && t.startsWith('video/')) return '视频'
+  return '音频'
+})
+
 /**
  * 图标加载失败时隐藏 img，露出底下的首字母兜底
  *
@@ -221,6 +234,24 @@ function onPreferenceClick(preference: 'like' | 'skip') {
   align-items: center;
   gap: var(--sp-1);
   min-width: 0;
+}
+/* 附件徽标：音频/视频源标识，主色描边小胶囊，与来源/时间并列但不抢视觉 */
+.enc-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px var(--sp-1);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  border-radius: var(--r-sm);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.enc-badge svg {
+  width: 10px;
+  height: 10px;
 }
 /* 列表项标签行：单行不换行，超出部分由 chip 自身的 max-width + 省略号收束，
    保证"有标签"与"无标签"的条目高度一致（换行会让列表节奏忽高忽低） */

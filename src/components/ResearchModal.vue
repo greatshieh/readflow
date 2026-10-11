@@ -1,6 +1,7 @@
 <template>
-  <!-- 研究工作台弹窗外壳：四个页签（时间线 / 报告 / 实体 / 关系图）的容器与切换。
-       layout="side"：固定高度弹窗，切页签不再跳变；tab 竖排在左列。 -->
+  <!-- 研究工作台弹窗外壳：三个页签（时间线 / 报告 / 实体）的容器与切换。
+       layout="side"：固定高度弹窗，切页签不再跳变；tab 竖排在左列。
+       关系图已不在此处——弹窗画布太小，只保留主屏全宽展示（入口见 FeedPanel 工具栏与 D 键）。 -->
   <BaseModal :open="open" title="研究工作台" layout="side" @close="close">
     <!-- 左列：标题 + 纵排页签。关闭钮由 BaseModal 的 side 布局统一放在面板右上角 -->
     <aside class="side-nav">
@@ -16,9 +17,6 @@
         </button>
         <button class="side-tab" :class="{ active: tab === 'entities' }" @click="tab = 'entities'">
           实体管理
-        </button>
-        <button class="side-tab" :class="{ active: tab === 'graph' }" @click="tab = 'graph'">
-          关系图
         </button>
       </nav>
     </aside>
@@ -36,24 +34,14 @@
         </button>
       </div>
 
-      <!-- 右列：页签内容区（四个页签的根元素都带 class="m-body"，占满右列） -->
-      <!-- 四个页签一律 v-show 常驻挂载（不是 v-if）：各页签的筛选参数
-           （时间窗 / 实体筛选 / 报告类型与天数 / 关系图参数）在拆分前的单组件里
+      <!-- 右列：页签内容区（三个页签的根元素都带 class="m-body"，占满右列） -->
+      <!-- 三个页签一律 v-show 常驻挂载（不是 v-if）：各页签的筛选参数
+           （时间窗 / 实体筛选 / 报告类型与天数）在拆分前的单组件里
            天然跨页签、跨开关持久，v-if 会在每次切换时把这些状态连同 DOM 一起丢掉。
            页签各自的加载时机由它们 watch `active` / `open` 自行驱动，见各组件文件头。 -->
       <ResearchTimelineTab v-show="tab === 'timeline'" :open="open" @close="close" />
       <ResearchReportsTab v-show="tab === 'reports'" :active="tab === 'reports'" :open="open" />
-      <ResearchEntitiesTab
-        v-show="tab === 'entities'"
-        @entities-changed="graphEpoch++"
-      />
-      <ResearchGraphTab
-        v-show="tab === 'graph'"
-        :active="tab === 'graph'"
-        :open="open"
-        :epoch="graphEpoch"
-        @expand="expandGraph"
-      />
+      <ResearchEntitiesTab v-show="tab === 'entities'" @entities-changed="onEntitiesChanged" />
     </div>
   </BaseModal>
 </template>
@@ -63,10 +51,13 @@
  * 研究工作台弹窗组件（外壳）
  *
  * # 职责
- * 只负责弹窗外壳与页签切换：BaseModal 容器、头部、tab 条，以及四个页签组件
- * （`ResearchTimelineTab` / `ResearchReportsTab` / `ResearchEntitiesTab` /
- * `ResearchGraphTab`）的编排。页签内部的表单状态、数据加载与临时提示都在
- * 各页签组件里（见各文件头的"挂载语义"一节）。
+ * 只负责弹窗外壳与页签切换：BaseModal 容器、头部、tab 条，以及三个页签组件
+ * （`ResearchTimelineTab` / `ResearchReportsTab` / `ResearchEntitiesTab`）的编排。
+ * 页签内部的表单状态、数据加载与临时提示都在各页签组件里（见各文件头的"挂载语义"一节）。
+ *
+ * # 关系图为何不在这里
+ * 弹窗内的画布太小，看不出长程结构，故关系图只在主屏全宽展示（`GraphView`，
+ * 由 `uiStore.mainView` 驱动）；入口是订阅栏底部工具栏按钮与全局 `D` 键。
  *
  * # 父组件通信
  * - `open` prop：控制弹窗显示状态
@@ -75,15 +66,14 @@
  * # 跨页签协调（外壳仅有的两处编排逻辑）
  * 1. 弹窗打开时确保实体列表已加载——时间线的筛选下拉与实体页签共用这份数据；
  * 2. 实体页签的增删/启停/评分会让已加载的关系图过期：实体页签 emit
- *    `entities-changed`，外壳以 `graphEpoch` 计数转交关系图页签，
- *    由后者在自己可见时决定是否重算（不在用户看实体列表时后台全库扫描）。
+ *    `entities-changed`，外壳据当前主屏视图决定"立即重算"还是"作废待重算"
+ *    （见 {@link onEntitiesChanged}）。
  */
 import { ref, watch, computed } from 'vue'
 import BaseModal from './BaseModal.vue'
 import ResearchTimelineTab from './ResearchTimelineTab.vue'
 import ResearchReportsTab from './ResearchReportsTab.vue'
 import ResearchEntitiesTab from './ResearchEntitiesTab.vue'
-import ResearchGraphTab from './ResearchGraphTab.vue'
 import { useResearchStore } from '@/stores/research'
 import { useEntitiesStore } from '@/stores/entities'
 import { useUiStore } from '@/stores/ui'
@@ -101,11 +91,8 @@ const researchStore = useResearchStore()
 const entitiesStore = useEntitiesStore()
 const uiStore = useUiStore()
 
-/** 当前 tab：timeline = 事件时间线；reports = 研究报告；entities = 实体管理；graph = 关系图 */
-const tab = ref<'timeline' | 'reports' | 'entities' | 'graph'>('timeline')
-
-/** 实体变更纪元：实体页签每变更一次 +1，关系图页签据此判断"图是否过期" */
-const graphEpoch = ref(0)
+/** 当前 tab：timeline = 事件时间线；reports = 研究报告；entities = 实体管理 */
+const tab = ref<'timeline' | 'reports' | 'entities'>('timeline')
 
 /** 标题栏显示的页签名称 */
 const tabTitle = computed(() => {
@@ -113,7 +100,6 @@ const tabTitle = computed(() => {
     timeline: '事件时间线',
     reports: '研究报告',
     entities: '实体管理',
-    graph: '关系图',
   }
   return titles[tab.value] ?? '研究工作台'
 })
@@ -136,18 +122,19 @@ function close() {
 }
 
 /**
- * 把关系图放大到主屏展示
+ * 实体页签变更实体（增删 / 启停 / 评分）后，让已加载的关系图失效
  *
- * 关系图页签的「放大到主屏」按钮触发：切换主屏视图后必须**先收起本弹窗**——
- * 主屏的 GraphView 与本弹窗的画布是同一份数据的两个渲染位，弹窗盖在上面
- * 会让用户以为还是弹窗里那张小图。先切视图再走 close()（它会重置页签，
- * 无碍：用户下次打开研究工作台本就应从时间线开始）。
+ * 关系图现在只在主屏全宽展示（弹窗内已无图页签），故这里按当前主屏视图分流：
+ * - 主屏正显示关系图（`mainView === 'graph'`）→ 立即重算，用户关掉弹窗即看到
+ *   与新实体集合一致的图；
+ * - 否则把已加载的图作废（`invalidateGraph`）→ 下次进入主屏图视图时由
+ *   `GraphView` 的 onMounted 重算，避免用户没在看图时白跑一次全库扫描。
  *
- * @returns 无返回值；副作用为 mainView 切到 graph、本弹窗关闭
+ * @returns 无返回值；副作用为触发一次重算或作废图数据
  */
-function expandGraph() {
-  uiStore.setMainView('graph')
-  close()
+function onEntitiesChanged() {
+  if (uiStore.mainView === 'graph') void researchStore.reloadGraph()
+  else researchStore.invalidateGraph()
 }
 </script>
 

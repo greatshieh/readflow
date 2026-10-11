@@ -1,7 +1,7 @@
 <template>
   <!-- ═══ Tab 1：事件时间线 ═══ -->
   <div class="m-body">
-    <!-- 筛选条：时间窗口 + 实体 -->
+    <!-- 筛选条：时间窗口 + 实体 + 类型 + 情感 + 关键词 + 排序 -->
     <div class="filter-bar">
       <!-- 筛选条两个下拉改用自绘 AppSelect（原生 option 弹层无法跟随应用风格）。
            选项以数组形式传入：时间窗是固定枚举，实体来自 store 动态拼接。 -->
@@ -11,6 +11,31 @@
         :options="entityOptions"
         width="auto"
         title="实体筛选"
+      />
+      <AppSelect
+        v-model="filterEventType"
+        :options="typeOptions"
+        width="auto"
+        title="事件类型"
+      />
+      <AppSelect
+        v-model="filterSentiment"
+        :options="sentimentOptions"
+        width="auto"
+        title="情感倾向"
+      />
+      <input
+        v-model="keyword"
+        type="text"
+        class="kw-input"
+        placeholder="搜索事实/证据…"
+        title="按关键词筛选事件（事实与证据全文匹配）"
+      />
+      <AppSelect
+        v-model="sortBy"
+        :options="sortOptions"
+        width="auto"
+        title="排序"
       />
       <span class="event-count">{{ researchStore.events.length }} 条事件</span>
     </div>
@@ -35,7 +60,7 @@
         :key="entityName"
         class="entity-group"
       >
-        <div class="group-header">
+        <div class="group-header clickable" role="button" :title="`查看「${entityName}」的实体仪表盘`" @click="openEntityDashboard(entityName)">
           <span class="entity-tag">{{ entityName }}</span>
           <span class="entity-count">{{ group.length }} 条</span>
         </div>
@@ -114,6 +139,7 @@ import AppSelect, { type SelectOption } from './AppSelect.vue'
 import { useResearchStore } from '@/stores/research'
 import { useEntitiesStore } from '@/stores/entities'
 import { useArticlesStore } from '@/stores/articles'
+import { useEventTypesStore } from '@/stores/eventTypes'
 import { showConfirm } from '@/stores/modal'
 import type { ResearchEventWithContext } from '@/types'
 
@@ -130,6 +156,7 @@ const emit = defineEmits<{
 const researchStore = useResearchStore()
 const entitiesStore = useEntitiesStore()
 const articlesStore = useArticlesStore()
+const eventTypesStore = useEventTypesStore()
 
 /** 时间窗口（天数，0 = 不限） */
 const filterDays = ref<number>(30)
@@ -151,6 +178,38 @@ const entityOptions = computed<SelectOption[]>(() => [
   ...entitiesStore.entities.map((e) => ({ value: e.id, label: e.name })),
 ])
 
+/** 事件类型筛选（'' = 全部类型） */
+const filterEventType = ref<string>('')
+
+/** 情感筛选（'' = 全部情感） */
+const filterSentiment = ref<string>('')
+
+/** 关键词搜索（作用于事实与证据全文，空串 = 不过滤） */
+const keyword = ref('')
+
+/** 排序方式：entity = 按实体分组；date = 按时间倒序（忽略实体边界） */
+const sortBy = ref<'entity' | 'date'>('entity')
+
+/** 事件类型下拉选项：首项"全部类型"，其余来自生效枚举 */
+const typeOptions: SelectOption[] = [
+  { value: '', label: '全部类型' },
+  ...eventTypesStore.effectiveTypes.map((t) => ({ value: t.value, label: t.label })),
+]
+
+/** 情感下拉选项 */
+const sentimentOptions: SelectOption[] = [
+  { value: '', label: '全部情感' },
+  { value: 'positive', label: '利好' },
+  { value: 'negative', label: '利空' },
+  { value: 'neutral', label: '中性' },
+]
+
+/** 排序下拉选项 */
+const sortOptions: SelectOption[] = [
+  { value: 'entity', label: '按实体' },
+  { value: 'date', label: '按时间' },
+]
+
 /** 当前展开的事件 ID（-1 = 全部收起） */
 const expandedEventId = ref<number>(-1)
 
@@ -165,17 +224,6 @@ const extractMsg = ref('')
 
 /** 批量提取是否出错 */
 const extractError = ref(false)
-
-/** 事件类型枚举 → 中文标签（与后端 EVENT_TYPES 对齐） */
-const TYPE_LABELS: Record<string, string> = {
-  product: '产品',
-  executive: '高管',
-  ma: '并购',
-  regulatory: '监管',
-  strategy: '战略',
-  competition: '竞争',
-  industry_signal: '行业信号'
-}
 
 /** 情感枚举 → 中文标签 */
 const SENTIMENT_LABELS: Record<string, string> = {
@@ -195,7 +243,7 @@ const SENTIMENT_CLASSES: Record<string, string> = {
  * 获取事件类型的中文标签
  */
 function typeLabel(type: string): string {
-  return TYPE_LABELS[type] ?? type
+  return eventTypesStore.effectiveTypes.find((t) => t.value === type)?.label ?? type
 }
 
 /**
@@ -215,13 +263,32 @@ function getSentimentClass(sentiment?: string): string {
 }
 
 /**
- * 按实体分组的事件（后端已按实体名排序，相邻聚合即可保序）
+ * 分组前按排序方式排序的副本
+ *
+ * `entity` 模式沿用后端「按实体名 + 时间倒序」的固有顺序（已在 SQL ORDER BY 中保证）；
+ * `date` 模式忽略实体边界，按事件日期倒序，便于跨实体看"最近发生的事"。
+ *
+ * @returns 排序后的事件数组（不改动 store 中的原始顺序）
+ */
+const sortedEvents = computed<ResearchEventWithContext[]>(() => {
+  if (sortBy.value === 'date') {
+    return [...researchStore.events].sort((a, b) =>
+      (b.event_date || '').localeCompare(a.event_date || '')
+    )
+  }
+  return researchStore.events
+})
+
+/**
+ * 按实体分组的事件
+ *
+ * 在 `sortedEvents` 之上聚合（排序模式决定组内/组间顺序），相邻同实体即归为一组。
  *
  * @returns 分组映射（实体名 → 事件列表）
  */
 const groupedEvents = computed<Record<string, ResearchEventWithContext[]>>(() => {
   const groups: Record<string, ResearchEventWithContext[]> = {}
-  for (const ev of researchStore.events) {
+  for (const ev of sortedEvents.value) {
     const key = ev.entity_name || '未知实体'
     if (!groups[key]) groups[key] = []
     groups[key].push(ev)
@@ -283,6 +350,22 @@ async function openSourceArticle(articleId: number) {
 }
 
 /**
+ * 打开时间线分组头对应实体的「实体仪表盘」
+ *
+ * 分组按实体名聚合，需先反查实体 ID（实体名唯一，未命中则静默忽略）。
+ * 走 window 事件 `open-entity-dashboard`，与实体列表入口同构（App.vue 收到后切换主屏到实体仪表盘全屏视图）。
+ *
+ * @param entityName - 分组头显示的实体名
+ */
+function openEntityDashboard(entityName: string) {
+  const ent = entitiesStore.entities.find((e) => e.name === entityName)
+  if (!ent) return
+  window.dispatchEvent(
+    new CustomEvent('open-entity-dashboard', { detail: { entityId: ent.id } })
+  )
+}
+
+/**
  * 手动批量提取（补跑入口）
  */
 async function handleExtractBatch() {
@@ -291,14 +374,30 @@ async function handleExtractBatch() {
   extractError.value = false
   try {
     extractMsg.value = await researchStore.extractBatch()
-    // 提取产生新事件后刷新当前时间线
-    await researchStore.loadEvents(filterDays.value, filterEntityId.value || undefined)
+    // 提取产生新事件后按当前筛选条件刷新时间线
+    await reload(false)
   } catch (e) {
     extractError.value = true
     extractMsg.value = e instanceof Error ? e.message : String(e)
   } finally {
     extracting.value = false
   }
+}
+
+/**
+ * 重新拉取时间线：把当前所有筛选条件（时间窗 / 实体 / 类型 / 情感 / 关键词）
+ * 透传给 research store 的 `loadEvents`。所有 watch 与手动触发都走这里，
+ * 避免筛选参数散落多处造成同步漂移（单一真源）。
+ *
+ * @param resetExpanded - 是否收起已展开项（筛选变化 / 重新打开时都应收起，避免错位）
+ */
+async function reload(resetExpanded = true) {
+  if (resetExpanded) expandedEventId.value = -1
+  await researchStore.loadEvents(filterDays.value, filterEntityId.value || undefined, {
+    eventType: filterEventType.value,
+    sentiment: filterSentiment.value,
+    keyword: keyword.value,
+  })
 }
 
 /** 监听打开状态：打开即重置临时态（拆分前由外壳 close() 手工清零）并加载时间线 */
@@ -309,26 +408,71 @@ watch(
     expandedEventId.value = -1
     extractMsg.value = ''
     extractError.value = false
-    await researchStore.loadEvents(filterDays.value, filterEntityId.value || undefined)
+    // 同步加载生效事件类型枚举（启用预设领域 + 自定义类型），供类型筛选与标签渲染
+    await eventTypesStore.loadAll()
+    await reload(false)
   }
 )
 
-/** 监听筛选变化：重新查询时间线（守卫 open：弹窗关着时筛选不会变，仅防御） */
-watch([filterDays, filterEntityId], async () => {
-  if (props.open) {
-    expandedEventId.value = -1
-    await researchStore.loadEvents(filterDays.value, filterEntityId.value || undefined)
-  }
+/** 关键词输入防抖：停止输入 350ms 后才重新查询，避免逐字符触发后端 */
+let kwTimer: ReturnType<typeof setTimeout> | undefined
+watch(keyword, () => {
+  if (!props.open) return
+  if (kwTimer) clearTimeout(kwTimer)
+  kwTimer = setTimeout(() => reload(), 350)
+})
+
+/** 其余筛选（时间窗 / 实体 / 类型 / 情感）立即生效；排序是前端计算，不触发后端 */
+watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () => {
+  if (props.open) await reload()
 })
 </script>
 
 <style scoped>
 /* 筛选条里的下拉由 AppSelect 渲染（自绘浮层），宽度由组件 width prop 控制；
-   .filter-bar 本体是被多页签共用的全局类（styles.css） */
+   .filter-bar 本体是被多页签共用的全局类（styles.css）。
+   本页签元素最多（4 下拉 + 关键词 + 排序 + 计数共 7 项），窄窗时允许换行兜底：
+   不加这条时整行装不下，全部项都会被压缩，末位计数被压成竖排细条并被弹窗右缘裁切。
+   scoped 规则特异性高于全局 .filter-bar，故不会波及关系图那条同名的参数条。 */
+.filter-bar {
+  flex-wrap: wrap;
+  row-gap: var(--sp-2);
+}
+
+/* 关键词输入框：此前类名 .kw-input 全项目无定义（唯一出现处就是本文件的模板），
+   输入框实际用浏览器原生外观——固有宽度不可控、2px 系统边框与 AppSelect 触发器
+   风格不一致，还挤占了筛选条的宽度预算。这里对齐 AppSelect 触发器的几何与令牌；
+   聚焦环沿用全局 input:focus-visible（styles.css）。
+   flex: 1 1 140px 让它成为行内唯一可伸缩项：有余量时长满、不足时先让位。 */
+.kw-input {
+  flex: 1 1 140px;
+  min-width: 120px;
+  height: 34px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--fill);
+  color: var(--text-primary);
+  font-size: var(--fs-md);
+  transition: border-color var(--dur) var(--ease), background-color var(--dur) var(--ease);
+}
+.kw-input::placeholder {
+  color: var(--text-tertiary);
+}
+.kw-input:hover {
+  background: var(--fill-secondary);
+}
+
+/* 事件计数：margin-left:auto 把它推到筛选条最右端。
+   flex-shrink:0 + nowrap 让它永不参与收缩（此前缺这两条，行超宽时被压到最小内容宽度，
+   文字折成「7/条/事件」三竖行并被弹窗右缘裁掉，即用户看到的"看不清"）；
+   颜色由三级文字提升到二级，白底对比度约 3:1 → 7:1，小字也清晰可读。 */
 .event-count {
   margin-left: auto;
+  flex-shrink: 0;
+  white-space: nowrap;
   font-size: var(--fs-sm);
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
 }
 
 /* 加载态：.empty-state 是全局类，本页签专属的加载占位留这里 */
@@ -359,6 +503,14 @@ watch([filterDays, filterEntityId], async () => {
   justify-content: space-between;
   padding-bottom: var(--sp-2);
   border-bottom: 1px solid var(--border);
+}
+.group-header.clickable {
+  cursor: pointer;
+  border-radius: var(--r-sm);
+}
+.group-header.clickable:hover .entity-tag {
+  filter: brightness(0.95);
+  text-decoration: underline;
 }
 .entity-tag {
   font-size: var(--fs-md);

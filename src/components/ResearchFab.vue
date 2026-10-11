@@ -70,6 +70,7 @@
 
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useResearchStore } from '@/stores/research'
+import { useEventTypesStore } from '@/stores/eventTypes'
 import type { Article, ResearchEvent } from '@/types'
 
 const props = defineProps<{
@@ -78,6 +79,9 @@ const props = defineProps<{
 }>()
 
 const researchStore = useResearchStore()
+const eventTypesStore = useEventTypesStore()
+// FAB 常驻阅读视图：组件创建时加载一次生效事件类型枚举，供事件圆点 tooltip 显示中文标签
+void eventTypesStore.loadAll()
 
 /** 当前文章已提取的研究事件 */
 const events = ref<ResearchEvent[]>([])
@@ -140,25 +144,14 @@ const extractEmptyHint = computed(() =>
     : '尚未提取。点击右上角「提取」，事件会进入研究工作台的时间线与报告'
 )
 
-/** 事件类型枚举 → 中文标签（与后端 EVENT_TYPES 对齐） */
-const EVENT_LABELS: Record<string, string> = {
-  product: '产品',
-  executive: '高管',
-  ma: '并购',
-  regulatory: '监管',
-  strategy: '战略',
-  competition: '竞争',
-  industry_signal: '行业信号'
-}
-
 /**
- * 事件类型的中文标签
+ * 事件类型的中文标签（来自生效枚举：预设领域 ∪ 自定义类型）
  *
  * @param type - 事件类型枚举值
  * @returns 中文标签；未知类型原样返回
  */
 function eventTypeLabel(type: string): string {
-  return EVENT_LABELS[type] ?? type
+  return eventTypesStore.effectiveTypes.find((t) => t.value === type)?.label ?? type
 }
 
 /**

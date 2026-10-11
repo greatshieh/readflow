@@ -22,7 +22,7 @@
     <!-- 报告内容视图 -->
     <template v-if="researchStore.reportContent">
       <button class="btn btn-secondary btn-back" @click="researchStore.closeReport">← 返回报告列表</button>
-      <pre class="report-content">{{ reportBody }}</pre>
+      <div class="report-content md" v-html="renderedReport"></div>
     </template>
 
     <!-- 报告列表视图 -->
@@ -81,6 +81,7 @@ import {
   type ReportChannel
 } from '@/utils/reportChannel'
 import { stripFrontmatter } from '@/utils/reportMarkdown'
+import { renderMarkdown } from '@/utils/markdown'
 
 const props = defineProps<{
   /** 是否为当前显示的页签：切入时重拉报告列表 */
@@ -106,6 +107,14 @@ const reportError = ref('')
  * 文件本身保持完整格式。
  */
 const reportBody = computed(() => stripFrontmatter(researchStore.reportContent))
+
+/**
+ * 应用内展示的报告正文（Markdown 渲染后的安全 HTML）
+ *
+ * `reportBody` 已裁掉 YAML frontmatter；`renderMarkdown` 进一步把标题 / 列表 /
+ * callout / 加粗等渲染为 HTML，并对所有文本转义、仅放行安全标签，可直接 `v-html`。
+ */
+const renderedReport = computed(() => renderMarkdown(reportBody.value))
 
 // ========== 手动生成报告 ==========
 /** 手动生成的报告类型 */
@@ -320,19 +329,103 @@ watch(genKind, kind => {
   color: var(--text-tertiary);
 }
 
-/* 报告正文：等宽 + 保留换行（无 markdown 渲染依赖的第一版展示） */
+/* 报告正文：Markdown 渲染后的流式排版（替代第一版的等宽 <pre>） */
 .report-content {
   margin: 0;
-  padding: var(--sp-3);
+  padding: var(--sp-4);
   background: var(--fill);
   border-radius: var(--r-md);
-  font-family: ui-monospace, 'SF Mono', Consolas, monospace;
   font-size: var(--fs-sm);
   line-height: 1.7;
-  color: var(--text-secondary);
-  white-space: pre-wrap;
+  color: var(--text-primary);
+  overflow-x: auto;
   word-break: break-word;
 }
+
+/* —— Markdown 渲染产物样式（v-html 内容须用 :deep 穿透 scoped）—— */
+.md :deep(h1),
+.md :deep(h2),
+.md :deep(h3) {
+  line-height: 1.3;
+  margin: 1.1em 0 0.5em;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+.md :deep(h1) { font-size: 1.35em; font-weight: 700; }
+.md :deep(h2) {
+  font-size: 1.15em;
+  font-weight: 700;
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid var(--border);
+}
+.md :deep(h3) { font-size: 1.02em; font-weight: 600; }
+.md :deep(p) { margin: 0.5em 0; color: var(--text-secondary); }
+.md :deep(strong) { font-weight: 700; color: var(--text-primary); }
+.md :deep(em) { font-style: italic; }
+.md :deep(del) { opacity: 0.6; }
+.md :deep(a) {
+  color: var(--primary);
+  text-decoration: none;
+  border-bottom: 1px solid var(--primary);
+}
+.md :deep(a:hover) { opacity: 0.8; }
+.md :deep(code) {
+  background: var(--hover-bg);
+  padding: 0.1em 0.36em;
+  border-radius: var(--r-sm);
+  font-family: ui-monospace, 'SF Mono', Consolas, monospace;
+  font-size: 0.9em;
+}
+.md :deep(ul.md-ul) {
+  margin: 0.4em 0;
+  padding-left: 1.3em;
+  list-style: disc;
+}
+.md :deep(ul.md-ul ul.md-ul) { list-style: circle; }
+.md :deep(li) { margin: 0.25em 0; color: var(--text-secondary); }
+.md :deep(.md-li-children) { margin-top: 0.2em; }
+.md :deep(blockquote.md-quote) {
+  margin: 0.6em 0;
+  padding: 0.4em 0.9em;
+  border-left: 3px solid var(--border);
+  background: var(--hover-bg);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  color: var(--text-secondary);
+}
+
+/* Obsidian callout：带类型徽标的卡片 */
+.md :deep(.md-callout) {
+  margin: 0.7em 0;
+  padding: 0.6em 0.95em;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--primary);
+  border-radius: var(--r-md);
+  background: var(--fill);
+}
+.md :deep(.md-callout-head) { margin-bottom: 0.25em; }
+.md :deep(.md-callout-badge) {
+  display: inline-block;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  padding: 0.12em 0.55em;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #fff;
+}
+.md :deep(.md-callout-quote),
+.md :deep(.md-callout-info) { border-left-color: var(--text-tertiary); }
+.md :deep(.md-callout-quote) .md-callout-badge,
+.md :deep(.md-callout-info) .md-callout-badge { background: var(--text-tertiary); }
+.md :deep(.md-callout-warning),
+.md :deep(.md-callout-danger) { border-left-color: #d97706; }
+.md :deep(.md-callout-warning) .md-callout-badge,
+.md :deep(.md-callout-danger) .md-callout-badge { background: #d97706; }
+.md :deep(.md-callout-title) {
+  font-weight: 600;
+  margin: 0.15em 0;
+  color: var(--text-primary);
+}
+.md :deep(.md-callout-p) { margin: 0.15em 0; color: var(--text-secondary); }
 
 /* 返回列表按钮：不应被 flex 拉伸居中 */
 .btn-back {

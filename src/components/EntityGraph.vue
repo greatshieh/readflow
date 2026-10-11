@@ -35,14 +35,13 @@
           :key="n.id"
           class="eg-node"
           :class="{ 'is-dim': dimOthers && !isNeighbor(n.id) && n.id !== focusId }"
-          @pointerdown.stop.prevent="onNodeDown(i)"
+          @pointerdown.stop.prevent="onNodeDown(i, $event)"
           @pointerenter="hoverId = n.id"
           @pointerleave="hoverId = null"
-          @click.stop="toggleSelect(n.id)"
         >
           <circle
-            class="eg-dot"
-            :class="[`eg-type-${n.typeClass}`, { 'is-focus': n.id === focusId, 'is-pinned': n.pinned }]"
+          class="eg-dot"
+          :class="[nodeColorClass(n), { 'is-focus': n.id === focusId, 'is-pinned': n.pinned }]"
             :r="nodeRadius(n.article_count)"
             :cx="n.x"
             :cy="n.y"
@@ -59,41 +58,34 @@
       </g>
     </svg>
 
-    <!-- 工具条：缩放 / 适应 / 重排（浮在画布右上角） -->
+    <!-- 工具条：导出 / 高亮维度 / 缩放（浮在画布右上角） -->
     <div class="eg-tools">
+      <button class="btn btn-sm" @click="exportPng" title="导出为 PNG 图片">导出</button>
+      <div class="eg-mode">
+        <button class="eg-mode-btn" :class="{ active: highlightMode === 'type' }" @click="highlightMode = 'type'">类型</button>
+        <button class="eg-mode-btn" :class="{ active: highlightMode === 'sentiment' }" @click="highlightMode = 'sentiment'">情感</button>
+      </div>
       <button class="btn btn-sm" @click="zoomBy(1.25)" title="放大">+</button>
       <button class="btn btn-sm" @click="zoomBy(0.8)" title="缩小">−</button>
       <button class="btn btn-sm" @click="fitView" title="适应视图">适应</button>
       <button class="btn btn-sm" @click="rebuild" title="重新布局（清除手动拖动）">重排</button>
     </div>
 
-    <!-- 图例：颜色 → 实体类型 -->
+    <!-- 图例：随高亮维度切换（类型 / 情感） -->
     <div class="eg-legend">
-      <span v-for="t in ENTITY_LEGEND" :key="t.key" class="eg-legend-item">
-        <i class="eg-legend-dot" :class="`eg-type-${t.key}`"></i>{{ t.label }}
-      </span>
+      <template v-if="highlightMode === 'type'">
+        <span v-for="t in ENTITY_LEGEND" :key="t.key" class="eg-legend-item">
+          <i class="eg-legend-dot" :class="`eg-type-${t.key}`"></i>{{ t.label }}
+        </span>
+      </template>
+      <template v-else>
+        <span v-for="s in SENTIMENT_LEGEND" :key="s.key" class="eg-legend-item">
+          <i class="eg-legend-dot" :class="`eg-sent-${s.key}`"></i>{{ s.label }}
+        </span>
+      </template>
     </div>
 
-    <!-- 详情卡：点击节点后显示其共现最强的邻居（外观与交互见 EntityGraphDetail.vue） -->
-    <EntityGraphDetail
-      v-if="focus"
-      :name="focus.name"
-      :type-label="entityTypeLabel(focus.entity_type)"
-      :article-count="focus.article_count"
-      :neighbors="neighbors"
-      :sentiment="entitySentiment?.sentiment ?? null"
-      :sentiment-confidence="entitySentiment?.confidence ?? null"
-      :financials="entityFinancials"
-      :loading="entityDataLoading"
-      :selected-articles="selectedArticles"
-      :articles-loading="articlesLoading"
-      :cross-refs="crossRefs"
-      :cross-refs-loading="crossRefsLoading"
-      @close="selectedId = null"
-      @select-neighbor="handleNeighborClick"
-    />
-
-    <p v-if="showHint" class="eg-hint">拖拽节点可固定位置 · 拖拽空白平移 · 滚轮缩放</p>
+    <p v-if="showHint" class="eg-hint">点击节点打开仪表盘 · 拖拽节点固定位置 · 拖拽空白平移 · 滚轮缩放</p>
   </div>
 </template>
 
@@ -105,7 +97,7 @@
  * 把后端 `entity_graph` 返回的「节点 + 边」渲染成一张可交互的关系图：
  * 自写力导向布局（斥力 / 弹簧 / 向心力 / 阻尼）收敛到稳定形态后交由 SVG 绘制，
  * 并支持拖拽节点（拖过的节点会被钉住，不被物理弹回）、平移缩放、
- * 悬停高亮邻接、点击查看详情卡。
+ * 悬停高亮邻接、点击节点直接打开完整仪表盘弹窗。
  *
  * # 设计意图
  * - **零依赖**：不引 d3/echarts。节点规模是"关注实体数"级别（实测 34 个），
@@ -118,16 +110,15 @@
  *   迭代到收敛再一次性渲染，避免眩晕。
  *
  * # 与父组件的关系
- * 由 `ResearchModal.vue` 的「关系图」页签渲染。选中状态与详情卡都在组件内部
- * 自洽（详情卡内容全部来自 `nodes`/`edges` 本身），因此不需要任何 emit。
+ * 由主屏全屏视图 `GraphView.vue` 渲染。悬停高亮的选中态在组件内部自洽；
+ * 点开仪表盘走 window 事件 `open-entity-dashboard`（由 App.vue 打开弹窗），
+ * 因此不需要任何 emit。
  */
 
 import { ref, computed, watch, onBeforeUnmount, onMounted, nextTick } from 'vue'
-import type { GraphNode, GraphEdge, EventSentiment, FinancialData, CrossReferenceEntry } from '@/types'
-import EntityGraphDetail from './EntityGraphDetail.vue'
+import type { GraphNode, GraphEdge } from '@/types'
 import { useGraphView } from '@/composables/useGraphView'
-import { ENTITY_LEGEND, entityTypeClass, entityTypeLabel } from '@/utils/entityLabels'
-import { invoke } from '@tauri-apps/api/core'
+import { ENTITY_LEGEND, entityTypeClass } from '@/utils/entityLabels'
 
 const props = defineProps<{
   /** 图节点（后端 `entity_graph` 返回） */
@@ -158,12 +149,11 @@ const ENERGY_EPS = 0.35
 
 // ─── 选中状态 ────────────────────────────────────────────────────────────────
 
-/** 悬停 / 选中的节点 ID */
+/** 悬停的节点 ID（用于高亮邻接元素；点击节点直接开仪表盘弹窗，不再有"选中"态） */
 const hoverId = ref<number | null>(null)
-const selectedId = ref<number | null>(null)
 
 /** 是否处于「聚焦某个节点」的状态：此时非邻接元素淡出 */
-const focusId = computed(() => hoverId.value ?? selectedId.value)
+const focusId = computed(() => hoverId.value)
 const dimOthers = computed(() => focusId.value !== null)
 
 /** 仿真节点：在传入节点上附加坐标与速度（组件私有副本） */
@@ -174,6 +164,8 @@ interface SimNode {
   article_count: number
   /** 已归一化的 CSS 类后缀（未知类型回退 other，避免出现无样式的节点） */
   typeClass: string
+  /** 聚合情感（positive / negative / neutral），情感高亮模式使用 */
+  sentiment: string
   x: number
   y: number
   vx: number
@@ -194,98 +186,52 @@ const { wrapRef, size, view, fitView, zoomBy, onWheel, onCanvasDown } = useGraph
   radiusOf: nodeRadius,
 })
 
-/** 选中的节点对象 */
-const focus = computed(() => nodes.value.find((n) => n.id === selectedId.value) ?? null)
-
-/** 选中节点的邻居（按共现数降序） */
-const neighbors = computed(() => {
-  const id = selectedId.value
-  if (id === null) return []
-  const byId = new Map(nodes.value.map((n) => [n.id, n]))
-  return props.edges
-    .filter((e) => e.source === id || e.target === id)
-    .map((e) => {
-      const otherId = e.source === id ? e.target : e.source
-      const other = byId.get(otherId)
-      return { id: otherId, name: other?.name ?? String(otherId), weight: e.weight }
-    })
-    .sort((x, y) => y.weight - x.weight)
-})
-
 /** 是否显示操作提示（有节点时才提示） */
 const showHint = computed(() => nodes.value.length > 0)
 
-// ─── 选中实体数据加载 ──────────────────────────────────────────────────────
-
-/** 选中实体的情感数据 */
-const entitySentiment = ref<EventSentiment | null | undefined>(undefined)
-
-/** 选中实体的财务数据 */
-const entityFinancials = ref<FinancialData[] | undefined>(undefined)
-
-/** 数据加载状态 */
-const entityDataLoading = ref(false)
-
-/** 选中的邻居实体文章列表 */
-const selectedArticles = ref<Array<{ id: number; title: string; link: string }>>([])
-
-/** 文章加载状态 */
-const articlesLoading = ref(false)
-
-/** 选中实体的多源交叉验证条目 */
-const crossRefs = ref<CrossReferenceEntry[] | undefined>(undefined)
-
-/** 交叉验证数据加载状态 */
-const crossRefsLoading = ref(false)
+// ─── 高亮维度（节点着色模式）────────────────────────────────────────────────────
 
 /**
- * 加载选中实体的情感、财务与多源交叉验证数据
+ * 节点配色维度：'type' 按实体类型（默认），'sentiment' 按聚合情感。
+ * 切换后节点圆与图例同步改变，边与底图结构不变。
+ */
+const highlightMode = ref<'type' | 'sentiment'>('type')
+
+/** 情感图例（与类型图例互斥，随高亮维度切换显示） */
+const SENTIMENT_LEGEND = [
+  { key: 'positive', label: '正面' },
+  { key: 'negative', label: '负面' },
+  { key: 'neutral', label: '中性' },
+] as const
+
+/**
+ * 节点圆的配色类：按当前高亮维度返回 `eg-type-*` 或 `eg-sent-*`
+ *
+ * @param n - 仿真节点
+ * @returns CSS 类名（供 `<circle>` 的 `:class` 使用）
+ */
+function nodeColorClass(n: SimNode): string {
+  if (highlightMode.value === 'sentiment') {
+    return `eg-sent-${n.sentiment || 'neutral'}`
+  }
+  return `eg-type-${n.typeClass}`
+}
+
+// ─── 打开实体仪表盘 ────────────────────────────────────────────────────────
+
+/**
+ * 从关系图节点打开「实体仪表盘」弹窗
+ *
+ * 由节点点击（pointerup 判定为点击、非拖拽）直接调用。走 window 事件
+ * `open-entity-dashboard`（与 open-settings 同构），由 App.vue 监听后调
+ * uiStore.openEntityDashboard 弹出完整仪表盘弹窗——不再经过中间的节点详情卡。
  *
  * @param entityId - 实体 ID
  */
-async function loadEntityData(entityId: number): Promise<void> {
-  entityDataLoading.value = true
-  crossRefsLoading.value = true
-  crossRefs.value = undefined
-  try {
-    const [sentiment, financials, refs] = await Promise.all([
-      invoke<EventSentiment | null>('entity_sentiment', { entityId }),
-      invoke<FinancialData[]>('financial_data_list_by_entity', { entityId }),
-      invoke<CrossReferenceEntry[]>('research_cross_reference', { entityId, days: 0 })
-    ])
-    entitySentiment.value = sentiment
-    entityFinancials.value = financials
-    crossRefs.value = refs
-  } catch (e) {
-    console.error('加载实体数据失败:', e)
-    entitySentiment.value = null
-    entityFinancials.value = []
-    crossRefs.value = []
-  } finally {
-    entityDataLoading.value = false
-    crossRefsLoading.value = false
-  }
-}
-
-/**
- * 点击邻居实体：加载该实体的关联文章列表
- *
- * @param neighborId - 邻居实体 ID
- */
-async function handleNeighborClick(neighborId: number): Promise<void> {
-  articlesLoading.value = true
-  selectedArticles.value = []
-  try {
-    const articles = await invoke<Array<{ id: number; title: string; link: string }>>(
-      'entity_articles', { entityId: neighborId }
-    )
-    selectedArticles.value = articles
-  } catch (e) {
-    console.error('加载文章失败:', e)
-    selectedArticles.value = []
-  } finally {
-    articlesLoading.value = false
-  }
+function openEntityDashboard(entityId: number): void {
+  window.dispatchEvent(
+    new CustomEvent('open-entity-dashboard', { detail: { entityId } })
+  )
 }
 
 // ─── 视觉映射 ────────────────────────────────────────────────────────────────
@@ -349,6 +295,7 @@ function seed(source: GraphNode[]): SimNode[] {
       entity_type: n.entity_type,
       article_count: n.article_count,
       typeClass: entityTypeClass(n.entity_type),
+      sentiment: n.sentiment ?? 'neutral',
       x: Math.cos(a) * r,
       y: Math.sin(a) * r,
       vx: 0,
@@ -503,8 +450,6 @@ function rebuild(): void {
   adjacency.value = adj
 
   hoverId.value = null
-  // 选中的实体可能已不在新图里（换了时间窗），此时自动取消选中
-  if (selectedId.value !== null && !indexById.has(selectedId.value)) selectedId.value = null
 
   autoFit = true
   const reduceMotion =
@@ -551,52 +496,50 @@ function isNeighbor(id: number): boolean {
 }
 
 /**
- * 点击节点：切换选中态
+ * 按下节点：进入「点击 / 拖拽」判定
  *
- * @param id - 节点 ID
- */
-function toggleSelect(id: number): void {
-  // 切换选中态并加载对应数据
-  if (selectedId.value === id) {
-    selectedId.value = null
-    entitySentiment.value = undefined
-    entityFinancials.value = undefined
-    crossRefs.value = undefined
-  } else {
-    selectedId.value = id
-    loadEntityData(id)
-  }
-}
-
-/**
- * 按下节点：进入拖拽
+ * - 指针位移 ≤ 4px → 视为**点击**：松手时打开该实体的完整仪表盘弹窗；
+ * - 位移超过阈值 → 视为**拖拽**：节点被**钉住**（`pinned = true`），松手后不被
+ *   物理力弹回原位，并作为锚点支撑邻接节点重新收敛（想恢复自动布局用「重排」）。
  *
- * 拖过的节点会被**钉住**（`pinned = true`）：既使松手后不被物理力弹回原位，
- * 也让它作为锚点支撑邻接节点重新收敛。想恢复自动布局用工具条的「重排」。
+ * 钉住只发生在"真的拖动过"时——单纯点开弹窗不再把节点钉死。
  * 起点坐标不取按下瞬间的指针位置，而是等第一次 pointermove 再赋值。
  *
  * @param index - 仿真节点下标
+ * @param ev - 触发按下事件的指针事件（记录起始坐标，用于区分点击与拖拽）
  */
-function onNodeDown(index: number): void {
+function onNodeDown(index: number, ev: PointerEvent): void {
   const start = nodes.value[index]
   if (!start) return
   stop()
-  start.pinned = true
-  const move = (ev: PointerEvent) => {
+  const downX = ev.clientX
+  const downY = ev.clientY
+  /** 是否已判定为拖拽（位移超过阈值） */
+  let dragging = false
+  const move = (pev: PointerEvent) => {
+    // 首次超过阈值即锁定为拖拽，并此时才钉住节点
+    if (!dragging && Math.hypot(pev.clientX - downX, pev.clientY - downY) > 4) {
+      dragging = true
+      start.pinned = true
+    }
+    if (!dragging) return
     const rect = wrapRef.value?.getBoundingClientRect()
     if (!rect) return
     // 屏幕坐标 → 图坐标：先减去平移，再除以缩放
-    start.x = (ev.clientX - rect.left - view.value.tx) / view.value.k
-    start.y = (ev.clientY - rect.top - view.value.ty) / view.value.k
+    start.x = (pev.clientX - rect.left - view.value.tx) / view.value.k
+    start.y = (pev.clientY - rect.top - view.value.ty) / view.value.k
     start.vx = 0
     start.vy = 0
   }
   const up = () => {
     window.removeEventListener('pointermove', move)
     window.removeEventListener('pointerup', up)
-    // 松手后让它继续收敛：被拖散的邻居自然回位，而钉住的那个留在原地。
-    // 这里不重开 autoFit，所以视野不会被这次重收敛重置。
+    // 松手后让仿真继续收敛（pointerdown 时已 stop）：拖拽者被拖散的邻居自然回位、
+    // 钉住的留在原地；点击者则恢复此前被暂停的收敛。这里不重开 autoFit，
+    // 所以视野不会被这次重收敛重置。
     run()
+    // 未移动 = 点击：直接打开完整仪表盘弹窗
+    if (!dragging) openEntityDashboard(start.id)
   }
   window.addEventListener('pointermove', move)
   window.addEventListener('pointerup', up)
@@ -619,6 +562,75 @@ onBeforeUnmount(() => {
 
 // 数据变化（切时间窗 / 改最小共现数 / 增删实体后刷新）都重建布局
 watch(() => [props.nodes, props.edges], rebuild)
+
+// ─── 导出 PNG ────────────────────────────────────────────────────────────────
+
+/**
+ * 把当前关系图导出为 PNG 并触发下载
+ *
+ * SVG 用的颜色来自 CSS 变量（`var(--eg-c)` 等），而 `canvas` 绘制时不解析 CSS 变量，
+ * 直接序列化会因 `fill: var(...)` 失效而得到透明/黑块。故导出前遍历所有元素，
+ * 用 `getComputedStyle` 取**已解析**的实际色值内联为样式，规避该坑。
+ *
+ * 流程：克隆 svg → 内联计算样式 → 注入 `--surface` 背景 → 序列化 → Image 载入 canvas
+ * （按 `devicePixelRatio` 放大保高清）→ `toDataURL('image/png')` → `<a download>` 触发下载。
+ */
+function exportPng(): void {
+  const svgEl = wrapRef.value?.querySelector('svg.eg-svg') as SVGSVGElement | null
+  if (!svgEl) return
+  const clone = svgEl.cloneNode(true) as SVGSVGElement
+  const origEls = svgEl.querySelectorAll('*')
+  const cloneEls = clone.querySelectorAll('*')
+  // 内联计算样式：clone 未挂载，必须对照原元素取 computed 值
+  const INLINE_PROPS = ['fill', 'stroke', 'stroke-width', 'opacity', 'font-size', 'font-weight', 'text-anchor']
+  origEls.forEach((orig, i) => {
+    const cs = getComputedStyle(orig)
+    const c = cloneEls[i] as SVGElement
+    for (const p of INLINE_PROPS) {
+      const v = cs.getPropertyValue(p)
+      if (v) c.style.setProperty(p, v)
+    }
+  })
+  // 背景：取容器底色，避免透明
+  const surface = getComputedStyle(wrapRef.value!).backgroundColor || '#ffffff'
+  const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+  bg.setAttribute('x', '0')
+  bg.setAttribute('y', '0')
+  bg.setAttribute('width', '100%')
+  bg.setAttribute('height', '100%')
+  bg.setAttribute('fill', surface)
+  clone.insertBefore(bg, clone.firstChild)
+  clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
+  const serializer = new XMLSerializer()
+  const svgStr = '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n' + serializer.serializeToString(clone)
+
+  const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const img = new Image()
+  img.onload = () => {
+    const scale = window.devicePixelRatio || 1
+    const w = size.value.w
+    const h = size.value.h
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.round(w * scale)
+    canvas.height = Math.round(h * scale)
+    const ctx = canvas.getContext('2d')
+    if (ctx) {
+      ctx.scale(scale, scale)
+      ctx.fillStyle = surface
+      ctx.fillRect(0, 0, w, h)
+      ctx.drawImage(img, 0, 0, w, h)
+      const pngUrl = canvas.toDataURL('image/png')
+      const a = document.createElement('a')
+      a.href = pngUrl
+      a.download = 'entity-graph.png'
+      a.click()
+    }
+    URL.revokeObjectURL(url)
+  }
+  img.onerror = () => URL.revokeObjectURL(url)
+  img.src = url
+}
 </script>
 
 <style scoped>
@@ -677,6 +689,39 @@ watch(() => [props.nodes, props.edges], rebuild)
 }
 .eg-type-other {
   --eg-c: var(--tone-slate);
+}
+
+/* 情感配色（「情感」高亮维度使用）：复用既有语义色 token，与列表 / 时间线情感色一致 */
+.eg-sent-positive {
+  --eg-c: var(--entity-product);
+}
+.eg-sent-negative {
+  --eg-c: var(--entity-regulatory);
+}
+.eg-sent-neutral {
+  --eg-c: var(--entity-other);
+}
+
+/* 高亮维度切换控件（类型 / 情感） */
+.eg-mode {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+.eg-mode-btn {
+  flex: 1;
+  padding: 2px 8px;
+  font-size: var(--fs-xs);
+  border: none;
+  background: var(--fill);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.eg-mode-btn.active {
+  background: var(--primary);
+  color: #fff;
 }
 
 .eg-dot {

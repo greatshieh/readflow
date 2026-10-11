@@ -8,7 +8,12 @@
         :key="entity.id"
         class="entity-item"
       >
-        <div class="entity-info">
+        <div
+          class="entity-info clickable"
+          role="button"
+          title="查看实体仪表盘"
+          @click="openDashboard(entity)"
+        >
           <span class="entity-name">{{ entity.name }}</span>
           <span class="entity-type">{{ entityTypeLabel(entity.entity_type) }}</span>
         </div>
@@ -31,6 +36,17 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="3 6 5 6 21 6"></polyline>
               <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
+            </svg>
+          </button>
+          <!-- 告警规则按钮（实体级告警 P1-F） -->
+          <button
+            class="alert-btn"
+            @click="openRuleModal(entity)"
+            title="告警规则"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+              <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
             </svg>
           </button>
         </div>
@@ -74,6 +90,13 @@
         {{ entitiesStore.loading ? '评分中...' : '重新评分' }}
       </button>
     </div>
+
+    <!-- 实体级告警规则编辑弹窗（P1-F） -->
+    <EntityAlertRuleModal
+      :open="ruleModalOpen"
+      :entity="ruleEntity"
+      @close="ruleModalOpen = false"
+    />
   </div>
 </template>
 
@@ -88,17 +111,18 @@
  * # 与外壳/其它页签的契约
  * - 实体列表的加载由外壳在弹窗打开时统一保证（时间线筛选下拉与这里共用）；
  * - 评分/增删/启停会让已加载的关系图过期：本页签只 emit `entities-changed`
- *   通知外壳，由关系图页签在自己可见时决定何时重算——拆分前是立即后台
- *   重算，现在改为推迟到用户切到关系图页签时，省掉一次看不见的全库扫描。
+ *   通知外壳，由外壳据当前主屏视图决定「立即重算」还是「作废待重算」
+ *   （见 `ResearchModal.onEntitiesChanged`），省掉一次看不见的全库扫描。
  */
 import { ref } from 'vue'
 import AppSelect, { type SelectOption } from './AppSelect.vue'
+import EntityAlertRuleModal from './EntityAlertRuleModal.vue'
 import { useEntitiesStore } from '@/stores/entities'
 import { showConfirm } from '@/stores/modal'
 import { ENTITY_TYPE_LABELS, entityTypeLabel } from '@/utils/entityLabels'
 
 const emit = defineEmits<{
-  /** 实体集合或评分已变化，已加载的关系图随之过期（外壳转交给关系图页签） */
+  /** 实体集合或评分已变化，已加载的关系图随之过期（外壳转交失效处理） */
   (e: 'entities-changed'): void
 }>()
 
@@ -114,6 +138,11 @@ const scoreMsg = ref('')
 
 /** 评分提示是否为错误态 */
 const scoreError = ref(false)
+
+/** 告警规则弹窗开关 */
+const ruleModalOpen = ref(false)
+/** 当前正在编辑规则的实体（弹窗关闭前保持引用） */
+const ruleEntity = ref<(typeof entitiesStore.entities[0]) | null>(null)
 
 /** 实体类型下拉选项：直接从全局映射派生，新增类型只改 utils/entityLabels.ts 一处 */
 const entityTypeOptions: SelectOption[] = Object.entries(ENTITY_TYPE_LABELS).map(
@@ -137,7 +166,7 @@ async function runScore() {
     scoreError.value = true
     scoreMsg.value = `评分失败：${e instanceof Error ? e.message : String(e)}`
   }
-  // 关系图依赖「关注实体」集合，评分后图已过期；重算时机由关系图页签决定
+  // 关系图依赖「关注实体」集合，评分后图已过期；失效处理时机由外壳决定
   emit('entities-changed')
 }
 
@@ -199,6 +228,34 @@ async function handleScore() {
   scoreMsg.value = ''
   await runScore()
 }
+
+/**
+ * 打开「实体仪表盘」聚合页
+ *
+ * 走 window 事件 `open-entity-dashboard`（与 open-settings 同构的跨组件开弹窗模式），
+ * 由 App.vue 监听后切换主屏到实体仪表盘全屏视图。实体信息区可点击，让"看某实体的
+ * 舆情/财务/事件"从"钻进关系图找节点"变成一步直达。
+ *
+ * @param entity - 被点击的实体
+ */
+function openDashboard(entity: typeof entitiesStore.entities[0]) {
+  window.dispatchEvent(
+    new CustomEvent('open-entity-dashboard', { detail: { entityId: entity.id } })
+  )
+}
+
+/**
+ * 打开「实体告警规则」编辑弹窗（P1-F）
+ *
+ * 把被点击实体透传给弹窗；弹窗内部自行加载并保存该实体的 `alert_rules`，
+ * 本页签不持有规则状态，避免与列表产生第二份真相。
+ *
+ * @param entity - 被点击的实体
+ */
+function openRuleModal(entity: typeof entitiesStore.entities[0]) {
+  ruleEntity.value = entity
+  ruleModalOpen.value = true
+}
 </script>
 
 <style scoped>
@@ -225,6 +282,13 @@ async function handleScore() {
   flex-direction: column;
   gap: var(--sp-025);
   min-width: 0;
+}
+.entity-info.clickable {
+  cursor: pointer;
+  border-radius: var(--r-sm);
+}
+.entity-info.clickable:hover .entity-name {
+  color: var(--primary);
 }
 .entity-name {
   font-size: var(--fs-base);
@@ -282,6 +346,23 @@ async function handleScore() {
 .delete-btn:hover {
   background: var(--danger-fg);
   color: var(--danger);
+}
+.alert-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+.alert-btn:hover {
+  background: var(--primary-fg);
+  color: var(--primary);
 }
 .add-entity {
   display: flex;

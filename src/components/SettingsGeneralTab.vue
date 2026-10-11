@@ -106,6 +106,69 @@
       <AppSwitch v-model="notifyEnabled" label="系统通知" />
     </div>
 
+    <!-- 事件预警：写入 settings.event_alert_enabled，缺省开启（详见 Rust 侧 notify.rs） -->
+    <div class="setting">
+      <div class="setting-info">
+        <h4>事件预警</h4>
+        <p>AI 抽取发现关注实体出现重大事件（强利好 / 强利空）时，自动推送系统通知</p>
+      </div>
+      <AppSwitch v-model="eventAlertEnabled" label="事件预警" />
+    </div>
+
+    <!-- 事件类型分类：预设领域多选（无默认、可多选取并集）+ 自定义类型增删。
+         启用领域写入 settings.enabled_event_domains（JSON 数组）；自定义类型落库 custom_event_types 表。
+         二者并集即 AI 抽取事件时可用的"事件类型"枚举（详见 research::extract::effective_event_types）。 -->
+    <div class="form-group">
+      <label class="form-label">事件类型分类</label>
+      <p class="form-hint">
+        勾选需要跟踪的事件领域（可多选，取并集）；可补充自定义类型覆盖预设之外的场景。
+        至少启用一个领域或添加一个自定义类型，否则 AI 抽取将跳过事件识别。
+      </p>
+      <div class="domain-chips">
+        <button
+          v-for="opt in domainOptions"
+          :key="opt.key"
+          type="button"
+          class="domain-chip"
+          :class="{ active: selectedDomains.includes(opt.key) }"
+          @click="toggleDomain(opt.key)"
+        >
+          {{ opt.label }}
+          <span class="domain-count">{{ opt.count }}</span>
+        </button>
+      </div>
+      <p class="event-type-warn" v-if="selectedDomains.length === 0 && eventTypesStore.customTypes.length === 0">
+        尚未启用任何事件领域，也未添加自定义类型：当前 AI 抽取将不会识别任何事件
+      </p>
+    </div>
+
+    <!-- 自定义事件类型：录入 value（落库到 research_events.event_type）与可选中文 label，支持增删 -->
+    <div class="form-group">
+      <label class="form-label">自定义事件类型</label>
+      <div class="custom-type-add">
+        <input
+          class="form-input"
+          v-model="newCustomType"
+          placeholder="如：开源发布 / release"
+          @keyup.enter="handleAddCustomType"
+        />
+        <button class="btn btn-default" :disabled="!newCustomType.trim()" @click="handleAddCustomType">
+          添加
+        </button>
+      </div>
+      <div class="custom-type-list" v-if="eventTypesStore.customTypes.length">
+        <span
+          v-for="t in eventTypesStore.customTypes"
+          :key="t.id"
+          class="custom-type-tag"
+        >
+          {{ t.label || t.value }}
+          <button type="button" class="tag-remove" :title="'删除 ' + (t.label || t.value)" @click="handleRemoveCustomType(t.id)">×</button>
+        </span>
+      </div>
+      <p class="form-hint" v-else>暂无自定义类型，可添加预设领域未覆盖的事件类型</p>
+    </div>
+
     <!-- 关闭到托盘：写入 settings.close_to_tray，缺省开启。
          开启时点窗口关闭按钮（含 Alt+F4 / 任务栏右键）只隐藏窗口，
          应用驻留托盘继续后台刷新；真退出走托盘菜单「退出」。 -->
@@ -163,7 +226,9 @@ import { invoke } from '@tauri-apps/api/core'
 import { useSettingsStore } from '@/stores/settings'
 import { useFeedsStore } from '@/stores/feeds'
 import { useModalStore } from '@/stores/modal'
+import { useEventTypesStore } from '@/stores/eventTypes'
 import { applyAppearance, ACCENT_PRESETS } from '@/utils/appearance'
+import { PRESET_DOMAIN_LABELS, PRESET_EVENT_TYPES } from '@/utils/eventTypeLabels'
 import AppSelect, { type SelectOption } from './AppSelect.vue'
 import AppSwitch from './AppSwitch.vue'
 import { loadSystemFonts, type FontOption } from '@/utils/systemFonts'
@@ -177,6 +242,90 @@ const settingsStore = useSettingsStore()
 const feedsStore = useFeedsStore()
 /** 全局弹窗 store 实例 */
 const modalStore = useModalStore()
+/** 事件类型 store 实例：预设领域启用状态 + 自定义类型（数据化"事件类型"设置区） */
+const eventTypesStore = useEventTypesStore()
+
+/**
+ * 预设领域选项（key / 中文名 / 含事件类型数），供设置页领域多选渲染。
+ * 数据来自 eventTypeLabels.ts 的 PRESET_DOMAIN_LABELS / PRESET_EVENT_TYPES，
+ * 与后端 PRESET_DOMAINS 同源、永不分叉。
+ */
+const domainOptions = computed(() =>
+  Object.entries(PRESET_DOMAIN_LABELS).map(([key, label]) => ({
+    key,
+    label,
+    count: (PRESET_EVENT_TYPES[key] || []).length,
+  })),
+)
+
+/**
+ * 设置页内编辑中的「启用领域」副本。
+ * 不直接绑定 eventTypesStore.enabledDomains，避免勾选时即时触发加载；
+ * 仅在打开时从 store 回填，保存时由 saveEnabledDomains 写回 settings。
+ */
+const selectedDomains = ref<string[]>([])
+/** 新增自定义类型的输入框内容 */
+const newCustomType = ref('')
+
+/**
+ * 切换某个预设领域的启用状态（多选并集，无默认值）
+ *
+ * @param key - 领域 key（business / academic / policy / finance）
+ * @returns 无返回值；仅切换本地 selectedDomains 副本
+ */
+function toggleDomain(key: string) {
+  if (selectedDomains.value.includes(key)) {
+    selectedDomains.value = selectedDomains.value.filter((k) => k !== key)
+  } else {
+    selectedDomains.value = [...selectedDomains.value, key]
+  }
+}
+
+/**
+ * 新增自定义事件类型
+ *
+ * 输入框支持「中文标签 / 英文value」写法（以 " / " 分隔，末尾为落库 value），
+ * 也兼容纯 value；空白即忽略。落库后清空输入框并刷新列表。
+ *
+ * @returns 无返回值；失败弹窗提示
+ */
+async function handleAddCustomType() {
+  const raw = newCustomType.value.trim()
+  if (!raw) return
+  const sep = raw.lastIndexOf(' / ')
+  let value = raw
+  let label = ''
+  if (sep !== -1) {
+    label = raw.slice(0, sep).trim()
+    value = raw.slice(sep + 3).trim()
+  }
+  try {
+    await eventTypesStore.addCustomType(value, label || undefined)
+    newCustomType.value = ''
+  } catch (e) {
+    void modalStore.showAlert({
+      title: '添加失败',
+      message: e instanceof Error ? e.message : String(e),
+    })
+  }
+}
+
+/**
+ * 删除自定义事件类型（按主键）
+ *
+ * @param id - 自定义类型主键
+ * @returns 无返回值；失败弹窗提示
+ */
+async function handleRemoveCustomType(id: number) {
+  try {
+    await eventTypesStore.removeCustomType(id)
+  } catch (e) {
+    void modalStore.showAlert({
+      title: '删除失败',
+      message: e instanceof Error ? e.message : String(e),
+    })
+  }
+}
 
 /** 常规设置：刷新频率（分钟字符串）与阅读字体档位 */
 const refreshInterval = ref('60')
@@ -223,8 +372,10 @@ const rsshubUrl = ref('')
 /** 文章保留策略：保留天数（字符串数字，0 = 永久保留）与是否保留未读 */
 const retentionDays = ref('30')
 const keepUnread = ref(true)
-/** 系统通知开关：缺省开启，落库为 settings.notify_enabled（"1" / "0"） */
-const notifyEnabled = ref(true)
+    /** 系统通知开关：缺省开启，落库为 settings.notify_enabled（"1" / "0"） */
+    const notifyEnabled = ref(true)
+    /** 事件预警开关：缺省开启，落库为 settings.event_alert_enabled（"1" / "0"） */
+    const eventAlertEnabled = ref(true)
 /** 关闭到托盘开关：缺省开启，落库为 settings.close_to_tray（"1" / "0"） */
 const closeToTray = ref(true)
 /** 按来源自动分组开关：缺省开启，落库为 settings.auto_group_by_source（"0" 为关） */
@@ -369,7 +520,7 @@ onUnmounted(() => {
  */
 watch(
   () => props.open,
-  (open) => {
+  async (open) => {
     if (!open) return
     // 常规设置：刷新频率（缺省 60 分钟）与字体档位（缺省 medium）
     refreshInterval.value = settingsStore.getSetting('refresh_interval_minutes') || '60'
@@ -389,10 +540,15 @@ watch(
     keepUnread.value = settingsStore.getSetting('retention_keep_unread') !== '0'
     // 系统通知：缺省开启，只有显式存过 "0" 才算关闭（与 Rust 侧 notify.rs 判据一致）
     notifyEnabled.value = settingsStore.getSetting('notify_enabled') !== '0'
+    // 事件预警：缺省开启，只有显式存过 "0" 才算关闭（与 Rust 侧 notify.rs 判据一致）
+    eventAlertEnabled.value = settingsStore.getSetting('event_alert_enabled') !== '0'
     // 关闭到托盘：缺省开启，只有显式存过 "0" 才算关闭（与 Rust 侧 win_close 判据一致）
     closeToTray.value = settingsStore.getSetting('close_to_tray') !== '0'
     // 按来源自动分组：缺省开启，只有显式存过 "0" 才算关闭（与 Rust 侧 feeds_add 判据一致）
     autoGroup.value = settingsStore.getSetting('auto_group_by_source') !== '0'
+    // 事件类型分类：全量加载（启用领域 + 自定义类型）并回填本地编辑副本
+    await eventTypesStore.loadAll()
+    selectedDomains.value = [...eventTypesStore.enabledDomains]
     savedGeneral.value = ''
   },
   { immediate: true }
@@ -473,8 +629,11 @@ async function saveGeneral() {
       settingsStore.setSetting('article_retention_days', retentionDays.value),
       settingsStore.setSetting('retention_keep_unread', keepUnread.value ? '1' : '0'),
       settingsStore.setSetting('notify_enabled', notifyEnabled.value ? '1' : '0'),
+      settingsStore.setSetting('event_alert_enabled', eventAlertEnabled.value ? '1' : '0'),
       settingsStore.setSetting('close_to_tray', closeToTray.value ? '1' : '0'),
       settingsStore.setSetting('auto_group_by_source', autoGroup.value ? '1' : '0'),
+      // 事件类型分类：把设置页编辑中的启用领域写回 settings.enabled_event_domains（JSON 数组）
+      eventTypesStore.saveEnabledDomains(selectedDomains.value),
     ])
     // 主题与字体即时生效（映射集中在 utils/appearance.ts，与启动时同一入口）
     applyAppearance(settingsStore)
@@ -556,4 +715,56 @@ defineExpose({ save: saveGeneral })
   box-shadow: var(--ring-inset);
 }
 .accent-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 事件类型分类：预设领域多选 chips（无默认，可多选取并集） */
+.domain-chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); }
+.domain-chip {
+  display: inline-flex; align-items: center; gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--surface); color: var(--text-secondary);
+  font-size: var(--fs-sm); cursor: pointer;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease),
+    color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.domain-chip:hover { border-color: var(--accent); color: var(--text-primary); }
+.domain-chip.active {
+  border-color: var(--accent); color: var(--text-primary);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.domain-count {
+  font-size: var(--fs-xs); color: var(--text-tertiary);
+  background: var(--fill); border-radius: 999px;
+  padding: 0 var(--sp-1); min-width: 18px; text-align: center;
+}
+.domain-chip.active .domain-count {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* 事件类型分类：自定义类型增删 */
+.custom-type-add { display: flex; gap: var(--sp-2); margin-top: var(--sp-2); }
+.custom-type-add .form-input { flex: 1; }
+.custom-type-list { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); }
+.custom-type-tag {
+  display: inline-flex; align-items: center; gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2); border-radius: 999px;
+  background: var(--fill); color: var(--text-primary);
+  font-size: var(--fs-sm); border: 1px solid var(--border);
+}
+.tag-remove {
+  border: none; background: transparent; cursor: pointer;
+  color: var(--text-tertiary); font-size: 15px; line-height: 1;
+  padding: 0 2px; border-radius: 50%;
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.tag-remove:hover {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+/* 未启用任何领域且无自定义类型时的提示（warn token 缺失时回退琥珀色，深浅主题通用） */
+.event-type-warn {
+  margin-top: var(--sp-2); font-size: var(--fs-xs); color: var(--warn, #b45309);
+}
 </style>
