@@ -14,23 +14,111 @@
 use sqlx::SqlitePool;
 
 use crate::ai;
-use crate::db::Article;
+use crate::db::{Article, CustomEventType, Setting};
 
 use super::ExtractedEvent;
 
-/// 事件类型的合法枚举（与 prompt 中的枚举说明保持一致）
+/// 预设领域 → 事件类型枚举（与前端 `eventTypeLabels.ts` 的 PRESET_EVENT_TYPES 同源）
 ///
-/// 模型输出此集合之外的 event_type 时该条事件直接丢弃（记日志），
+/// 用户可在设置里启用若干领域（取并集），再叠加自定义类型，
+/// 共同构成「生效事件类型枚举」（见 [`effective_event_types`]）。
+/// 模型输出不在此枚举内的 event_type 时该条事件直接丢弃（记日志），
 /// 宁缺毋滥：脏枚举值会污染时间线筛选。
-pub const EVENT_TYPES: [&str; 7] = [
-    "product",         // 产品动态：发布、更新、下线、定价
-    "executive",       // 高管变动：任命、离职、发言表态
-    "ma",              // 并购与投资：收购、入股、合资
-    "regulatory",      // 监管与合规：处罚、审查、新规影响
-    "strategy",        // 战略意图：扩张、收缩、转型、组织调整
-    "competition",     // 竞争格局：市场份额、对标、互操作
-    "industry_signal", // 行业信号：供需、技术趋势、上下游变化
+pub const PRESET_DOMAINS: &[(&str, &[&str])] = &[
+    (
+        "business",
+        &[
+            "product",       // 产品动态：发布、更新、下线、定价
+            "executive",     // 高管变动：任命、离职、发言表态
+            "ma",            // 并购与投资：收购、入股、合资
+            "regulatory",    // 监管与合规：处罚、审查、新规影响
+            "strategy",      // 战略意图：扩张、收缩、转型、组织调整
+            "competition",   // 竞争格局：市场份额、对标、互操作
+            "industry_signal", // 行业信号：供需、技术趋势、上下游变化
+        ],
+    ),
+    (
+        "academic",
+        &[
+            "paper",         // 论文：发表、接收、撤稿
+            "grant",         // 经费：资助、立项、结题
+            "clinical",      // 临床：试验进展、结果
+            "conference",    // 会议：举办、投稿、获奖
+            "hire",          // 人才：招募、流动
+            "collaboration", // 合作：联合研究、共建平台
+            "patent",        // 专利：申请、授权
+            "dataset",       // 数据集：发布、开源
+            "funding",       // 融资：轮次、金额
+        ],
+    ),
+    (
+        "policy",
+        &[
+            "legislation",   // 立法：法律、条例出台
+            "enforcement",   // 执法：处罚、审查、整改
+            "consultation",  // 征求意见：草案、听证
+            "guideline",     // 指南：标准、规范发布
+        ],
+    ),
+    (
+        "finance",
+        &[
+            "earnings",      // 财报：营收、利润
+            "rating",        // 评级：上调、下调
+            "ipo",           // 上市：申购、挂牌
+            "dividend",      // 分红：派息、回购
+        ],
+    ),
 ];
+
+/// settings 表中「启用领域」键名（存 JSON 数组，如 `["business","academic"]`）
+pub const ENABLED_DOMAINS_KEY: &str = "enabled_event_domains";
+
+/// 取某预设领域包含的事件类型；领域未知时返回空切片
+fn preset_types(domain: &str) -> &'static [&'static str] {
+    for (d, types) in PRESET_DOMAINS {
+        if *d == domain {
+            return types;
+        }
+    }
+    &[]
+}
+
+/// 计算当前生效的事件类型枚举
+///
+/// = 用户启用的预设领域（settings.`enabled_event_domains`）的类型并集
+///   + 自定义事件类型表（`custom_event_types`）的全部 value。
+/// 两者都为空时返回空向量——此时抽取不会产出任何被认可的事件，
+/// 调用方（设置页）应保证至少启用一个领域或添加自定义类型。
+///
+/// # 参数
+/// * `pool` - 数据库连接池
+///
+/// # 返回值
+/// 去重后的生效枚举（字符串值列表）
+///
+/// # 错误
+/// settings / 自定义类型表读取失败时返回错误信息
+pub(crate) async fn effective_event_types(pool: &SqlitePool) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    // 1. 启用领域（settings JSON 数组）
+    if let Some(raw) = Setting::get(pool, ENABLED_DOMAINS_KEY).await? {
+        if let Ok(domains) = serde_json::from_str::<Vec<String>>(&raw) {
+            for d in domains {
+                for t in preset_types(&d) {
+                    out.push((*t).to_string());
+                }
+            }
+        }
+    }
+    // 2. 自定义类型表
+    for ct in CustomEventType::list(pool).await? {
+        out.push(ct.value);
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
 
 /// 送入模型的最大正文长度（字符数）
 ///
@@ -46,19 +134,30 @@ const MAX_CONTENT_CHARS: usize = 8000;
 /// # 参数
 /// * `title` - 文章标题
 /// * `content` - 纯文本正文（调用方已做 HTML 剥离与截断）
+/// * `event_types` - 生效的事件类型枚举（预设领域并集 + 自定义类型）
 ///
 /// # 返回值
 /// 完整提示词
-fn build_extract_prompt(title: &str, content: &str) -> String {
+fn build_extract_prompt(title: &str, content: &str, event_types: &[String]) -> String {
+    // 枚举清单：用顿号连接，作为"只能从以下枚举选择"的候选
+    let enum_list = if event_types.is_empty() {
+        String::new()
+    } else {
+        event_types.join("、")
+    };
+    // few-shot 用枚举里的真实取值，避免示例类型不在枚举内被模型照搬后丢弃
+    let (ex_a, ex_b) = match event_types.len() {
+        0 => ("product".to_string(), "executive".to_string()),
+        1 => (event_types[0].clone(), event_types[0].clone()),
+        _ => (event_types[0].clone(), event_types[1].clone()),
+    };
     format!(
         "你是一名严格的信息抽取员，负责从行业与公司研究类文章中抽取结构化事件。\
 你不是分析师：禁止概括、禁止情绪判断、禁止推测，只抽取原文明确陈述的事实。\
 每条事件必须同时满足以下要求：
 
 1. event_type 只能从以下枚举中选择：
-   product（产品动态）、executive（高管变动）、ma（并购投资）、\
-regulatory（监管合规）、strategy（战略意图）、competition（竞争格局）、\
-industry_signal（行业信号）
+   {enum_list}
 2. fact 是一句客观事实（50字以内），不得改写为评价或概括
 3. evidence 必须是原文中连续的片段（原样复制，不得超过60字），用于溯源
 4. event_date 为事件发生日期（YYYY-MM-DD）；原文未明确提到日期时留空字符串
@@ -78,13 +177,13 @@ aliases 列出文中出现的其他写法；entity_type 从 company/person/produ
 示例：
 文章：OpenAI 宣布以 30 亿美元收购 io Devices，CEO 奥特曼称将进军硬件领域。
 输出：{{\"events\": [{{\"canonical_name\": \"OpenAI\", \"aliases\": [], \
-\"entity_type\": \"company\", \"event_type\": \"ma\", \"event_date\": \"\", \
+\"entity_type\": \"company\", \"event_type\": \"{ex_a}\", \"event_date\": \"\", \
 \"fact\": \"OpenAI 以30亿美元收购io Devices\", \
 \"evidence\": \"OpenAI 宣布以 30 亿美元收购 io Devices\", \
 \"sentiment\": \"positive\", \"sentiment_confidence\": 0.9, \
 \"financial_metrics\": [[\"acquisition_price\", \"30亿美元\"]}}, \
 {{\"canonical_name\": \"OpenAI\", \"aliases\": [], \"entity_type\": \"company\", \
-\"event_type\": \"strategy\", \"event_date\": \"\", \
+\"event_type\": \"{ex_b}\", \"event_date\": \"\", \
 \"fact\": \"OpenAI 将进军硬件领域\", \"evidence\": \"奥特曼称将进军硬件领域\", \
 \"sentiment\": \"neutral\", \"sentiment_confidence\": 0.7, \
 \"financial_metrics\": []}}]}}
@@ -149,13 +248,16 @@ fn parse_events_loose(raw: &str) -> Vec<ExtractedEvent> {
 ///
 /// 证据允许为空（部分模型偶发漏填，事实本身仍有价值），
 /// 但 fact 与 event_type 是事件库的底线，不合规直接丢弃。
+/// `valid_types` 为生效事件类型枚举（预设领域并集 + 自定义类型），
+/// 由调用方在抽取前算好并透传（见 [`effective_event_types`]）。
 ///
 /// # 参数
 /// * `events` - 模型输出的事件列表
+/// * `valid_types` - 生效事件类型枚举
 ///
 /// # 返回值
 /// 校验通过的事件列表
-fn validate_events(events: Vec<ExtractedEvent>) -> Vec<ExtractedEvent> {
+fn validate_events(events: Vec<ExtractedEvent>, valid_types: &[String]) -> Vec<ExtractedEvent> {
     events
         .into_iter()
         .filter(|e| {
@@ -164,7 +266,7 @@ fn validate_events(events: Vec<ExtractedEvent>) -> Vec<ExtractedEvent> {
                 return false;
             }
             // event_type 不在枚举内说明模型幻觉或 schema 遵从失败，丢弃并记日志
-            if !EVENT_TYPES.contains(&e.event_type.as_str()) {
+            if !valid_types.contains(&e.event_type) {
                 eprintln!(
                     "[research] 丢弃非法 event_type 的事件: {} (fact: {})",
                     e.event_type,
@@ -195,6 +297,7 @@ pub async fn extract_article(
     article_id: i64,
     provider: &ai::AIProvider,
     custom_extract_prompt: Option<&str>,
+    effective: &[String],
 ) -> Result<Vec<ExtractedEvent>, String> {
     let article = sqlx::query_as::<_, Article>("SELECT * FROM articles WHERE id = ? LIMIT 1")
         .bind(article_id)
@@ -216,11 +319,11 @@ pub async fn extract_article(
     let prompt = if let Some(custom) = custom_extract_prompt {
         format!("{}\n\n现在处理以下文章。\n\n标题：{}\n\n正文：\n{}", custom, article.title, truncated)
     } else {
-        build_extract_prompt(&article.title, &truncated)
+        build_extract_prompt(&article.title, &truncated, effective)
     };
     let raw_output = ai::chat_completion(provider, &prompt, Some(0.1)).await?;
 
-    let events = validate_events(parse_events_loose(&raw_output));
+    let events = validate_events(parse_events_loose(&raw_output), effective);
     if events.is_empty() {
         eprintln!("[research] 文章 {} 未抽出事件（或解析失败）", article_id);
     }
@@ -264,8 +367,29 @@ pub async fn mark_extracted(pool: &SqlitePool, article_id: i64) -> Result<(), St
 /// * `min_score` - 粗筛阈值（entity_score 下限）
 /// * `limit` - 本批次最多处理的文章数
 ///
+/// 判断事件是否达到"值得弹预警"的显著度（强情感）
+///
+/// 事件预警（P0-D）的筛选门槛：只有情感倾向明确（positive / negative）
+/// 且模型对情感判断有足够把握（置信度 >= 0.7）的事件才推送，
+/// 避免把中性或模型拿不准的事件当成"重大事件"打扰用户。
+/// 文章级 entity_score 粗筛已在调用方完成（只处理命中关注实体的文章），
+/// 这里只补情感维度的二道筛。被 [`crate::notify::send_event_alert`] 复用，
+/// 因此暴露为 `pub(crate)`。
+///
+/// # 参数
+/// * `e` - 抽取出的原始事件
+///
 /// # 返回值
-/// `(处理的文章数, 新增事件数)`
+/// 值得推送给 P0-D 预警时返回 `true`
+pub(crate) fn is_significant(e: &ExtractedEvent) -> bool {
+    matches!(
+        e.sentiment.as_deref(),
+        Some("positive") | Some("negative")
+    ) && e.sentiment_confidence.unwrap_or(0.0) >= 0.7
+}
+
+/// # 返回值
+/// `(处理的文章数, 新增事件数, 本批抽取出的全部事件列表)`
 ///
 /// # 错误
 /// 候选筛选查询失败时返回错误信息；单篇提取/入库失败不计为整体错误
@@ -274,7 +398,7 @@ pub async fn extract_batch(
     provider: &ai::AIProvider,
     min_score: i64,
     limit: i64,
-) -> Result<(usize, u64), String> {
+) -> Result<(usize, u64, Vec<ExtractedEvent>), String> {
     // 只取 id：后续 extract_article 会按 id 自行取回整行，这里没必要把正文一并拉进内存
     let candidates = sqlx::query_scalar::<_, i64>(
         "SELECT id FROM articles \
@@ -287,10 +411,17 @@ pub async fn extract_batch(
     .await
     .map_err(|e| e.to_string())?;
 
+    // 整批抽取共用同一套生效枚举：预设领域并集 + 自定义类型，
+    // 只算一次避免每篇重复读库；空枚举会让所有事件被 validate 丢弃（无类型可归类）。
+    let effective = effective_event_types(pool).await?;
+
     let mut processed = 0usize;
     let mut total_events: u64 = 0;
+    // 收集本批抽取出的全部事件：P0-D 强情感预警与 P1-F 实体规则预警都在
+    // notify 侧按各自门槛二次筛选，这里只负责原样回传，避免重复往返查库
+    let mut all_events: Vec<ExtractedEvent> = Vec::new();
     for article_id in candidates {
-        match extract_article(pool, article_id, provider, None).await {
+        match extract_article(pool, article_id, provider, None, &effective).await {
             Ok(events) => {
                 // 入库失败只影响本篇：标记留在未置位状态，下一轮会重试
                 match super::normalize::normalize_and_store_events(
@@ -309,6 +440,11 @@ pub async fn extract_batch(
                         }
                         processed += 1;
                         total_events += inserted;
+                        // 原样收集本篇全部事件，预警的二道筛（强情感 / 实体规则）
+                        // 统一下沉到 notify 侧，这里不内置任何门槛
+                        for e in &events {
+                            all_events.push(e.clone());
+                        }
                     }
                     Err(e) => {
                         eprintln!("[research] 文章 {} 事件入库失败，跳过: {}", article_id, e)
@@ -319,5 +455,94 @@ pub async fn extract_batch(
             Err(e) => eprintln!("[research] 文章 {} 提取失败，跳过: {}", article_id, e),
         }
     }
-    Ok((processed, total_events))
+    Ok((processed, total_events, all_events))
+}
+
+#[cfg(test)]
+mod tests {
+    //! `is_significant` 的纯函数验证
+    //!
+    //! 只测情感门槛逻辑（强情感且置信度 >= 0.7 才推送）；
+    //! 文章级实体粗筛不在此模块，由调用方的 entity_score WHERE 条件负责。
+
+    use super::*;
+
+    /// 构造一条测试事件（仅填充 `is_significant` 关心的字段）
+    fn make(sentiment: Option<&str>, conf: Option<f64>) -> ExtractedEvent {
+        ExtractedEvent {
+            canonical_name: "测试实体".to_string(),
+            aliases: vec![],
+            entity_type: "company".to_string(),
+            event_type: "product".to_string(),
+            event_date: String::new(),
+            fact: "发生了一件事".to_string(),
+            evidence: String::new(),
+            sentiment: sentiment.map(|s| s.to_string()),
+            sentiment_confidence: conf,
+            financial_metrics: None,
+        }
+    }
+
+    #[test]
+    fn is_significant_accepts_strong_sentiment() {
+        assert!(is_significant(&make(Some("positive"), Some(0.9))));
+        assert!(is_significant(&make(Some("negative"), Some(0.85))));
+    }
+
+    #[test]
+    fn is_significant_rejects_weak_or_neutral() {
+        // 置信度不足
+        assert!(!is_significant(&make(Some("positive"), Some(0.5))));
+        // 中性情感不推送
+        assert!(!is_significant(&make(Some("neutral"), Some(0.95))));
+        // 缺失情感
+        assert!(!is_significant(&make(None, Some(0.9))));
+        // 缺失置信度
+        assert!(!is_significant(&make(Some("positive"), None)));
+    }
+
+    /// 构造一条指定事件类型的测试事件（用于 validate_events 校验）
+    fn make_with_type(event_type: &str) -> ExtractedEvent {
+        let mut e = make(Some("positive"), Some(0.9));
+        e.event_type = event_type.to_string();
+        e
+    }
+
+    #[test]
+    fn validate_events_accepts_effective_enum() {
+        // 多域并集 + 自定义：paper（学术）/ clinical（学术）/ 临床试验（自定义）都应通过
+        let valid = vec![
+            "paper".to_string(),
+            "clinical".to_string(),
+            "临床试验".to_string(),
+        ];
+        let events = vec![
+            make_with_type("paper"),
+            make_with_type("clinical"),
+            make_with_type("临床试验"),
+        ];
+        assert_eq!(validate_events(events, &valid).len(), 3);
+    }
+
+    #[test]
+    fn validate_events_rejects_out_of_enum() {
+        // 生效枚举只有学术类，商业类的 product 应被丢弃
+        let valid = vec!["paper".to_string(), "clinical".to_string()];
+        let events = vec![
+            make_with_type("paper"),
+            make_with_type("product"), // 不在生效枚举内
+            make_with_type(""),        // 空类型
+        ];
+        let kept = validate_events(events, &valid);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].event_type, "paper");
+    }
+
+    #[test]
+    fn validate_events_drops_empty_fact() {
+        let valid = vec!["product".to_string()];
+        let mut e = make_with_type("product");
+        e.fact = String::new(); // 事实为空，底线不合规
+        assert_eq!(validate_events(vec![e], &valid).len(), 0);
+    }
 }

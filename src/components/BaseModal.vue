@@ -47,7 +47,7 @@
  * # 参数
  * * `open` - 是否打开；关闭态面板只是不可见，组件本身常驻
  * * `title` - 弹窗标题，写入 `aria-label` 供读屏播报
- * * `size` - 面板宽度档位：sm 460px / md 520px / lg 560px / xl 680px
+ * * `size` - 面板宽度档位：sm 460px / md 520px / lg 560px / xl 680px / 2xl 820px
  * * `layout` - 布局档位：`default`（默认）高度随内容自适应；
  *   `side` 固定高度（min(80vh, 720px)）+ 宽面板，供 tab 较多的弹窗
  *   （设置 / 研究工作台）把 tab 竖排在左侧——弹窗高度不再随切 tab 跳变。
@@ -69,7 +69,7 @@ const props = withDefaults(
     /** 弹窗标题（仅用于无障碍播报，视觉标题由各弹窗自己渲染） */
     title: string
     /** 面板宽度档位 */
-    size?: 'sm' | 'md' | 'lg' | 'xl'
+    size?: 'sm' | 'md' | 'lg' | 'xl' | '2xl'
     /** 布局：default 高度随内容自适应；side 固定高度 + 宽面板，宿主内部排「左 tab 列 + 右内容列」 */
     layout?: 'default' | 'side'
     /** 全局确认框变体（GlobalModal 专用）：z-index 压过普通弹窗，且键盘事件不向 activeModal 让路 */
@@ -313,6 +313,11 @@ onBeforeUnmount(deactivate)
 }
 .size-xl {
   width: 680px;
+}
+/* 2xl：给内容密度高的聚合类弹窗（实体仪表盘：五个区块纵向排布）用，
+   在 92vw / max-width 约束内尽可能宽 */
+.size-2xl {
+  width: 820px;
 }
 
 /* 侧栏 tab 布局：固定高度 + 宽面板。高度固定是本变体的核心诉求——

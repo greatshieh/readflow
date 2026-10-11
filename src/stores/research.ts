@@ -31,7 +31,8 @@ import type {
   EntityGraph,
   EventSentiment,
   FinancialData,
-  CrossReferenceEntry
+  CrossReferenceEntry,
+  ArticlePreview
 } from '@/types'
 
 export const useResearchStore = defineStore('research', () => {
@@ -70,13 +71,21 @@ export const useResearchStore = defineStore('research', () => {
    *
    * @param days - 时间窗口天数（0 = 全部）
    * @param entityId - 实体筛选（不传 = 全部实体）
+   * @param filters - 可选筛选：eventType / sentiment / keyword（空串 = 不过滤）
    */
-  async function loadEvents(days: number, entityId?: number) {
+  async function loadEvents(
+    days: number,
+    entityId?: number,
+    filters?: { eventType?: string; sentiment?: string; keyword?: string }
+  ) {
     eventsLoading.value = true
     try {
       events.value = await invoke<ResearchEventWithContext[]>('research_events_timeline', {
         days,
-        entityId: entityId ?? null
+        entityId: entityId ?? null,
+        eventType: filters?.eventType || null,
+        sentiment: filters?.sentiment || null,
+        keyword: filters?.keyword || null
       })
     } finally {
       eventsLoading.value = false
@@ -296,8 +305,8 @@ export const useResearchStore = defineStore('research', () => {
   /**
    * 关系图时间窗（天数，0 = 全部文章），默认「全部」
    *
-   * 参数放 store 而非组件本地：关系图有两处展示位（研究工作台的图页签与
-   * 主屏关系图视图），两处必须用同一份参数与数据，否则会互相漂移。
+   * 参数放 store 而非组件本地：关系图虽只在主屏图视图渲染一处，但参数与数据
+   * 仍需与「实体变更导致过期」的失效逻辑共享同一份真源，放组件本地会漂移。
    * 默认「全部」而不是 30 天：关系图的价值在于看长期结构，窗口太窄会让
    * 大部分实体失去共现对象，图上只剩零星几条线，反而看不出东西。
    */
@@ -309,7 +318,7 @@ export const useResearchStore = defineStore('research', () => {
   /** 关系图计算错误消息（空串 = 无错误），写入方是 reloadGraph */
   const graphError = ref('')
 
-  /** 关系图时间窗选项（弹窗页签与主屏视图共用） */
+  /** 关系图时间窗选项（主屏图视图的参数条使用） */
   const graphDayOptions: { value: number; label: string }[] = [
     { value: 7, label: '近 7 天' },
     { value: 30, label: '近 30 天' },
@@ -317,7 +326,7 @@ export const useResearchStore = defineStore('research', () => {
     { value: 0, label: '全部' },
   ]
 
-  /** 关系图最小共现数选项（弹窗页签与主屏视图共用） */
+  /** 关系图最小共现数选项（主屏图视图的参数条使用） */
   const graphWeightOptions: { value: number; label: string }[] = [
     { value: 1, label: '共现 ≥ 1 篇' },
     { value: 2, label: '共现 ≥ 2 篇' },
@@ -344,7 +353,7 @@ export const useResearchStore = defineStore('research', () => {
   }
 
   /**
-   * 按当前共享参数重算关系图（弹窗页签与主屏视图统一走这里）
+   * 按当前共享参数重算关系图（主屏图视图唯一入口）
    *
    * 参数读 `graphDays` / `graphMinWeight`，失败信息写入 `graphError`——
    * 吞掉异常会让用户看到一张不动的旧图却不知为何。
@@ -358,6 +367,21 @@ export const useResearchStore = defineStore('research', () => {
     } catch (e) {
       graphError.value = `关系图计算失败：${e instanceof Error ? e.message : String(e)}`
     }
+  }
+
+  /**
+   * 作废已加载的关系图（置为 null），等下次进入主屏图视图时重算
+   *
+   * 关注实体集合变化（增删 / 启停 / 评分）后图即过期。若此刻图视图正可见，
+   * 调用方应直接 `reloadGraph()` 让用户立即看到新图；若不可见，本方法的
+   * 「作废」语义与之互补——`GraphView` 的 onMounted 只在 `graph === null`
+   * 时拉数据，故置空即可把重算推迟到用户真正看图的那一刻，省掉一次看不见的
+   * 全库扫描。
+   *
+   * @returns 无返回值；副作用为把 `graph` 置空
+   */
+  function invalidateGraph(): void {
+    graph.value = null
   }
 
   // ─── 情感分析与财务数据 ──────────────────────────────────────────────────
@@ -418,6 +442,39 @@ export const useResearchStore = defineStore('research', () => {
     return invoke<CrossReferenceEntry[]>('research_cross_reference', { entityId, days })
   }
 
+  /**
+   * 获取实体关联的文章列表（仪表盘「关联文章」区用）
+   *
+   * 与 `loadEvents` 不同：本函数只取数、不污染全局 `events`，便于实体仪表盘
+   * 在任意入口（实体列表 / 时间线 / 关系图）打开时独立聚合，而不会改动时间线页签的筛选态。
+   *
+   * @param entityId - 实体 ID
+   * @returns 文章预览列表（标题 + 链接）
+   */
+  async function getEntityArticles(entityId: number): Promise<ArticlePreview[]> {
+    return invoke<ArticlePreview[]>('entity_articles', { entityId })
+  }
+
+  /**
+   * 获取指定实体的近期事件（仪表盘「近期事件」区用）
+   *
+   * 复用 `research_events_timeline` 命令的实体筛选能力，但只取数、不写入全局
+   * `events`，避免打开仪表盘时把时间线页签的「全部实体」视图偷偷切成单实体。
+   *
+   * @param entityId - 实体 ID
+   * @param days - 时间窗口天数（0 = 全部）
+   * @returns 带上下文的事件列表
+   */
+  async function getEntityEvents(
+    entityId: number,
+    days: number
+  ): Promise<ResearchEventWithContext[]> {
+    return invoke<ResearchEventWithContext[]>('research_events_timeline', {
+      days,
+      entityId
+    })
+  }
+
   return {
     events,
     eventsLoading,
@@ -451,10 +508,13 @@ export const useResearchStore = defineStore('research', () => {
     closeReport,
     loadGraph,
     reloadGraph,
+    invalidateGraph,
     getEventSentiment,
     getFinancialData,
     getFinancialDataByEntity,
     getEntitySentiment,
-    getCrossReference
+    getCrossReference,
+    getEntityArticles,
+    getEntityEvents
   }
 })

@@ -3,5 +3,8 @@ description = "Default Tauri capability"
 windows = ["main"]
 permissions = [
   "core:default",
-  "shell:allow-open"
+  "shell:allow-open",
+  # 仅放行"查询通知权限状态"（只读探测），不放行 notify/request——发通知仍由 Rust 侧独占。
+  # 通知插件全局脚本加载时会做一次权限探测，放行此项可消除 "is_permission_granted not allowed" 的未捕获拒绝。
+  "notification:allow-is-permission-granted"
 ]

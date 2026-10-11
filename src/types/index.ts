@@ -55,6 +55,10 @@ export interface Article {
   is_bookmarked: boolean
   /** 用户偏好标记：'like' = 喜欢，'skip' = 跳过，null = 未标记 */
   user_preference: 'like' | 'skip' | null
+  /** 媒体附件 URL（播客音频 / 视频），无附件时为空 */
+  enclosure_url?: string
+  /** 附件 MIME 类型（audio/* 或 video/*），无附件时为空 */
+  enclosure_type?: string
   /** 是否有 AI 摘要 */
   has_ai_summary: boolean
   /** 是否有翻译 */
@@ -221,6 +225,8 @@ export interface Entity {
   enabled: boolean
   /** 创建时间 */
   created_at: string
+  /** 告警规则 JSON（实体级告警 P1-F；未配置时为 undefined） */
+  alert_rules?: string
 }
 
 /**
@@ -238,6 +244,8 @@ export interface GraphNode {
   entity_type: string
   /** 命中文章数（时间窗内），用于决定节点大小 */
   article_count: number
+  /** 聚合情感倾向（时间窗内主导情感：positive / negative / neutral），情感高亮模式使用；可选以兼容旧数据 */
+  sentiment?: string
 }
 
 /**

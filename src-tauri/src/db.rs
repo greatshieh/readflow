@@ -143,6 +143,16 @@ pub struct Article {
     /// 依据本字段区分「尚未提取」与「已提取过，但本文没有可抽取的事件」——
     /// 少了它，提取空结果与功能失灵在界面上完全一样。
     pub ai_extracted_at: Option<DateTime<Utc>>,
+    /// 媒体附件 URL（播客音频 / 视频），无附件时为 NULL
+    ///
+    /// 来自 RSS/Atom 的 `<enclosure>` 或 JSON Feed 的 `attachments[]`，由
+    /// [`crate::rss::ParsedItem::enclosure_url`] 透传。前端据此在列表/正文渲染播放器。
+    pub enclosure_url: Option<String>,
+    /// 附件 MIME 类型（如 `audio/mpeg`、`video/mp4`）
+    ///
+    /// 用于前端决定渲染 `<audio>` 还是 `<video>`；可为 NULL（旧文或纯文字源），
+    /// 前端对 NULL 按"无附件"处理。
+    pub enclosure_type: Option<String>,
     /// 文章标签（多对多，见 [`Tag`]）
     ///
     /// **不是 `articles` 表上的列**：由 [`Article::attach_tags`] 在查询之后批量挂载，
@@ -330,6 +340,88 @@ impl Entity {
         Ok(next == 1)
     }
 
+    /// 读取实体的告警规则 JSON（实体表 `alert_rules` 列）
+    ///
+    /// 规则为空或实体不存在时返回 `None`；此处只负责取回原始串，
+    /// 解析与匹配由 [`crate::notify::send_rule_alerts`] 完成。
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    /// * `name` - 实体名称（归一化后的规范名）
+    ///
+    /// # 返回值
+    /// `alert_rules` 列的 JSON 字符串（列本身为 `NULL` 时返回 `None`）
+    ///
+    /// # 错误
+    /// 数据库查询失败时返回错误信息
+    pub async fn get_alert_rules_by_name(
+        pool: &SqlitePool,
+        name: &str,
+    ) -> Result<Option<String>, String> {
+        let r = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT alert_rules FROM entities WHERE name = ? LIMIT 1",
+        )
+        .bind(name)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok(r.flatten())
+    }
+
+    /// 写入实体的告警规则 JSON（实体表 `alert_rules` 列）
+    ///
+    /// 整体覆盖该列；规则的结构化校验在前端完成，这里只负责持久化，
+    /// 因此空串会被原样写入（等价于清空规则）。
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    /// * `id` - 实体 ID
+    /// * `json` - 规则 JSON 字符串
+    ///
+    /// # 错误
+    /// 数据库写入失败时返回错误信息
+    pub async fn set_alert_rules(
+        pool: &SqlitePool,
+        id: i64,
+        json: &str,
+    ) -> Result<(), String> {
+        sqlx::query("UPDATE entities SET alert_rules = ? WHERE id = ?")
+            .bind(json)
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 读取实体的告警规则 JSON（按实体 ID，供前端弹窗编辑）
+    ///
+    /// 逻辑与 [`Self::get_alert_rules_by_name`] 一致，区别仅为按主键查询，
+    /// 避免前端需要拼 (name, entity_type) 才能唯一定位实体。
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    /// * `id` - 实体 ID
+    ///
+    /// # 返回值
+    /// `alert_rules` 列的 JSON 字符串（列本身为 `NULL` 时返回 `None`）
+    ///
+    /// # 错误
+    /// 数据库查询失败时返回错误信息
+    pub async fn get_alert_rules(
+        pool: &SqlitePool,
+        id: i64,
+    ) -> Result<Option<String>, String> {
+        let r = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT alert_rules FROM entities WHERE id = ? LIMIT 1",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok(r.flatten())
+    }
+
     /// 按名称模糊搜索实体（支持部分匹配）
     ///
     /// # 参数
@@ -471,6 +563,50 @@ impl Entity {
             used.insert(e.source);
             used.insert(e.target);
         }
+
+        // 一次性聚合子图所有实体的主导情感（positive / negative / neutral 计数最大者），
+        // 供前端「情感高亮」模式着色。聚合口径与时间窗一致：days > 0 时只统计窗口内事件。
+        // 无事件记录或聚合为空的实体回退 neutral（节点构造处兜底）。
+        #[derive(Debug, Clone, sqlx::FromRow)]
+        struct SentimentAgg {
+            eid: i64,
+            s: String,
+            c: i64,
+        }
+        let used_ids: Vec<i64> = used.iter().cloned().collect();
+        let placeholders = used_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let mut sentiment_sql = format!(
+            "SELECT r.entity_id AS eid, COALESCE(es.sentiment, 'neutral') AS s, COUNT(*) AS c \
+             FROM research_events r \
+             LEFT JOIN event_sentiments es ON es.event_id = r.id \
+             WHERE r.entity_id IN ({})",
+            placeholders
+        );
+        if days > 0 {
+            sentiment_sql.push_str(" AND r.created_at >= datetime('now', '-' || ? || ' days')");
+        }
+        sentiment_sql.push_str(" GROUP BY r.entity_id, s");
+        let mut sentiment_q = sqlx::query_as::<_, SentimentAgg>(&sentiment_sql);
+        for id in &used_ids {
+            sentiment_q = sentiment_q.bind(id);
+        }
+        if days > 0 {
+            sentiment_q = sentiment_q.bind(days);
+        }
+        let sentiment_rows = sentiment_q
+            .fetch_all(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        // 每个实体保留计数最大的情感；初始 (空串, -1) 保证任意真实计数（≥1）都会覆盖
+        let mut sentiment_map: HashMap<i64, (String, i64)> = HashMap::new();
+        for row in &sentiment_rows {
+            let entry = sentiment_map.entry(row.eid).or_insert((String::new(), -1));
+            if row.c > entry.1 {
+                entry.0 = row.s.clone();
+                entry.1 = row.c;
+            }
+        }
+
         let nodes: Vec<GraphNode> = entities
             .iter()
             .enumerate()
@@ -480,6 +616,10 @@ impl Entity {
                 name: e.name.clone(),
                 entity_type: e.entity_type.clone(),
                 article_count: counts[i],
+                sentiment: sentiment_map
+                    .get(&e.id)
+                    .map(|(s, _)| s.clone())
+                    .unwrap_or_else(|| "neutral".to_string()),
             })
             .collect();
 
@@ -506,6 +646,10 @@ pub struct GraphNode {
     pub entity_type: String,
     /// 命中文章数（时间窗内）
     pub article_count: i64,
+    /// 聚合情感倾向（时间窗内该实体相关事件的主导情感：positive / negative / neutral）。
+    /// 由 `Entity::graph` 一次性 GROUP BY 聚合 `research_events` LEFT JOIN `event_sentiments` 得到，
+    /// 前端「情感高亮」模式据此着色；无事件记录时回退 neutral。
+    pub sentiment: String,
 }
 
 /// 实体关系图中的一条边
@@ -658,54 +802,100 @@ impl ResearchEvent {
         .map_err(|e| e.to_string())
     }
 
-    /// 查询时间窗口内的全部事件并附带实体名与来源文章信息（报告渲染用）
+    /// 查询时间窗口内的事件并附带实体名与来源文章信息（报告渲染 / 时间线筛选用）
     ///
     /// 一次 JOIN 查询同时取回事件本体 + 实体规范名 + 来源文章标题/链接，
-    /// 避免渲染时按实体/按文章逐条回查的 N+1 问题；分组在调用方内存中完成。
+    /// 避免渲染时按实体/按文章逐条回查的 N+1 问题；分组与排序在调用方内存中完成。
+    /// `event_type` / `sentiment` / `keyword` 为可选筛选：任一为空（`None` 或空串）
+    /// 即视为不过滤。筛选条件以占位符参数化拼接（不拼用户字符串进 SQL），杜绝注入。
     ///
     /// # 参数
     /// * `pool` - 数据库连接池
-    /// * `days` - 时间窗口天数（按入库时间过滤，0 表示全部）
+    /// * `days` - 时间窗口天数（按入库时间过滤，0 或负数表示全部）
+    /// * `event_type` - 事件类型精确匹配（如 `regulatory`），空则不过滤
+    /// * `sentiment` - 情感倾向精确匹配（positive/negative/neutral），空则不过滤
+    /// * `keyword` - 关键词模糊匹配，作用于 `fact` 与 `evidence` 字段，空则不过滤
     ///
     /// # 返回值
-    /// 扁平的事件行列表（含 entity_name / article_title / article_link），
-    /// 按实体名、事件日期排序
+    /// 扁平的事件行列表（含 entity_name / article_title / article_link），按实体名、事件日期排序
     ///
     /// # 错误
     /// 数据库查询失败时返回错误信息
     pub async fn list_with_context(
         pool: &SqlitePool,
         days: i64,
+        event_type: Option<String>,
+        sentiment: Option<String>,
+        keyword: Option<String>,
     ) -> Result<Vec<EventWithContext>, String> {
-        let sql = if days > 0 {
-            "SELECT e.name AS entity_name, \
-                    r.id, r.article_id, r.entity_id, r.event_type, r.event_date, \
-                    r.fact, r.evidence, r.source_model, r.created_at, \
-                    a.title AS article_title, a.link AS article_link, \
-                    COALESCE(es.sentiment, 'neutral') AS sentiment, \
-                    COALESCE(es.confidence, 0.0) AS sentiment_confidence \
-             FROM research_events r \
+        // 列定义段（两分支共用，避免重复书写）
+        const COLS: &str = "e.name AS entity_name, \
+            r.id, r.article_id, r.entity_id, r.event_type, r.event_date, \
+            r.fact, r.evidence, r.source_model, r.created_at, \
+            a.title AS article_title, a.link AS article_link, \
+            COALESCE(es.sentiment, 'neutral') AS sentiment, \
+            COALESCE(es.confidence, 0.0) AS sentiment_confidence";
+
+        let mut sql = String::from("SELECT ");
+        sql.push_str(COLS);
+        sql.push_str(
+            " FROM research_events r \
              JOIN entities e ON e.id = r.entity_id \
              LEFT JOIN articles a ON a.id = r.article_id \
              LEFT JOIN event_sentiments es ON es.event_id = r.id \
-             WHERE r.created_at >= datetime('now', '-' || ? || ' days') \
-             ORDER BY e.name ASC, r.event_date DESC, r.id DESC"
-        } else {
-            "SELECT e.name AS entity_name, \
-                    r.id, r.article_id, r.entity_id, r.event_type, r.event_date, \
-                    r.fact, r.evidence, r.source_model, r.created_at, \
-                    a.title AS article_title, a.link AS article_link, \
-                    COALESCE(es.sentiment, 'neutral') AS sentiment, \
-                    COALESCE(es.confidence, 0.0) AS sentiment_confidence \
-             FROM research_events r \
-             JOIN entities e ON e.id = r.entity_id \
-             LEFT JOIN articles a ON a.id = r.article_id \
-             LEFT JOIN event_sentiments es ON es.event_id = r.id \
-             ORDER BY e.name ASC, r.event_date DESC, r.id DESC"
-        };
-        let mut query = sqlx::query_as::<_, EventWithContext>(sql);
+             WHERE 1=1",
+        );
+
+        if days > 0 {
+            sql.push_str(" AND r.created_at >= datetime('now', '-' || ? || ' days')");
+        }
+        if let Some(et) = &event_type {
+            if !et.is_empty() {
+                sql.push_str(" AND r.event_type = ?");
+            }
+        }
+        if let Some(s) = &sentiment {
+            if !s.is_empty() {
+                // 与 SELECT 的 COALESCE 保持一致：neutral 视为未标注事件的情感
+                sql.push_str(" AND COALESCE(es.sentiment, 'neutral') = ?");
+            }
+        }
+        if let Some(kw) = &keyword {
+            if !kw.trim().is_empty() {
+                sql.push_str(" AND (r.fact LIKE ? OR r.evidence LIKE ?)");
+            }
+        }
+        sql.push_str(" ORDER BY e.name ASC, r.event_date DESC, r.id DESC");
+
+        let mut query = sqlx::query_as::<_, EventWithContext>(&sql);
         if days > 0 {
             query = query.bind(days);
+        }
+        if let Some(et) = &event_type {
+            if !et.is_empty() {
+                query = query.bind(et);
+            }
+        }
+        if let Some(s) = &sentiment {
+            if !s.is_empty() {
+                query = query.bind(s);
+            }
+        }
+        // 关键词模式串需在函数作用域存活到 fetch_all（bind 借用了它）
+        let pat: Option<String> = match &keyword {
+            Some(kw) => {
+                let t = kw.trim();
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(format!("%{}%", t))
+                }
+            }
+            None => None,
+        };
+        if let Some(p) = &pat {
+            query = query.bind(p);
+            query = query.bind(p);
         }
         query.fetch_all(pool).await.map_err(|e| e.to_string())
     }
@@ -1614,6 +1804,10 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
             ai_translation TEXT,
             ai_model TEXT DEFAULT '',
             ai_extracted_at DATETIME DEFAULT NULL,
+            /** 媒体附件 URL（播客音频 / 视频）；无附件为 NULL */
+            enclosure_url TEXT,
+            /** 附件 MIME 类型（audio/mpeg、video/mp4 等），用于前端选 <audio>/<video> */
+            enclosure_type TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (feed_id) REFERENCES feeds(id) ON DELETE CASCADE,
@@ -1800,6 +1994,7 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
             entity_type TEXT NOT NULL DEFAULT 'company',
             aliases TEXT NOT NULL DEFAULT '[]',
             enabled INTEGER DEFAULT 1,
+            alert_rules TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(name, entity_type)
         )
@@ -1864,6 +2059,22 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
     sqlx::query(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_events_dedupe \
          ON research_events(article_id, entity_id, event_type, fact)",
+    )
+    .execute(pool)
+    .await?;
+
+    // 自定义事件类型表：用户在预设领域之外自行定义的事件分类。
+    // 与 settings.enabled_event_domains（启用的预设领域）配合，构成"生效事件类型枚举"。
+    // 新表走 IF NOT EXISTS，老库在应用下次启动时自动建表，无需按铁律#3 手工 .bak/ALTER。
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS custom_event_types (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            value TEXT NOT NULL UNIQUE,
+            label TEXT NOT NULL DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        "#,
     )
     .execute(pool)
     .await?;
@@ -2960,8 +3171,8 @@ impl Article {
             // 只是 rows_affected() == 0（即"未新增"），此时转入下方更新分支
             let result = sqlx::query(
                 "INSERT OR IGNORE INTO articles \
-                 (feed_id, guid, link, title, summary, content, author, published_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                 (feed_id, guid, link, title, summary, content, author, published_at, enclosure_url, enclosure_type) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(feed_id)
             .bind(&item.guid)
@@ -2971,15 +3182,19 @@ impl Article {
             .bind(&item.content)
             .bind(&item.author)
             .bind(item.published_at)
+            .bind(&item.enclosure_url)
+            .bind(&item.enclosure_type)
             .execute(pool)
             .await
             .map_err(|e| e.to_string())?;
 
             if result.rows_affected() == 0 {
                 // 已存在：仅更新会变的内容字段，保留已读 / 收藏 / AI 摘要等本地状态
+                // （enclosure 一并更新：源可能重新给出不同的附件 URL）
                 sqlx::query(
                     "UPDATE articles SET \
-                     link = ?, title = ?, summary = ?, content = ?, author = ?, published_at = ? \
+                     link = ?, title = ?, summary = ?, content = ?, author = ?, published_at = ?, \
+                     enclosure_url = ?, enclosure_type = ? \
                      WHERE feed_id = ? AND guid = ?",
                 )
                 .bind(&item.link)
@@ -2988,6 +3203,8 @@ impl Article {
                 .bind(&item.content)
                 .bind(&item.author)
                 .bind(item.published_at)
+                .bind(&item.enclosure_url)
+                .bind(&item.enclosure_type)
                 .bind(feed_id)
                 .bind(&item.guid)
                 .execute(pool)
@@ -3059,6 +3276,84 @@ impl Article {
 }
 
 // ─── Setting CRUD ─────────────────────────────────────────────────────────────
+
+/// 自定义事件类型（用户在预设领域之外自行定义的事件分类）
+///
+/// 与 `settings.enabled_event_domains`（启用的预设领域）共同构成"生效事件类型枚举"，
+/// 由 [`crate::research::extract::effective_event_types`] 在抽取时合并计算。
+/// `value` 即落库到 `research_events.event_type` 的实际取值；`label` 为展示文案，
+/// 留空时前端回退为 `value` 原样显示。
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct CustomEventType {
+    /// 自增主键
+    pub id: i64,
+    /// 事件类型取值（唯一，直接用于 event_type 落库）
+    pub value: String,
+    /// 展示文案（可空，为空则前端显示 value）
+    pub label: String,
+    /// 创建时间
+    pub created_at: String,
+}
+
+impl CustomEventType {
+    /// 列出全部自定义事件类型（按 id 升序）
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    ///
+    /// # 返回值
+    /// 自定义类型列表（可能为空）
+    ///
+    /// # 错误
+    /// 数据库查询失败时返回错误信息
+    pub async fn list(pool: &SqlitePool) -> Result<Vec<CustomEventType>, String> {
+        sqlx::query_as::<_, CustomEventType>(
+            "SELECT id, value, label, created_at FROM custom_event_types ORDER BY id ASC",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// 新增或更新一个自定义事件类型（按 value 幂等 upsert）
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    /// * `value` - 事件类型取值
+    /// * `label` - 展示文案（空串等价于取 value）
+    ///
+    /// # 错误
+    /// 数据库写入失败时返回错误信息
+    pub async fn add(pool: &SqlitePool, value: &str, label: &str) -> Result<(), String> {
+        sqlx::query(
+            "INSERT INTO custom_event_types (value, label) VALUES (?, ?) \
+             ON CONFLICT(value) DO UPDATE SET label = excluded.label",
+        )
+        .bind(value)
+        .bind(label)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 删除一个自定义事件类型（按主键）
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    /// * `id` - 类型主键
+    ///
+    /// # 错误
+    /// 数据库删除失败时返回错误信息
+    pub async fn remove(pool: &SqlitePool, id: i64) -> Result<(), String> {
+        sqlx::query("DELETE FROM custom_event_types WHERE id = ?")
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
 
 impl Setting {
     /// 获取所有设置
@@ -4810,6 +5105,8 @@ mod tests {
             content: String::new(),
             author: String::new(),
             published_at: Utc::now(),
+            enclosure_url: None,
+            enclosure_type: None,
         };
         let items = vec![item("g1", "AI 新进展", 1), item("g2", "无关标题", 2)];
 

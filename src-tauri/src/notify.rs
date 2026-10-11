@@ -19,13 +19,18 @@
 //! - **仅 Rust 侧调用**：与 dialog 插件同样不在 capabilities 里授权，
 //!   WebView 无法自行弹出系统通知。
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_notification::NotificationExt;
+use tokio::sync::Mutex;
 
-use crate::db::Setting;
+use crate::db::{Entity, Setting};
+use crate::research::extract::is_significant;
+use crate::research::ExtractedEvent;
 
 /// 全局应用句柄（启动阶段注入一次，之后只读）
 ///
@@ -128,6 +133,318 @@ pub async fn task_result(pool: &SqlitePool, task_name: &str, succeeded: bool, me
     send(pool, &title, message).await;
 }
 
+/// 读取「事件预警」开关（缺省开启）
+///
+/// 与 [`enabled`]（`notify_enabled`）同一判据：只有值为 `"0"` 才算关闭，
+/// 键不存在 / 空串 / 其它值都按开启处理，避免历史脏数据把功能误关。
+/// 事件预警依赖系统通知总开关，但两者独立可控：用户可关掉全部系统通知，
+/// 也可只关事件预警而保留刷新 / 任务结束通知。
+///
+/// # 参数
+/// * `pool` - 数据库连接池
+///
+/// # 返回值
+/// 开关开启返回 `true`
+async fn event_alert_enabled(pool: &SqlitePool) -> bool {
+    match Setting::get(pool, "event_alert_enabled").await {
+        Ok(Some(value)) => value.trim() != "0",
+        _ => true,
+    }
+}
+
+/// 每个实体的最近一次预警时刻（进程内限频）
+///
+/// 同一实体在 [`ALERT_COOLDOWN`] 内重复命中的事件只推一次，
+/// 避免一轮批量抽取里同一实体的多条强情感事件或连续抽取反复刷屏。
+/// 仅在进程存活期内有效（应用重启后重新计时）——事件预警是"提醒"而非"审计"，
+/// 重启后重新计时是可接受的取舍，也避免为此改动数据库 schema。
+static LAST_ALERT_AT: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+
+/// 同一实体的限频窗口（30 分钟）
+const ALERT_COOLDOWN: Duration = Duration::from_secs(30 * 60);
+
+/// 抽取发现重大事件时主动推桌面通知（P0-D 事件预警）
+///
+/// 与 [`send`] 共用三重门（句柄已注入 + 窗口离开 + 系统通知总开关），
+/// 再叠加独立的「事件预警」子开关：总开关关或子开关关都不发送。
+/// `events` 是批量抽取回传的全部事件，本函数内部只筛出强情感（positive/negative
+/// 且置信度 >= 0.7）事件推送，事件按实体聚合后同一实体限频窗口内只推一次。
+///
+/// # 参数
+/// * `pool` - 数据库连接池（读子开关）
+/// * `events` - 本批抽取出的全部事件（内部按强情感门槛筛选）
+pub async fn send_event_alert(pool: &SqlitePool, events: &[ExtractedEvent]) {
+    if events.is_empty() {
+        return;
+    }
+    // 仅保留强情感事件（P0-D 门槛）：`extract_batch` 已回传全部事件，
+    // 这里按情感维度二道筛，避免把中性或模型拿不准的事件当成"重大事件"推送
+    let sig: Vec<&ExtractedEvent> = events.iter().filter(|e| is_significant(e)).collect();
+    if sig.is_empty() {
+        return;
+    }
+    // 启动早期句柄尚未注入，任务不可能已运行，直接返回
+    let Some(app) = APP_HANDLE.get() else {
+        return;
+    };
+    if !window_away(app) {
+        return;
+    }
+    if !enabled(pool).await {
+        return;
+    }
+    if !event_alert_enabled(pool).await {
+        return;
+    }
+
+    // 按实体聚合：同一实体多条事件合并到一条通知，减少打扰；
+    // 同时过滤处于限频窗口内的实体（避免重复刷屏）
+    let rate_map = LAST_ALERT_AT.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = rate_map.lock().await;
+    let now = Instant::now();
+
+    let mut by_entity: HashMap<&str, Vec<&ExtractedEvent>> = HashMap::new();
+    for e in &sig {
+        let name = e.canonical_name.trim();
+        if let Some(last) = guard.get(name) {
+            if now.saturating_duration_since(*last) < ALERT_COOLDOWN {
+                continue; // 限频窗口内，跳过本实体
+            }
+        }
+        by_entity.entry(name).or_default().push(e);
+    }
+    if by_entity.is_empty() {
+        return;
+    }
+
+    // 刷新限频时间戳（只更新本次实际推送的实体）
+    for name in by_entity.keys() {
+        guard.insert(name.to_string(), now);
+    }
+    drop(guard);
+
+    // 组装通知正文：每条实体「【实体名】发生新事件：事实1；事实2」
+    let mut bodies: Vec<String> = Vec::new();
+    for (name, evs) in &by_entity {
+        let facts: Vec<&str> = evs
+            .iter()
+            .map(|e| e.fact.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if facts.is_empty() {
+            continue;
+        }
+        bodies.push(format!("【{}】发生新事件：{}", name, facts.join("；")));
+    }
+    if bodies.is_empty() {
+        return;
+    }
+
+    let title = if bodies.len() == 1 {
+        "ReadFlow · 事件预警".to_string()
+    } else {
+        format!("ReadFlow · 事件预警（{} 个实体）", bodies.len())
+    };
+    let body = bodies.join("\n");
+
+    if let Err(e) = app
+        .notification()
+        .builder()
+        .title(&title)
+        .body(&body)
+        .show()
+    {
+        eprintln!("发送事件预警通知失败（不影响主流程）: {}", e);
+    }
+}
+
+/// 实体告警规则（解析自 `entities.alert_rules` 列的 JSON）
+///
+/// 各字段为空集合时表示"该维度不限制"：例如 `event_types` 为空表示任何类型都命中，
+/// `sentiments` 为空表示任何情感都命中，`keywords` 为空表示不按关键词过滤。
+/// `enabled` 缺省为 `true`（只要用户配置了规则即视为启用）。
+#[derive(Debug, Clone, serde::Deserialize)]
+struct AlertRule {
+    /// 是否启用该规则（缺省启用）
+    #[serde(default = "default_true")]
+    enabled: bool,
+    /// 命中的事件类型白名单（空 = 不限类型）
+    #[serde(default)]
+    event_types: Vec<String>,
+    /// 命中的情感白名单（空 = 不限情感）
+    #[serde(default)]
+    sentiments: Vec<String>,
+    /// 命中关键词（事实/证据里出现其一即命中；空 = 不按关键词过滤）
+    #[serde(default)]
+    keywords: Vec<String>,
+}
+
+/// `enabled` 字段缺省为真：用户一旦写下规则即希望生效，避免"配了却静默不提醒"
+fn default_true() -> bool {
+    true
+}
+
+/// 解析实体告警规则 JSON
+///
+/// 返回 `None` 表示无规则 / 非法 JSON（无规则自然不触发告警）。
+///
+/// # 参数
+/// * `json` - `entities.alert_rules` 列的字符串
+///
+/// # 返回值
+/// 解析成功返回规则，否则 `None`
+fn parse_alert_rule(json: &str) -> Option<AlertRule> {
+    serde_json::from_str::<AlertRule>(json).ok()
+}
+
+/// 判断单条事件是否命中某实体的告警规则
+///
+/// 命中条件：规则启用，且（若规则限定了类型则事件类型须在内）、（若限定了情感则
+/// 事件情感须在内）、（若限定了关键词则事实或证据须含其一）。任一维度空集合则不限制。
+///
+/// # 参数
+/// * `rule` - 实体告警规则
+/// * `e` - 待判定的抽取事件
+///
+/// # 返回值
+/// 命中返回 `true`
+fn rule_matches(rule: &AlertRule, e: &ExtractedEvent) -> bool {
+    if !rule.enabled {
+        return false;
+    }
+    if !rule.event_types.is_empty() && !rule.event_types.iter().any(|t| t == &e.event_type) {
+        return false;
+    }
+    if !rule.sentiments.is_empty() {
+        match &e.sentiment {
+            Some(s) if rule.sentiments.iter().any(|x| x == s) => {}
+            _ => return false,
+        }
+    }
+    if !rule.keywords.is_empty() {
+        let hay = format!("{} {}", e.fact, e.evidence);
+        if !rule.keywords.iter().any(|k| hay.contains(k.as_str())) {
+            return false;
+        }
+    }
+    true
+}
+
+/// 每个实体的最近一次「规则告警」时刻（进程内限频，独立于 P0-D 强情感预警）
+///
+/// 与 [`LAST_ALERT_AT`] 分开：一条事件可能同时触发强情感预警与规则告警，
+/// 两条通知应各自独立限频，避免互相吞掉。
+static LAST_RULE_ALERT_AT: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+
+/// 抽取命中实体告警规则时主动推桌面通知（P1-F 实体级告警）
+///
+/// 与 [`send_event_alert`]（P0-D）共用三重门 + 「事件预警」子开关，再按各实体的
+/// `alert_rules` 规则匹配。规则读取按实体名查库，并在本次调用内做一层内存缓存，
+/// 避免同批事件对同一实体反复查库；命中事件按实体聚合、独立限频后推送。
+///
+/// # 参数
+/// * `pool` - 数据库连接池（读子开关 + 实体规则）
+/// * `events` - 本批抽取出的全部事件
+pub async fn send_rule_alerts(pool: &SqlitePool, events: &[ExtractedEvent]) {
+    if events.is_empty() {
+        return;
+    }
+    let Some(app) = APP_HANDLE.get() else {
+        return;
+    };
+    if !window_away(app) {
+        return;
+    }
+    if !enabled(pool).await {
+        return;
+    }
+    if !event_alert_enabled(pool).await {
+        return;
+    }
+
+    // 按实体名查规则，调用内缓存避免同批重复查库
+    let mut rule_cache: HashMap<String, Option<AlertRule>> = HashMap::new();
+    let mut matched: Vec<(String, &ExtractedEvent)> = Vec::new();
+    for e in events {
+        let name = e.canonical_name.trim().to_string();
+        let rule = match rule_cache.get(&name) {
+            Some(r) => r.clone(),
+            None => {
+                let r = Entity::get_alert_rules_by_name(pool, &name)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|json| parse_alert_rule(&json));
+                rule_cache.insert(name.clone(), r.clone());
+                r
+            }
+        };
+        if let Some(rule) = rule {
+            if rule_matches(&rule, e) {
+                matched.push((name, e));
+            }
+        }
+    }
+    if matched.is_empty() {
+        return;
+    }
+
+    // 按实体聚合 + 独立限频（key 为实体名，与 P0-D 的强情感预警限频互不干扰）
+    let rate_map = LAST_RULE_ALERT_AT.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = rate_map.lock().await;
+    let now = Instant::now();
+
+    let mut by_entity: HashMap<String, Vec<&ExtractedEvent>> = HashMap::new();
+    for (name, e) in &matched {
+        if let Some(last) = guard.get(name) {
+            if now.saturating_duration_since(*last) < ALERT_COOLDOWN {
+                continue;
+            }
+        }
+        by_entity.entry(name.clone()).or_default().push(*e);
+    }
+    if by_entity.is_empty() {
+        return;
+    }
+    for name in by_entity.keys() {
+        guard.insert(name.clone(), now);
+    }
+    drop(guard);
+
+    let mut bodies: Vec<String> = Vec::new();
+    for (name, evs) in &by_entity {
+        let facts: Vec<&str> = evs
+            .iter()
+            .map(|e| e.fact.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if facts.is_empty() {
+            continue;
+        }
+        bodies.push(format!("【{}】触发你的告警规则：{}", name, facts.join("；")));
+    }
+    if bodies.is_empty() {
+        return;
+    }
+
+    let title = if bodies.len() == 1 {
+        "ReadFlow · 实体告警".to_string()
+    } else {
+        format!("ReadFlow · 实体告警（{} 个实体）", bodies.len())
+    };
+    let body = bodies.join("\n");
+
+    if let Err(e) = app
+        .notification()
+        .builder()
+        .title(&title)
+        .body(&body)
+        .show()
+    {
+        eprintln!("发送实体告警通知失败（不影响主流程）: {}", e);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! 「系统通知」开关读取的验证
@@ -177,5 +494,118 @@ mod tests {
                 .expect("写入设置失败");
             assert!(enabled(&pool).await, "值 {:?} 应视为开启", value);
         }
+    }
+
+    /// 事件预警子开关：未写入设置项时视为开启（默认开）
+    #[tokio::test]
+    async fn event_alert_enabled_defaults_to_on_when_unset() {
+        let pool = setup().await;
+        assert!(event_alert_enabled(&pool).await);
+    }
+
+    /// 事件预警子开关：显式写 "0" 才关闭
+    #[tokio::test]
+    async fn event_alert_enabled_respects_explicit_zero() {
+        let pool = setup().await;
+        Setting::set(&pool, "event_alert_enabled", "0")
+            .await
+            .expect("写入设置失败");
+        assert!(!event_alert_enabled(&pool).await);
+    }
+
+    // ─── 实体级告警规则匹配（P1-F）纯函数验证 ───────────────────────────────
+
+    /// 测试用事件构造器
+    fn make_rule_event(event_type: &str, sentiment: Option<&str>, fact: &str) -> ExtractedEvent {
+        ExtractedEvent {
+            canonical_name: "测试实体".to_string(),
+            aliases: vec![],
+            entity_type: "company".to_string(),
+            event_type: event_type.to_string(),
+            event_date: String::new(),
+            fact: fact.to_string(),
+            evidence: String::new(),
+            sentiment: sentiment.map(|s| s.to_string()),
+            sentiment_confidence: Some(0.9),
+            financial_metrics: None,
+        }
+    }
+
+    /// 规则未启用时不命中（哪怕其它维度全空）
+    #[test]
+    fn rule_matches_skips_disabled() {
+        let rule = super::AlertRule {
+            enabled: false,
+            event_types: vec![],
+            sentiments: vec![],
+            keywords: vec![],
+        };
+        assert!(!super::rule_matches(&rule, &make_rule_event("ma", None, "")));
+    }
+
+    /// 全维度空集合 = 放行任何事件（规则缺省语义）
+    #[test]
+    fn rule_matches_empty_dimensions_pass_all() {
+        let rule = super::AlertRule {
+            enabled: true,
+            event_types: vec![],
+            sentiments: vec![],
+            keywords: vec![],
+        };
+        assert!(super::rule_matches(&rule, &make_rule_event("ma", Some("neutral"), "")));
+    }
+
+    /// 事件类型维度过滤
+    #[test]
+    fn rule_matches_event_type_filter() {
+        let rule = super::AlertRule {
+            enabled: true,
+            event_types: vec!["ma".to_string()],
+            sentiments: vec![],
+            keywords: vec![],
+        };
+        assert!(super::rule_matches(&rule, &make_rule_event("ma", None, "")));
+        assert!(!super::rule_matches(&rule, &make_rule_event("product", None, "")));
+    }
+
+    /// 情感维度过滤；事件情感缺失且规则限定情感则不命中
+    #[test]
+    fn rule_matches_sentiment_filter() {
+        let rule = super::AlertRule {
+            enabled: true,
+            event_types: vec![],
+            sentiments: vec!["negative".to_string()],
+            keywords: vec![],
+        };
+        assert!(super::rule_matches(&rule, &make_rule_event("ma", Some("negative"), "")));
+        assert!(!super::rule_matches(&rule, &make_rule_event("ma", Some("positive"), "")));
+        assert!(!super::rule_matches(&rule, &make_rule_event("ma", None, "")));
+    }
+
+    /// 关键词命中事实
+    #[test]
+    fn rule_matches_keyword_filter() {
+        let rule = super::AlertRule {
+            enabled: true,
+            event_types: vec![],
+            sentiments: vec![],
+            keywords: vec!["收购".to_string()],
+        };
+        assert!(super::rule_matches(&rule, &make_rule_event("ma", None, "完成收购")));
+        assert!(!super::rule_matches(&rule, &make_rule_event("ma", None, "签署合作备忘录")));
+    }
+
+    /// 解析：缺省 enabled 为 true
+    #[test]
+    fn parse_alert_rule_defaults_enabled_true() {
+        let r = super::parse_alert_rule(r#"{"event_types":["ma"]}"#).expect("应解析成功");
+        assert!(r.enabled);
+        assert_eq!(r.event_types, vec!["ma".to_string()]);
+    }
+
+    /// 解析：非法 JSON 返回 None（无规则则不触发）
+    #[test]
+    fn parse_alert_rule_invalid_json_is_none() {
+        assert!(super::parse_alert_rule("not json").is_none());
     }
 }

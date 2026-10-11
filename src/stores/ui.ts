@@ -9,8 +9,10 @@
  * 目前承载：
  * - `focusMode`：专注阅读模式开关。开启时隐藏左侧订阅列表与文章列表，
  *   把正文区域加宽，减少视觉干扰、便于长文阅读。
- * - `mainView`：主屏（订阅栏右侧区域）当前展示哪一种内容——文章阅读
- *   还是实体关系图。关系图在弹窗里画布太小，故提供全宽的主屏展示位。
+ * - `mainView`：主屏当前展示哪一种内容——文章阅读（默认三栏）、实体关系图（全屏）或智能推荐流。
+ *   关系图以全屏展示（覆盖订阅栏侧栏、独占整屏），入口为「···更多」菜单与 `D` 键；
+ *   推荐流为右区卡片流（保留订阅栏），入口为「···更多」菜单与 `T` 键，二者均不占用主屏视图。
+ *   实体仪表盘则改为弹窗形态（点实体后弹出，见 `entityDashboardOpen`），不再占用主屏视图。
  *
  * # 设计意图
  * 专注模式需要同时作用于两个不同层级的组件（App.vue 的 FeedPanel 与
@@ -30,20 +32,74 @@ export const useUiStore = defineStore('ui', () => {
    */
   const focusMode = ref(false)
 
-  /** 主屏内容类型：articles = 文章列表 + 正文（默认三栏）；graph = 实体关系图（全宽） */
-  const mainView = ref<'articles' | 'graph'>('articles')
+  /** 主屏内容类型：articles = 文章列表 + 正文（默认三栏）；graph = 实体关系图（全屏）；recommend = 智能推荐卡片流（保留订阅栏）。实体仪表盘为弹窗，不在此枚举内 */
+  const mainView = ref<'articles' | 'graph' | 'recommend'>('articles')
 
   /**
    * 切换主屏内容类型
    *
-   * 由关系图的两个入口（研究工作台图页签的「放大到主屏」、侧栏「更多」菜单）
-   * 与主屏图视图的「返回文章」按钮调用。
+   * 由关系图的两个入口（侧栏「更多」菜单、全局 `D` 键）、推荐流入口
+   * （侧栏「更多」菜单、全局 `T` 键）与主屏图视图的「返回文章」按钮调用。
    *
-   * @param view - 目标视图：'articles' 回到阅读，'graph' 进入关系图
+   * @param view - 目标视图：'articles' 回到阅读，'graph' 进入关系图，'recommend' 进入智能推荐流
    * @returns 无返回值；副作用为覆盖 mainView，App.vue 据此切换渲染的栏组件
    */
-  function setMainView(view: 'articles' | 'graph') {
+  function setMainView(view: 'articles' | 'graph' | 'recommend') {
     mainView.value = view
+  }
+
+  /** 实体仪表盘弹窗当前展示的实体 ID（null = 未指定；弹窗关闭时一并清空） */
+  const entityDashboardId = ref<number | null>(null)
+  /** 实体仪表盘弹窗是否打开 */
+  const entityDashboardOpen = ref(false)
+
+  /**
+   * 打开实体仪表盘弹窗
+   *
+   * 由点实体的三处入口（实体列表项 / 时间线分组头 / 关系图节点）经
+   * `open-entity-dashboard` 事件触发：设置目标实体 ID 并打开弹窗。
+   * 仪表盘以弹窗形态呈现（区别于关系图的全屏视图），不占用主屏、不隐藏订阅栏。
+   *
+   * @param id - 目标实体 ID
+   * @returns 无返回值；副作用为设置 entityDashboardId 并置 entityDashboardOpen
+   */
+  function openEntityDashboard(id: number) {
+    entityDashboardId.value = id
+    entityDashboardOpen.value = true
+  }
+
+  /**
+   * 关闭实体仪表盘弹窗
+   *
+   * @returns 无返回值；副作用为置 entityDashboardOpen 为 false 并清空 entityDashboardId
+   */
+  function closeEntityDashboard() {
+    entityDashboardOpen.value = false
+    entityDashboardId.value = null
+  }
+
+  /**
+   * 在「文章阅读」与「实体关系图」之间来回切换主屏内容
+   *
+   * 关系图的两个入口（「···更多」菜单、`D` 键）共用本方法，避免两处
+   * 各写一遍三元判断而漂移；语义与快捷键一致。
+   *
+   * @returns 无返回值；副作用为翻转 mainView
+   */
+  function toggleGraphView() {
+    mainView.value = mainView.value === 'graph' ? 'articles' : 'graph'
+  }
+
+  /**
+   * 在「文章阅读」与「智能推荐流」之间来回切换主屏内容
+   *
+   * 推荐流的两个入口（「···更多」菜单、`T` 键）共用本方法，与 `toggleGraphView`
+   * 对称，避免两处各写一遍三元判断而漂移；语义与快捷键一致。
+   *
+   * @returns 无返回值；副作用为翻转 mainView（仅在 articles/recommend 之间）
+   */
+  function toggleRecommendView() {
+    mainView.value = mainView.value === 'recommend' ? 'articles' : 'recommend'
   }
 
   /**
@@ -90,5 +146,5 @@ export const useUiStore = defineStore('ui', () => {
     localStorage.setItem(ARTICLE_W_KEY, String(w))
   }
 
-  return { focusMode, toggleFocusMode, setFocusMode, mainView, setMainView, feedColWidth, articleColWidth, setFeedColWidth, setArticleColWidth }
+  return { focusMode, toggleFocusMode, setFocusMode, mainView, setMainView, toggleGraphView, toggleRecommendView, entityDashboardOpen, entityDashboardId, openEntityDashboard, closeEntityDashboard, feedColWidth, articleColWidth, setFeedColWidth, setArticleColWidth }
 })

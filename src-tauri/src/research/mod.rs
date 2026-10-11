@@ -176,10 +176,17 @@ async fn run_batch_task(pool: &sqlx::SqlitePool, task: &AutomationTask) -> TaskO
     };
 
     match extract::extract_batch(pool, &provider, min_score, batch_limit).await {
-        Ok((processed, events)) => TaskOutcome::Success(format!(
-            "处理 {} 篇文章，新增 {} 条事件（阈值 {}，模型 {}）",
-            processed, events, min_score, provider.model
-        )),
+        Ok((processed, events, all_events)) => {
+            // 事件预警（P0-D 强情感 + P1-F 实体规则）：把本批命中的事件推系统通知。
+            // 两条预警共用三重门 + 子开关 + 进程内限频，内部各自按门槛筛选，
+            // 直接调用即可，无需在此判断。
+            crate::notify::send_event_alert(pool, &all_events).await;
+            crate::notify::send_rule_alerts(pool, &all_events).await;
+            TaskOutcome::Success(format!(
+                "处理 {} 篇文章，新增 {} 条事件（阈值 {}，模型 {}）",
+                processed, events, min_score, provider.model
+            ))
+        }
         Err(e) => TaskOutcome::Failed(e),
     }
 }

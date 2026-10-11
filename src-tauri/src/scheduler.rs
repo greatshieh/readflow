@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter};
 use tokio_cron_scheduler::{Job, JobScheduler};
 
-use crate::db::{Feed, Setting, run_retention_cleanup};
+use crate::db::{Entity, Feed, Setting, run_retention_cleanup};
 use crate::rss::{fetch_feed, store_items};
 
 /// 全量刷新正在进行中时返回的错误文案
@@ -245,6 +245,8 @@ pub(crate) async fn refresh_all_feeds(
     let feeds = Feed::list_all(pool).await?;
     let total = feeds.len();
     let mut total_new = 0i64;
+    // 本轮所有新文章的（标题, 摘要），供刷新结束后做实体感知通知
+    let mut new_texts: Vec<(String, String)> = Vec::new();
     // 已处理完的源计数（成功与失败都推进，让前端 n/m 能走满）
     let mut done = 0usize;
 
@@ -263,6 +265,8 @@ pub(crate) async fn refresh_all_feeds(
                         0
                     }
                 };
+                // 取回本次新文章的（标题, 摘要），供刷新结束后做"命中关注实体"的感知通知
+                new_texts.extend(fetch_new_article_texts(pool, feed.id, new_count).await);
 
                 // 图标同步：fetch_feed 已保证 icon 非空（channel 图标优先、favicon 兜底）；
                 // 与库中现有值不同才写库，避免每轮刷新产生无谓的 UPDATE
@@ -309,15 +313,192 @@ pub(crate) async fn refresh_all_feeds(
     // 窗口是否聚焦、用户是否开着通知由 [`crate::notify::send`] 内部判断，
     // 这里只管"本轮有没有值得一说的事"。定时刷新、手动刷新、托盘刷新三条路径共用此处。
     if total_new > 0 {
-        crate::notify::send(
-            pool,
-            "ReadFlow",
-            &format!("刷新完成，发现 {} 篇新文章", total_new),
-        )
-        .await;
+        // 实体感知通知：命中关注实体的新文给出针对性提示，否则回退到通用计数提示。
+        // 窗口是否聚焦、通知开关是否开启由 [`crate::notify::send`] 内部判定。
+        let hits = new_article_entity_hits(pool, &new_texts).await;
+        let body = if hits.is_empty() {
+            format!("刷新完成，发现 {} 篇新文章", total_new)
+        } else {
+            format!(
+                "发现 {} 篇新文，涉及你关注的：{}",
+                total_new,
+                hits.join("、")
+            )
+        };
+        crate::notify::send(pool, "ReadFlow", &body).await;
     }
 
     Ok(total_new)
+}
+
+// ─── 新文实体感知通知辅助 ─────────────────────────────────────────────────────
+
+/// 取回某订阅源本次新插入文章的（标题, 摘要）文本
+///
+/// `store_items` 只回传新增条数，而实体感知通知需要文章正文来做"是否命中关注实体"的
+/// 子串匹配。文章 `id` 自增单调，且单个源的入库在同一次同步调用内完成、期间没有其它
+/// 写入，因此按 `id DESC LIMIT new_count` 取回的恰好是本次新插入的那些。
+///
+/// # 参数
+/// * `pool` - 数据库连接池
+/// * `feed_id` - 订阅源 ID
+/// * `new_count` - 本次新增条数（≤0 时直接返回空，避免无意义查询）
+///
+/// # 返回值
+/// 新文章的 (标题, 摘要) 列表；查询失败返回空（通知属锦上添花，失败不应中断刷新）
+async fn fetch_new_article_texts(
+    pool: &SqlitePool,
+    feed_id: i64,
+    new_count: i64,
+) -> Vec<(String, String)> {
+    if new_count <= 0 {
+        return Vec::new();
+    }
+    sqlx::query_as::<_, (String, String)>(
+        "SELECT title, COALESCE(summary, '') FROM articles WHERE feed_id = ? ORDER BY id DESC LIMIT ?",
+    )
+    .bind(feed_id)
+    .bind(new_count)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+}
+
+/// 在新增文章文本中找出命中"关注实体"的实体展示名
+///
+/// 实现说明：取全部 `enabled = 1` 的关注实体，把每个实体的 `name` 与其 `aliases`
+/// （JSON 数组字符串，如 `["字节","ByteDance"]`）解析为小写检索词（跳过单字减噪），
+/// 再对每篇新文的"标题+摘要"做小写子串命中。命中的实体展示名去重后最多保留 3 个，
+/// 用于拼装通知正文（"涉及你关注的：X、Y"）。
+///
+/// 这是首版启发式匹配：不依赖 AI、零额外请求，代价是可能误命中常见词（如人名"张伟"）。
+/// 后续可升级为与 `entity_score` 评分联动（见 P1-F 实体级告警）。
+///
+/// # 参数
+/// * `pool` - 数据库连接池
+/// * `texts` - 新文章的 (标题, 摘要) 列表
+///
+/// # 返回值
+/// 被命中的关注实体展示名（去重、最多 3 个）；无关注实体或无命中返回空
+async fn new_article_entity_hits(
+    pool: &SqlitePool,
+    texts: &[(String, String)],
+) -> Vec<String> {
+    if texts.is_empty() {
+        return Vec::new();
+    }
+    let entities = match Entity::list_enabled(pool).await {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    if entities.is_empty() {
+        return Vec::new();
+    }
+
+    // 预构建检索词：实体名 + 别称，统一小写、跳过单字减噪；记录展示名以便回写命中
+    let mut entity_terms: Vec<(String, Vec<String>)> = Vec::new();
+    for e in &entities {
+        let mut terms: Vec<String> = Vec::new();
+        let name_lower = e.name.trim().to_lowercase();
+        if name_lower.chars().count() >= 2 {
+            terms.push(name_lower);
+        }
+        if let Ok(aliases) = serde_json::from_str::<Vec<String>>(&e.aliases) {
+            for a in aliases {
+                let a_lower = a.trim().to_lowercase();
+                if a_lower.chars().count() >= 2 {
+                    terms.push(a_lower);
+                }
+            }
+        }
+        if !terms.is_empty() {
+            entity_terms.push((e.name.clone(), terms));
+        }
+    }
+    if entity_terms.is_empty() {
+        return Vec::new();
+    }
+
+    let mut hits: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (title, summary) in texts {
+        if hits.len() >= 3 {
+            break;
+        }
+        let haystack = format!("{} {}", title, summary).to_lowercase();
+        for (display, terms) in &entity_terms {
+            if terms.iter().any(|t| haystack.contains(t)) {
+                hits.insert(display.clone());
+                if hits.len() >= 3 {
+                    break;
+                }
+            }
+        }
+    }
+    hits.into_iter().collect()
+}
+
+#[cfg(test)]
+mod new_article_notify_tests {
+    //! 新文实体感知匹配的逻辑验证
+    //!
+    //! 仅测纯逻辑（[`new_article_entity_hits`]）：命中/不命中/禁用实体不参与，均不依赖
+    //! 真实通知守护。内存库复用正式 `create_tables`，`entities` 表结构与正式库一致。
+
+    use super::*;
+    use crate::db::{create_tables, Entity};
+
+    async fn setup() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("建内存库失败");
+        create_tables(&pool).await.expect("建表失败");
+        pool
+    }
+
+    /// 启用实体应被命中；其别称（JSON 数组）也应命中；禁用实体不参与匹配
+    #[tokio::test]
+    async fn hits_match_enabled_entities_and_aliases() {
+        let pool = setup().await;
+        // 两个启用实体
+        Entity::create(&pool, "新元科技", "company").await.unwrap();
+        Entity::create(&pool, "星河AI", "product").await.unwrap();
+        // 给"星河AI"写入别称 ["星河","GalaxyAI"]
+        sqlx::query("UPDATE entities SET aliases = ? WHERE name = ?")
+            .bind(r#"["星河","GalaxyAI"]"#)
+            .bind("星河AI")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // 禁用实体：应完全不参与匹配
+        let disabled = Entity::create(&pool, "旁观者", "person").await.unwrap();
+        sqlx::query("UPDATE entities SET enabled = 0 WHERE id = ?")
+            .bind(disabled)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let texts = vec![
+            ("新元科技发布三季度财报".to_string(), "营收增长".to_string()),
+            ("星河AI 推出新模型".to_string(), "GalaxyAI 亮相".to_string()),
+            ("无关标题".to_string(), "无关正文".to_string()),
+        ];
+        let hits = new_article_entity_hits(&pool, &texts).await;
+        assert!(hits.iter().any(|h| h == "新元科技"), "应命中新元科技");
+        assert!(hits.iter().any(|h| h == "星河AI"), "应命中星河AI（含别称）");
+        assert!(
+            !hits.iter().any(|h| h == "旁观者"),
+            "禁用实体不应被命中"
+        );
+        assert!(hits.len() <= 3, "命中数不应超过 3");
+    }
+
+    /// 没有关注实体时，任何新文都不应产生命中
+    #[tokio::test]
+    async fn no_hits_when_no_enabled_entities() {
+        let pool = setup().await;
+        let texts = vec![("随便一篇".to_string(), "正文".to_string())];
+        assert!(new_article_entity_hits(&pool, &texts).await.is_empty());
+    }
 }
 
 /// 重算单个源的未读数、写回 feeds 表并向前端广播进度事件

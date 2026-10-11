@@ -405,6 +405,8 @@ pub fn run() {
             entities_create,
             entities_delete,
             entities_toggle,
+            entities_get_alert_rules,
+            entities_set_alert_rules,
             entity_graph,
             // 智能评分命令
             score_articles,
@@ -412,6 +414,10 @@ pub fn run() {
             // 研究事件提取命令
             research_extract_article,
             research_extract_batch,
+            // 自定义事件类型命令（预设领域 + 自定义类型，构成"生效事件类型枚举"）
+            list_custom_event_types,
+            add_custom_event_type,
+            remove_custom_event_type,
             research_events_by_article,
             research_events_timeline,
             research_event_delete,
@@ -2441,6 +2447,30 @@ async fn entities_toggle(id: i64) -> Result<bool, String> {
     db::Entity::toggle_enabled(&pool, id).await
 }
 
+/// 读取实体的告警规则 JSON（供实体管理页签的「告警规则」弹窗回显）
+///
+/// # 参数
+/// * `entity_id` - 实体 ID
+///
+/// # 返回值
+/// `alert_rules` 列的 JSON 字符串（无规则时返回 `None`）
+#[tauri::command]
+async fn entities_get_alert_rules(entity_id: i64) -> Result<Option<String>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    db::Entity::get_alert_rules(&pool, entity_id).await
+}
+
+/// 写入实体的告警规则 JSON（保存实体管理页签「告警规则」弹窗的编辑结果）
+///
+/// # 参数
+/// * `entity_id` - 实体 ID
+/// * `rules_json` - 规则 JSON 字符串（前端已校验结构，空串表示清空规则）
+#[tauri::command]
+async fn entities_set_alert_rules(entity_id: i64, rules_json: String) -> Result<(), String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    db::Entity::set_alert_rules(&pool, entity_id, &rules_json).await
+}
+
 /// 构建实体共现图（研究工作台「关系图」页签）
 ///
 /// 见 [`db::Entity::graph`]：两个实体同时出现在同一篇文章的标题或摘要中即连边，
@@ -2646,6 +2676,7 @@ async fn research_extract_article(
         article_id,
         &provider,
         custom_prompt,
+        &research::extract::effective_event_types(&pool).await?,
     )
     .await?;
     let inserted = research::normalize::normalize_and_store_events(
@@ -2684,6 +2715,49 @@ async fn research_extract_batch() -> Result<String, String> {
     research::run_task_once(&pool, &task).await
 }
 
+/// 列出全部自定义事件类型（用户在预设领域之外自行定义的事件分类）
+///
+/// # 返回值
+/// 自定义类型列表（可能为空）
+///
+/// # 错误
+/// 数据库查询失败时返回错误信息
+#[tauri::command]
+async fn list_custom_event_types() -> Result<Vec<db::CustomEventType>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    db::CustomEventType::list(&pool).await
+}
+
+/// 新增或更新一个自定义事件类型
+///
+/// # 参数
+/// * `value` - 事件类型取值（唯一，将落库到 research_events.event_type）
+/// * `label` - 展示文案（可选，为空则取 value）
+///
+/// # 错误
+/// 数据库写入失败时返回错误信息
+#[tauri::command]
+async fn add_custom_event_type(value: String, label: Option<String>) -> Result<(), String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    let label = label
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| value.clone());
+    db::CustomEventType::add(&pool, &value, &label).await
+}
+
+/// 删除一个自定义事件类型（按主键）
+///
+/// # 参数
+/// * `id` - 类型主键
+///
+/// # 错误
+/// 数据库删除失败时返回错误信息
+#[tauri::command]
+async fn remove_custom_event_type(id: i64) -> Result<(), String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    db::CustomEventType::remove(&pool, id).await
+}
+
 /// 查询某篇文章已抽取的事件
 ///
 /// # 参数
@@ -2712,9 +2786,13 @@ async fn research_events_by_article(article_id: i64) -> Result<Vec<ResearchEvent
 async fn research_events_timeline(
     days: i64,
     entity_id: Option<i64>,
+    event_type: Option<String>,
+    sentiment: Option<String>,
+    keyword: Option<String>,
 ) -> Result<Vec<EventWithContext>, String> {
     let pool = db_pool().await.map_err(|e| e.to_string())?;
-    let mut rows = ResearchEvent::list_with_context(&pool, days).await?;
+    let mut rows =
+        ResearchEvent::list_with_context(&pool, days, event_type, sentiment, keyword).await?;
     // 实体筛选在应用层做：事件量级为百级，一次全量取回再过滤
     // 比为可选条件拼接两份 SQL 更简单且不影响索引使用
     if let Some(eid) = entity_id {

@@ -113,8 +113,8 @@
       </div>
     </div>
     <!-- 底部工具条（单行图标，替代原先 4 个整行按钮省出的 ~130px 纵向空间）：
-         左侧「＋添加订阅」（打开 FeedAddModal：地址 + 可选标题 + 分组，忙碌态由弹窗 saving 自持）
-         与「···更多」（新建文件夹 / 过滤规则 / 研究工作台 / 智能摘要 / 实体关系图，均为低频操作）；
+         左侧「＋添加订阅」（打开 FeedAddModal：地址 + 可选标题 + 分组，忙碌态由弹窗 saving 自持）、
+         「···更多」（新建文件夹 / 过滤规则 / 研究工作台 / 智能摘要 / 实体关系图，均为低频操作）；
          右侧「⟳刷新全部」，刷新进行中图标旋转并显示后端逐源广播的 n/m 进度。 -->
     <div class="feed-toolbar">
       <button class="tool-btn" @click="showAdd = true" title="添加订阅">
@@ -170,7 +170,8 @@ backdrop-filter 又使 position:fixed 退化为 absolute —— 两者叠加会
           </svg>
           智能摘要
         </button>
-        <!-- 实体关系图：切到主屏全宽展示（与文章阅读互斥的另一种主屏内容） -->
+        <!-- 实体关系图：切到主屏全宽展示（与文章阅读互斥的另一种主屏内容）。
+             与快捷键 D 是同一动作的两个入口；全屏视图下订阅栏一并隐藏。 -->
         <button class="dropdown-item" @click="showGraphView">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="5" cy="6" r="3"></circle>
@@ -181,6 +182,24 @@ backdrop-filter 又使 position:fixed 退化为 absolute —— 两者叠加会
             <line x1="8" y1="6" x2="16" y2="6"></line>
           </svg>
           实体关系图
+        </button>
+        <!-- 智能推荐流：切到主屏右区卡片流（保留订阅栏），与文章阅读互斥的又一种主屏内容。
+             与快捷键 R 是同一动作的两个入口。 -->
+        <button class="dropdown-item" @click="showRecommendView">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 12h4l3 8 4-16 3 8h4"></path>
+          </svg>
+          智能推荐
+        </button>
+        <!-- 阅读洞察：打开聚合看板（全库指标 + 阅读趋势），纯前端可视化 -->
+        <button class="dropdown-item" @click="showInsights = true; showMoreMenu = false">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="4" y1="20" x2="4" y2="10"></line>
+            <line x1="10" y1="20" x2="10" y2="4"></line>
+            <line x1="16" y1="20" x2="16" y2="13"></line>
+            <line x1="20" y1="20" x2="20" y2="8"></line>
+          </svg>
+          阅读洞察
         </button>
       </div>
         </Teleport>
@@ -212,6 +231,8 @@ backdrop-filter 又使 position:fixed 退化为 absolute —— 两者叠加会
     />
     <!-- 研究工作台弹窗：由底部「研究工作台」按钮打开 -->
     <ResearchModal :open="showResearch" @close="showResearch = false" />
+    <!-- 阅读洞察看板：由「更多 → 阅读洞察」打开 -->
+    <InsightsModal :open="showInsights" @close="showInsights = false" />
   </aside>
 </template>
 
@@ -255,6 +276,7 @@ import { useUiStore } from '@/stores/ui'
 import RulesModal from './RulesModal.vue'
 import DigestModal from './DigestModal.vue'
 import ResearchModal from './ResearchModal.vue'
+import InsightsModal from './InsightsModal.vue'
 import FeedListItem from './FeedListItem.vue'
 import FeedAddModal from './FeedAddModal.vue'
 import FeedManageModal from './FeedManageModal.vue'
@@ -308,6 +330,12 @@ const showDigest = ref(false)
  * 由「更多」菜单中的「研究工作台」项置 true，弹窗关闭时复位为 false。
  */
 const showResearch = ref(false)
+/**
+ * 阅读洞察看板弹窗开关
+ *
+ * 由「更多」菜单中的「阅读洞察」项置 true，弹窗关闭时复位为 false。
+ */
+const showInsights = ref(false)
 
 /**
  * 订阅源过滤关键字（输入框 v-model）
@@ -344,6 +372,7 @@ const feedsStore = useFeedsStore()
 const modalStore = useModalStore()
 /** UI 状态 store：实体关系图菜单项要切主屏视图 */
 const uiStore = useUiStore()
+
 /**
  * 文章 store 实例
  *
@@ -694,17 +723,31 @@ async function createFolder() {
 }
 
 /**
- * 切到主屏实体关系图视图
+ * 切换主屏实体关系图视图（开 / 关）
  *
- * 「更多」菜单里的入口：主屏（订阅栏右侧）从文章阅读切换为全宽关系图，
- * 与文章阅读互斥（见 uiStore.mainView）。与其它菜单项不同的是它**不打开弹窗**
- * ——视图切换立即生效，菜单先收起即可。
+ * 底部工具栏图标按钮的入口：主屏（订阅栏右侧）在文章阅读与全宽关系图之间
+ * 来回切换（互斥由 uiStore.mainView 驱动），与全局 `D` 键是同一动作的两个入口，
+ * 故统一委托 `uiStore.toggleGraphView()`。它**不打开弹窗**——视图切换立即生效。
  *
- * @returns 无返回值；副作用为 uiStore.mainView = 'graph'、收起「更多」菜单
+ * @returns 无返回值；副作用为 uiStore.mainView 翻转、收起「更多」菜单
  */
 function showGraphView() {
   showMoreMenu.value = false
-  uiStore.setMainView('graph')
+  uiStore.toggleGraphView()
+}
+
+/**
+ * 切换主屏智能推荐流视图（开 / 关）
+ *
+ * 「···更多」菜单的入口：主屏在文章阅读与智能推荐卡片流之间来回切换
+ * （互斥由 uiStore.mainView 驱动），与全局 `T` 键是同一动作的两个入口，
+ * 故统一委托 `uiStore.toggleRecommendView()`。它**不打开弹窗**——视图切换立即生效。
+ *
+ * @returns 无返回值；副作用为 uiStore.mainView 翻转、收起「更多」菜单
+ */
+function showRecommendView() {
+  showMoreMenu.value = false
+  uiStore.toggleRecommendView()
 }
 
 /**
@@ -815,8 +858,21 @@ async function onPaletteJump(e: Event) {
  * 选择在 onMounted 注册而非模块顶层执行，可确保组件销毁前能成对移除。
  *
  * @returns 无返回值
- * @副作用 在 window 上注册 `toggle-feed-panel` / `command-palette-jump` / `open-add-feed` 监听
+ * @副作用 在 window 上注册 `toggle-feed-panel` / `command-palette-jump` / `open-add-feed` / `open-research` 监听
  */
+
+/**
+ * 打开研究工作台（由 onboarding 的「去添加关注实体」经 `open-research` 事件派发）
+ *
+ * 与 `handleOpenAddFeed` 同构：只负责把 `showResearch` 置 true，真正的弹窗由
+ * `ResearchModal`（`:open="showResearch"`）渲染。
+ *
+ * @returns 无返回值；副作用为把 showResearch 置为 true
+ */
+function handleOpenResearch(): void {
+  showResearch.value = true
+}
+
 onMounted(() => {
   // 侧边栏分组依赖文件夹列表，挂载时拉取一次（失败仅记日志，不阻塞订阅源展示）
   feedsStore.loadFolders()
@@ -825,6 +881,7 @@ onMounted(() => {
   window.addEventListener('toggle-feed-panel', handleToggleFeedPanel)
   window.addEventListener('command-palette-jump', onPaletteJump)
   window.addEventListener('open-add-feed', handleOpenAddFeed)
+  window.addEventListener('open-research', handleOpenResearch)
 
   // 列表内容是异步到达的（feeds/folders 都走 invoke），首帧没有条目可测量。
   // watch 选中态而非一次性调用：无论是挂载时的首绘、还是启动即带选中态的恢复场景，
@@ -910,6 +967,7 @@ onUnmounted(() => {
   window.removeEventListener('toggle-feed-panel', handleToggleFeedPanel)
   window.removeEventListener('command-palette-jump', onPaletteJump)
   window.removeEventListener('open-add-feed', handleOpenAddFeed)
+  window.removeEventListener('open-research', handleOpenResearch)
   document.removeEventListener('click', onDocClick)
 })
 </script>

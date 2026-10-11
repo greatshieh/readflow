@@ -26,7 +26,7 @@ use sqlx::SqlitePool;
 
 use crate::db::{EventWithContext, ResearchEvent, Setting};
 
-use super::{TaskOutcome, extract::EVENT_TYPES};
+use super::{TaskOutcome, extract::PRESET_DOMAINS};
 
 /// 报告任务的应用数据目录（启动时由 lib.rs 注入，cron 与命令共用）
 ///
@@ -191,9 +191,8 @@ pub async fn generate_report(
 ) -> Result<(String, String), String> {
     let config = parse_report_config(config_json, kind);
 
-    // 聚合事件：窗口内全部事件（entity_ids / event_types 过滤留待筛选 UI 提供时启用；
-    // 当前所有路径都走全量，行为可预期）
-    let rows = ResearchEvent::list_with_context(pool, config.days)
+    // 聚合事件：窗口内全部事件（报告生成走全量，新筛选参数留空表示不过滤）
+    let rows = ResearchEvent::list_with_context(pool, config.days, None, None, None)
         .await
         .map_err(|e| format!("读取事件失败: {}", e))?;
 
@@ -518,10 +517,10 @@ async fn deliver_to_obsidian(
     Ok(format!("已写入 Obsidian Vault: {}", path.display()))
 }
 
-/// 事件类型枚举的导出（供 Phase C 前端筛选 UI 对齐文案）
+/// 预设领域枚举的导出（供 Phase C 前端筛选 UI 对齐文案）
 ///
-/// 当前仅引用以避免 dead_code 警告；Phase C 的筛选器直接复用该常量。
-const _: [&str; 7] = EVENT_TYPES;
+/// 当前仅引用以避免 dead_code 警告；预设领域的类型清单由前端 `eventTypeLabels.ts` 同源维护。
+const _: &[(&str, &[&str])] = PRESET_DOMAINS;
 
 #[cfg(test)]
 mod tests {

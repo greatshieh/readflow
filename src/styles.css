@@ -625,6 +625,12 @@ body {
   display: none;
 }
 
+/* 主屏关系图视图：与专注模式同效，隐藏订阅栏侧栏，内容独占整屏宽度。
+   文章列表栏在主屏非文章模式下本就不渲染，此处只需隐藏订阅栏即可让全屏视图铺满。 */
+.app.main-graph .feed-panel {
+  display: none;
+}
+
 /* Scrollbar（全应用统一风格）
    以订阅列表 / 文章列表长期使用的"细条"形态为准：4px 宽、--border 浅灰、
    全圆角胶囊，安静地贴在面板右缘，不与内容抢注意力。
@@ -1006,8 +1012,8 @@ select:focus-visible {
 .empty-state .hint { font-size: var(--fs-sm); }
 
 /* ─── 关系图舞台共用原语（全局工具类）────────────────────────────────────────
-   原为 ResearchGraphTab 的 scoped 样式；主屏关系图视图（GraphView）出现后
-   成为两个组件共用，按「≥2 组件用就提升全局」的约定搬到这里。 */
+   原为 ResearchGraphTab 的 scoped 样式；迁到主屏关系图视图（GraphView）后
+   成为全局原语（弹窗内已不再有图页签，现唯一消费者是 GraphView）。 */
 
 /* 参数条：时间窗 / 最小共现数 / 统计文案 / 重算按钮（主屏视图另加返回按钮） */
 .graph-bar {

@@ -75,6 +75,16 @@ pub struct ParsedItem {
     /// 注意该字段非空：源未提供或解析失败时会被填充为当前时间，
     /// 缺时间的条目因此会排在最前而不是被丢弃。
     pub published_at: DateTime<Utc>,
+    /// 媒体附件 URL（播客音频 / 视频）
+    ///
+    /// 来自 RSS 2.0 的 `<enclosure url>` 或 JSON Feed 的 `attachments[].url`；
+    /// 纯文字源没有附件时为 `None`，前端据此决定是否渲染播放器。
+    pub enclosure_url: Option<String>,
+    /// 附件 MIME 类型（如 `audio/mpeg`、`video/mp4`）
+    ///
+    /// RSS 取 `<enclosure type>`；该属性缺失时由 [`infer_enclosure_mime`] 按 URL
+    /// 扩展名兜底推断，保证前端总能拿到一个可用类型来选 `<audio>` / `<video>`。
+    pub enclosure_type: Option<String>,
 }
 
 /// 抓取并解析 RSS/Atom/JSON Feed
@@ -148,6 +158,38 @@ pub fn fallback_icon(feed_url: &str) -> Option<String> {
         .map(|u| format!("{}/favicon.ico", u.origin().ascii_serialization()))
 }
 
+/// 仅根据 URL 扩展名推断附件 MIME 类型
+///
+/// 部分 RSS 2.0 feed 的 `<enclosure>` 不带 `type` 属性，前端又必须拿到一个
+/// 类型来决定渲染 `<audio>` 还是 `<video>`，于是用扩展名兜底。匹配不到时回退为
+/// `application/octet-stream`（前端按"未知附件"处理，仍给出下载入口）。
+///
+/// # 参数
+/// * `url` - 附件 URL
+///
+/// # 返回值
+/// 形如 `audio/mpeg` 的 MIME 类型字符串
+fn infer_enclosure_mime(url: &str) -> String {
+    let lower = url.to_ascii_lowercase();
+    if lower.ends_with(".mp3") {
+        "audio/mpeg".into()
+    } else if lower.ends_with(".m4a") {
+        "audio/mp4".into()
+    } else if lower.ends_with(".oga") || lower.ends_with(".ogg") {
+        "audio/ogg".into()
+    } else if lower.ends_with(".wav") {
+        "audio/wav".into()
+    } else if lower.ends_with(".mp4") || lower.ends_with(".m4v") {
+        "video/mp4".into()
+    } else if lower.ends_with(".webm") {
+        "video/webm".into()
+    } else if lower.ends_with(".mov") {
+        "video/quicktime".into()
+    } else {
+        "application/octet-stream".into()
+    }
+}
+
 /// 解析 XML 格式的 RSS/Atom feed
 ///
 /// 使用 `rss` crate 读取 `<channel>`，逐条把 `<item>` 映射为 [`ParsedItem`]。
@@ -183,6 +225,23 @@ fn parse_xml_feed(content: &str) -> Result<ParsedFeed, String> {
             content
         };
 
+        // enclosure：播客音频 / 视频。rss crate 的 `Item::enclosure()` 返回
+        // `Option<Enclosure>`；`Enclosure::url()` / `Enclosure::mime_type()` 直接返回 `&str`
+        // （空串表示缺失），URL 缺失时视为无附件，mime_type 缺失则按 URL 扩展名兜底，
+        // 保证前端总能拿到一个类型来选 <audio> / <video>。
+        let (enclosure_url, enclosure_type) = match item.enclosure() {
+            Some(e) => {
+                let url = Some(e.url().to_string()).filter(|u| !u.trim().is_empty());
+                let mime = if !e.mime_type().trim().is_empty() {
+                    Some(e.mime_type().to_string())
+                } else {
+                    url.as_ref().map(|u| infer_enclosure_mime(u))
+                };
+                (url, mime)
+            }
+            None => (None, None),
+        };
+
         items.push(ParsedItem {
             guid,
             title: item.title().unwrap_or_default().to_string(),
@@ -197,6 +256,8 @@ fn parse_xml_feed(content: &str) -> Result<ParsedFeed, String> {
                 .pub_date()
                 .map(|s| parse_date(s))
                 .unwrap_or_else(Utc::now),
+            enclosure_url,
+            enclosure_type,
         });
     }
 
@@ -269,6 +330,32 @@ fn parse_json_feed(content: &str) -> Result<ParsedFeed, String> {
             // 提前各清洗一次，避免下方回退分支重复调用（ammonia 解析有成本）
             let summary_html = sanitize_html(summary);
             let content_html_sanitized = sanitize_html(content_html);
+            // enclosure：JSON Feed 的 `attachments[]` 里取首个 audio/video 附件。
+            // 只认 audio/* / video/*，忽略图片等其它类型；mime_type 缺失时按 URL 扩展名兜底。
+            let (enclosure_url, enclosure_type) = item
+                .get("attachments")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| {
+                    arr.iter().find(|a| {
+                        let mime = a.get("mime_type").and_then(|m| m.as_str()).unwrap_or("");
+                        mime.starts_with("audio/") || mime.starts_with("video/")
+                    })
+                })
+                .map(|a| {
+                    let url = a
+                        .get("url")
+                        .and_then(|u| u.as_str())
+                        .map(|s| s.to_string())
+                        .filter(|s| !s.trim().is_empty());
+                    let mime = a
+                        .get("mime_type")
+                        .and_then(|m| m.as_str())
+                        .map(|s| s.to_string())
+                        .filter(|s| !s.trim().is_empty())
+                        .or_else(|| url.as_ref().map(|u| infer_enclosure_mime(u)));
+                    (url, mime)
+                })
+                .unwrap_or((None, None));
             items.push(ParsedItem {
                 guid: id_val.to_string(),
                 title,
@@ -288,6 +375,8 @@ fn parse_json_feed(content: &str) -> Result<ParsedFeed, String> {
                 } else {
                     Utc::now()
                 },
+                enclosure_url,
+                enclosure_type,
             });
         }
     }
