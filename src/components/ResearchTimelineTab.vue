@@ -369,18 +369,27 @@ function openEntityDashboard(entityName: string) {
  * 手动批量提取（补跑入口）
  */
 async function handleExtractBatch() {
+  // 防重入：按钮已 loading 时直接返回，避免重复触发批量任务
+  if (extracting.value) return
   extracting.value = true
   extractMsg.value = ''
   extractError.value = false
+  // 看门狗：命令异常长时间不返回时兜底解除 loading，避免按钮永久卡死
+  const watchdog = window.setTimeout(() => {
+    extracting.value = false
+  }, 120000)
   try {
     extractMsg.value = await researchStore.extractBatch()
-    // 提取产生新事件后按当前筛选条件刷新时间线
-    await reload(false)
+    // 命令已返回：立即解除 loading，不让后续刷新阻塞按钮
+    extracting.value = false
+    clearTimeout(watchdog)
+    // 刷新时间线（不强等，失败不影响提取结果展示）
+    reload(false).catch(() => {})
   } catch (e) {
     extractError.value = true
     extractMsg.value = e instanceof Error ? e.message : String(e)
-  } finally {
     extracting.value = false
+    clearTimeout(watchdog)
   }
 }
 

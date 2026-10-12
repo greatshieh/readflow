@@ -716,7 +716,9 @@ impl ResearchEvent {
     ///
     /// # 参数
     /// * `pool` - 数据库连接池
-    /// * `events` - 待入库的事件列表（entity_id 需已归一化）
+    /// * `events` - 待入库的事件列表（entity_id 需已归一化）。**会就地回填每条事件的
+    ///   `id`**（自增主键或命中唯一索引时回查到的已存在 id），供调用方在同一事务链里
+    ///   继续写入 `event_sentiments` / `financial_data` 等依赖 `event_id` 的外键表。
     ///
     /// # 返回值
     /// 实际新插入的事件条数
@@ -725,10 +727,10 @@ impl ResearchEvent {
     /// 数据库写入失败时返回错误信息
     pub async fn insert_batch(
         pool: &SqlitePool,
-        events: &[ResearchEvent],
+        events: &mut [ResearchEvent],
     ) -> Result<u64, String> {
         let mut inserted = 0u64;
-        for event in events {
+        for event in events.iter_mut() {
             // INSERT OR IGNORE + 影响行数计数：0 表示命中唯一索引被去重跳过
             let result = sqlx::query(
                 "INSERT OR IGNORE INTO research_events \
@@ -745,6 +747,25 @@ impl ResearchEvent {
             .execute(pool)
             .await
             .map_err(|e| e.to_string())?;
+
+            // 回填真实事件 id：新插入与命中唯一索引被跳过两种情形下，统一走唯一键
+            // 回查（而非 last_insert_rowid）——
+            // 连接池下 execute 与取 id 可能落在不同连接，last_insert_rowid 是连接级状态会指错；
+            // 唯一键 (article_id, entity_id, event_type, fact) 在 INSERT 之后必然存在，回查稳定。
+            let id = sqlx::query_scalar::<_, i64>(
+                "SELECT id FROM research_events \
+                 WHERE article_id = ? AND entity_id = ? AND event_type = ? AND fact = ?",
+            )
+            .bind(event.article_id)
+            .bind(event.entity_id)
+            .bind(&event.event_type)
+            .bind(&event.fact)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?
+            .unwrap_or(0);
+            event.id = id;
+
             inserted += result.rows_affected();
         }
         Ok(inserted)
@@ -1102,6 +1123,13 @@ impl FinancialData {
     }
 }
 
+/// 实体名称 + 别名（供文本匹配文章时取关键词，不加载整行实体）
+#[derive(Debug, Clone, FromRow)]
+struct EntityNameAlias {
+    name: String,
+    aliases: String,
+}
+
 /// 文章预览结构（供前端展示用，不含正文）
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ArticlePreview {
@@ -1111,24 +1139,95 @@ pub struct ArticlePreview {
     pub title: String,
     /// 原文链接
     pub link: String,
+    /// 匹配方式：event=已在研究事件中正式归类；name=标题/摘要文本命中实体名或别名（零 AI 成本）
+    pub match_type: String,
 }
 
 impl ResearchEvent {
     /// 按实体 ID 查询该实体关联的所有文章预览
     pub async fn list_articles_by_entity(pool: &SqlitePool, entity_id: i64, limit: i64) -> Result<Vec<ArticlePreview>, String> {
-        sqlx::query_as::<_, ArticlePreview>(
-            r#"SELECT DISTINCT a.id, a.title, a.link
+        // 取实体名 + 别名，用于文本命中（名称匹配无需 AI，手动加实体后立即生效）
+        let ent = sqlx::query_as::<_, EntityNameAlias>("SELECT name, aliases FROM entities WHERE id = ?")
+            .bind(entity_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        let (name, aliases_str) = match ent {
+            Some(r) => (r.name, r.aliases),
+            None => return Ok(Vec::new()),
+        };
+
+        // 收集关键词：实体名 + 各别名，过滤空串与过短词（避免 "AI"/"公司" 等噪音误伤）
+        let mut keywords: Vec<String> = Vec::new();
+        let mut add_kw = |k: &str| {
+            let t = k.trim();
+            if !t.is_empty() && t.chars().count() >= 2 {
+                keywords.push(t.to_string());
+            }
+        };
+        add_kw(&name);
+        // aliases 存 JSON 数组形式（如 ["字节","ByteDance"]）；非法时回退逗号分隔
+        if let Ok(arr) = serde_json::from_str::<Vec<String>>(&aliases_str) {
+            for a in arr {
+                add_kw(&a);
+            }
+        } else {
+            for a in aliases_str.split(',') {
+                add_kw(a);
+            }
+        }
+
+        // 第一段：已在 research_events 中正式归类的文章（match_type='event'）
+        let from_events = sqlx::query_as::<_, ArticlePreview>(
+            r#"SELECT DISTINCT a.id, a.title, a.link, 'event' AS match_type
                FROM research_events re
                JOIN articles a ON a.id = re.article_id
                WHERE re.entity_id = ?
-               ORDER BY re.created_at DESC
-               LIMIT ?"#
+               ORDER BY re.created_at DESC"#,
         )
         .bind(entity_id)
-        .bind(limit)
         .fetch_all(pool)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+        // 第二段：标题/摘要文本命中实体名或别名的文章（match_type='name'，零 AI 成本）
+        let mut from_name: Vec<ArticlePreview> = Vec::new();
+        if !keywords.is_empty() {
+            let mut conds: Vec<String> = Vec::new();
+            let mut binds: Vec<String> = Vec::new();
+            for kw in &keywords {
+                // 转义 LIKE 通配符，避免关键词含 % / _ 时语义错位
+                let esc = kw.replace('%', "\\%").replace('_', "\\_");
+                conds.push("(a.title LIKE ? ESCAPE '\\' OR a.summary LIKE ? ESCAPE '\\')".to_string());
+                binds.push(format!("%{}%", esc));
+                binds.push(format!("%{}%", esc));
+            }
+            let where_sql = conds.join(" OR ");
+            let sql = format!(
+                "SELECT DISTINCT a.id, a.title, a.link, 'name' AS match_type \
+                 FROM articles a WHERE {}",
+                where_sql
+            );
+            let mut q = sqlx::query_as::<_, ArticlePreview>(&sql);
+            for b in &binds {
+                q = q.bind(b);
+            }
+            match q.fetch_all(pool).await {
+                Ok(rows) => from_name = rows,
+                Err(e) => eprintln!("[research] 实体 {} 名称匹配文章查询失败: {}", entity_id, e),
+            }
+        }
+
+        // 合并两段，按 id 去重（event 优先，name 命中但已有事件的不重复列出）
+        let mut seen = std::collections::HashSet::new();
+        let mut merged: Vec<ArticlePreview> = Vec::new();
+        for a in from_events.into_iter().chain(from_name.into_iter()) {
+            if seen.insert(a.id) {
+                merged.push(a);
+            }
+        }
+        merged.truncate(limit.max(0) as usize);
+        Ok(merged)
     }
 
     /// 按实体 ID 查询多源交叉验证条目（同一实体在不同订阅源中的报道）
@@ -2188,6 +2287,96 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
             FOREIGN KEY (feed_id) REFERENCES feeds(id) ON DELETE CASCADE
         )
         "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // ─── 行情/财务数据层（market 模块；铁律 #3：全部在此 create_tables 单一真源）───
+    // 与 `financial_data` 表（AI 从文章抽取的实体指标）语义不同：本组表存**行情时序 / 财务快照 /
+    // 财报日历 / 实体-代码映射 / 价格预警**，来源是外部金融数据源（新浪 / Tushare / 东财），
+    // 经 `src-tauri/src/market` 模块拉取落库。全部 IF NOT EXISTS，应用下次启动对既有真实库自动建表，
+    // 无需 ALTER（铁律 #3 的 .bak+ALTER 仅针对给既有表加列，本组均为新增表）。
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS market_symbols (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_id INTEGER NOT NULL,
+            symbol TEXT NOT NULL,
+            market TEXT NOT NULL DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+            UNIQUE(entity_id, symbol)
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS market_quotes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            open REAL NOT NULL DEFAULT 0.0,
+            high REAL NOT NULL DEFAULT 0.0,
+            low REAL NOT NULL DEFAULT 0.0,
+            close REAL NOT NULL DEFAULT 0.0,
+            vol REAL NOT NULL DEFAULT 0.0,
+            amount REAL NOT NULL DEFAULT 0.0,
+            source TEXT NOT NULL DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(symbol, trade_date)
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS market_fundamentals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            report_date TEXT NOT NULL,
+            total_mv REAL NOT NULL DEFAULT 0.0,
+            pe_ttm REAL NOT NULL DEFAULT 0.0,
+            pb REAL NOT NULL DEFAULT 0.0,
+            ps_ttm REAL NOT NULL DEFAULT 0.0,
+            roe REAL NOT NULL DEFAULT 0.0,
+            revenue REAL NOT NULL DEFAULT 0.0,
+            net_profit REAL NOT NULL DEFAULT 0.0,
+            currency TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(symbol, report_date)
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS earnings_calendar (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            entity_id INTEGER NOT NULL DEFAULT 0,
+            report_date TEXT NOT NULL,
+            report_type TEXT NOT NULL DEFAULT '',
+            actual_or_forecast TEXT NOT NULL DEFAULT 'actual',
+            source TEXT NOT NULL DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(symbol, report_date, report_type)
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS market_alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            op TEXT NOT NULL DEFAULT '>',
+            price REAL NOT NULL DEFAULT 0.0,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            note TEXT NOT NULL DEFAULT '',
+            last_triggered DATETIME DEFAULT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )"#,
     )
     .execute(pool)
     .await?;
@@ -3329,7 +3518,7 @@ impl CustomEventType {
             "INSERT INTO custom_event_types (value, label) VALUES (?, ?) \
              ON CONFLICT(value) DO UPDATE SET label = excluded.label",
         )
-        .bind(value)
+        .bind(value.trim().to_lowercase())
         .bind(label)
         .execute(pool)
         .await

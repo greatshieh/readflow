@@ -1,8 +1,8 @@
 //! Tauri 命令入口点 - 前端与 Rust 后端之间的 IPC 边界
 //!
 //! # 职责
-//! 本模块是整个后端的**唯一对外 API 层**，[`tauri::generate_handler!`] 中共注册 **88 个命令**，
-//! 按业务域分为二十组（下方清单需与 [`run`] 里的 `generate_handler!` 保持一致，增删命令时同步）：
+//! 本模块是整个后端的**唯一对外 API 层**，[`tauri::generate_handler!`] 中共注册 **100 个命令**，
+//! 按业务域分为二十一组（下方清单需与 [`run`] 里的 `generate_handler!` 保持一致，增删命令时同步）：
 //! 注意 `ai_generate_summary` 同时属于 Feed AI 配置组与 AI 组，下方清单按两组各计一次，
 //! - Feed 命令（11）：[`feeds_list`] / [`feeds_add`] / [`feeds_update`] / [`feeds_delete`] /
 //!   [`feeds_refresh`] / [`feeds_refresh_one`] / [`feeds_import_opml`] / [`feeds_export_opml`] /
@@ -83,6 +83,8 @@ mod obsidian;
 mod research;
 mod tray;
 mod notify;
+mod market;
+mod util;
 
 use tauri::{AppHandle, Emitter, Manager};
 // DialogExt 为 `AppHandle` 提供 `.dialog()`，用于弹系统「另存为」对话框（见 [`pick_save_path`]）
@@ -299,6 +301,7 @@ pub fn run() {
                     }
                 }
             });
+
             Ok(())
         })
         // 拦截系统关窗路径（Alt+F4 / 任务栏右键 / DE 菜单）：这些不走前端 `win_close`
@@ -426,6 +429,7 @@ pub fn run() {
             financial_data_list_by_entity,
             entity_sentiment,
             entity_articles,
+            research_reextract_entity,
             research_cross_reference,
             // 自动化任务命令
             automation_tasks_list,
@@ -438,6 +442,19 @@ pub fn run() {
             research_report_generate,
             research_reports_list,
             research_report_read,
+            // 行情/财务数据层（金融升级 Phase 1）
+            market_set_token,
+            market_set_em_key,
+            market_link_symbol,
+            market_get_state,
+            market_sync,
+            market_get_quote,
+            market_list_quotes,
+            market_get_fundamentals,
+            market_list_calendar,
+            market_add_alert,
+            market_list_alerts,
+            market_check_alerts,
         ])
         // 启动失败属于不可恢复错误，直接 panic 而不是静默退出，
         // 便于在日志里看到明确原因
@@ -2883,6 +2900,25 @@ async fn entity_articles(entity_id: i64) -> Result<Vec<db::ArticlePreview>, Stri
     db::ResearchEvent::list_articles_by_entity(&pool, entity_id, 50).await
 }
 
+/// 为单个实体重抽历史事件：对库内文本命中该实体的文章逐篇补抽 AI 事件
+///
+/// 解决「手动新增实体后看不到既往关联」的问题——名称匹配的文章已由 `entity_articles`
+/// 零成本展示，本命令进一步补齐这些文章里被漏掉的历史事件，并入时间线。
+///
+/// # 参数
+/// * `entity_id` - 实体 ID
+///
+/// # 返回值
+/// 结果描述（重抽篇数 + 新增事件数）
+///
+/// # 错误
+/// 提供商未配置或查询失败时返回错误信息
+#[tauri::command]
+async fn research_reextract_entity(entity_id: i64) -> Result<String, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::extract::reextract_entity(&pool, entity_id).await
+}
+
 /// 多源交叉验证：查询某实体在不同订阅源中的报道（同一事件的来源差异并列展示）
 ///
 /// 见 [`db::ResearchEvent::list_cross_reference`]：一次 JOIN 取回事件本体 +
@@ -3208,4 +3244,119 @@ async fn research_report_read(name: String) -> Result<String, String> {
     let dir = research::report::reports_dir().ok_or("报告目录未初始化，请重启应用")?;
     let path = dir.join(&name);
     std::fs::read_to_string(&path).map_err(|e| format!("读取报告失败: {}", e))
+}
+
+// ─── 行情/财务数据层（金融升级 Phase 1；铁律 #2：HTTP 全在 Rust 后端 market 模块）───
+// 数据源分层：新浪免 token 默认（实时快照/价格预警）；Tushare/东财按设置凭据启用（历史/财务/日历）。
+// 前端仅渲染，未配置源时由 `market_get_state` 返回的状态决定占位符（见 `MarketPanel.vue`）。
+
+/// 写入 Tushare token（存本地 settings，不出本机；明文落库，库已本地优先且 .gitignore）
+#[tauri::command]
+async fn market_set_token(token: String) -> Result<(), String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    Setting::set(&pool, "tushare_token", &token).await.map_err(|e| e.to_string())
+}
+
+/// 写入东财 apikey（存本地 settings，不出本机）
+#[tauri::command]
+async fn market_set_em_key(key: String) -> Result<(), String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    Setting::set(&pool, "emapi_key", &key).await.map_err(|e| e.to_string())
+}
+
+/// 关联实体 ↔ 证券代码（同一实体+代码幂等）
+#[tauri::command]
+async fn market_link_symbol(entity_id: i64, symbol: String, market: String) -> Result<(), String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    market::upsert_symbol(&pool, entity_id, &symbol, &market).await
+}
+
+/// 取实体行情面板状态（前端据此决定占位符）：已关联代码 / Tushare 是否已配置 / 东财是否已配置
+#[tauri::command]
+async fn market_get_state(entity_id: i64) -> Result<market::MarketState, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    let symbol = market::get_symbol_for_entity(&pool, entity_id).await;
+    let tushare = Setting::get(&pool, "tushare_token")
+        .await
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .is_some();
+    let em = Setting::get(&pool, "emapi_key")
+        .await
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .is_some();
+    Ok(market::MarketState {
+        symbol,
+        tushare_configured: tushare,
+        em_configured: em,
+    })
+}
+
+/// 用 Tushare token 同步某实体的历史行情 / 财务 / 财报日历并落库
+///
+/// # 错误
+/// 未配置 Tushare token、或该实体尚未关联证券代码时返回可读错误
+#[tauri::command]
+async fn market_sync(entity_id: i64) -> Result<market::SyncSummary, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    let token = Setting::get(&pool, "tushare_token")
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|s| !s.is_empty())
+        .ok_or("未配置 Tushare token：请在「设置 → 数据源」填入后重试")?;
+    let symbol = market::get_symbol_for_entity(&pool, entity_id)
+        .await
+        .ok_or("该实体尚未关联证券代码")?;
+    market::sync_entity(&pool, entity_id, &symbol, &token).await
+}
+
+/// 拉取实时快照（新浪免 token 默认源）；失败返回 None（前端渲染占位）
+#[tauri::command]
+async fn market_get_quote(symbol: String) -> Result<Option<market::Quote>, String> {
+    Ok(market::sina::fetch_snapshot(&symbol).await)
+}
+
+/// 取最近 N 条日线（来自本地库；需先经 `market_sync` 用 Tushare 拉取）
+#[tauri::command]
+async fn market_list_quotes(symbol: String, limit: i64) -> Result<Vec<market::Quote>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    market::list_quotes(&pool, &symbol, limit).await
+}
+
+/// 取最新财务快照（来自本地库）
+#[tauri::command]
+async fn market_get_fundamentals(symbol: String) -> Result<Option<market::Fundamental>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    market::get_fundamental(&pool, &symbol).await
+}
+
+/// 取某实体最近财报日历（来自本地库）
+#[tauri::command]
+async fn market_list_calendar(entity_id: i64) -> Result<Vec<market::EarningsCalendarItem>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    market::list_calendar(&pool, entity_id).await
+}
+
+/// 新增价格预警规则
+#[tauri::command]
+async fn market_add_alert(symbol: String, op: String, price: f64, note: String) -> Result<i64, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    market::add_alert(&pool, &symbol, &op, price, &note).await
+}
+
+/// 列出全部价格预警规则
+#[tauri::command]
+async fn market_list_alerts() -> Result<Vec<market::MarketAlert>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    market::list_alerts(&pool, false).await
+}
+
+/// 遍历启用中的预警规则：拉新浪实时快照比对，命中推送系统通知；返回本次触发数
+#[tauri::command]
+async fn market_check_alerts() -> Result<usize, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    market::check_alerts(&pool).await
 }

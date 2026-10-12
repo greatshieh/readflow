@@ -85,6 +85,12 @@ pub struct ExtractedEvent {
     /// 财务指标列表（可选，如 {"revenue": "100亿", "growth": "+15%"}）
     #[serde(default)]
     pub financial_metrics: Option<Vec<(String, String)>>,
+    /// 来源文章标题（由抽取链路注入，不来自模型输出；用于通知溯源「来源」）
+    #[serde(skip, default)]
+    pub article_title: Option<String>,
+    /// 来源文章链接（由抽取链路注入；用于通知溯源「来源」）
+    #[serde(skip, default)]
+    pub article_link: Option<String>,
 }
 
 /// 执行一次自动化任务（cron 与手动触发的公共执行器）

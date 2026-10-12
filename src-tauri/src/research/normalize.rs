@@ -109,6 +109,17 @@ fn register(map: &mut HashMap<String, usize>, name: &str, idx: usize) {
     }
 }
 
+/// 与 `rows`（已落库的事件）下标一一对应的附属数据（情感 + 财务）。
+///
+/// 用途：构建 `rows` 的同一循环里同步收集，使后续写入 `event_sentiments` /
+/// `financial_data` 时能按同一下标索引对齐，**不再依赖 `events` 的原始下标**
+/// （原实现用 `events` 下标索引 `rows`，但空 canonical 事件被跳过导致两个数组错位）。
+struct EventExtras {
+    sentiment: String,
+    confidence: f64,
+    financials: Option<Vec<(String, String)>>,
+}
+
 /// 把提取出的事件归一化实体后批量入库
 ///
 /// # 参数
@@ -129,6 +140,10 @@ pub async fn normalize_and_store_events(
     source_model: &str,
 ) -> Result<u64, String> {
     let mut rows: Vec<ResearchEvent> = Vec::with_capacity(events.len());
+    // 与 `rows` 下标一一对应的附属数据（情感 + 财务）。原实现对齐用的是 `events` 的下标，
+    // 但 `rows` 已跳过空 canonical 的事件导致两个数组错位——财务/情感被挂到错误事件上。
+    // 改为在构建 `rows` 的同一循环里同步收集，用同一下标索引天然对齐。
+    let mut extras: Vec<EventExtras> = Vec::with_capacity(events.len());
     let mut index = EntityIndex::load(pool).await?;
 
     for event in events {
@@ -185,7 +200,7 @@ pub async fn normalize_and_store_events(
         };
 
         rows.push(ResearchEvent {
-            id: 0, // 自增主键，入库时由 SQLite 分配
+            id: 0, // 入库后由 insert_batch 回填真实自增 id
             article_id,
             entity_id: entity.id,
             event_type: event.event_type.trim().to_string(),
@@ -196,41 +211,48 @@ pub async fn normalize_and_store_events(
             // 入库时由 SQLite 默认值生成
             created_at: chrono::Utc::now(),
         });
+        // 同步收集该事件的情感与财务，下标与 rows 严格同步
+        extras.push(EventExtras {
+            sentiment: event.sentiment.as_deref().unwrap_or("neutral").to_string(),
+            confidence: event.sentiment_confidence.unwrap_or(0.5),
+            financials: event.financial_metrics.clone(),
+        });
     }
 
-    ResearchEvent::insert_batch(pool, &rows).await?;
+    // 批量入库，并把真实事件 id 回填进 rows（insert_batch 内部按唯一键回查）
+    let inserted = ResearchEvent::insert_batch(pool, &mut rows).await?;
 
-    // 写入情感分析和财务数据
-    for (row_idx, event) in events.iter().enumerate() {
-        if row_idx >= rows.len() {
-            break;
+    // 写入情感分析和财务数据（按 rows 下标一一对应，event_id 已正确回填）
+    for (i, row) in rows.iter().enumerate() {
+        let extra = &extras[i];
+        let event_id = row.id;
+        // 防御：理论上 insert_batch 已回填；若仍为 0 说明唯一键回查未命中，跳过避免 FK 失败
+        if event_id == 0 {
+            continue;
         }
-        let event_id = rows[row_idx].id;
-        // 写入情感分析（无数据时默认 neutral）
-        let sentiment = event.sentiment.as_deref().unwrap_or("neutral");
-        let confidence = event.sentiment_confidence.unwrap_or(0.5);
+        // 写入情感分析
         sqlx::query(
             "INSERT OR REPLACE INTO event_sentiments (event_id, sentiment, confidence) VALUES (?, ?, ?)"
         )
         .bind(event_id)
-        .bind(sentiment)
-        .bind(confidence)
+        .bind(&extra.sentiment)
+        .bind(extra.confidence)
         .execute(pool)
         .await
         .map_err(|e| e.to_string())?;
         // 写入财务数据（若有）
-        if let Some(ref metrics) = event.financial_metrics {
+        if let Some(ref metrics) = extra.financials {
             for (key, value) in metrics {
                 let numeric: f64 = value.trim().parse().unwrap_or(0.0);
                 sqlx::query(
                     "INSERT OR REPLACE INTO financial_data (article_id, entity_id, metric_key, metric_value, metric_numeric, evidence, source_model) VALUES (?, ?, ?, ?, ?, ?, ?)"
                 )
                 .bind(article_id)
-                .bind(rows[row_idx].entity_id)
+                .bind(row.entity_id)
                 .bind(key)
                 .bind(value)
                 .bind(numeric)
-                .bind(&event.evidence)
+                .bind(&row.evidence)
                 .bind(source_model)
                 .execute(pool)
                 .await
@@ -239,7 +261,7 @@ pub async fn normalize_and_store_events(
         }
     }
 
-    Ok(rows.len() as u64)
+    Ok(inserted)
 }
 
 /// 把模型给出的别称合并进已有实体的别名表
@@ -287,4 +309,208 @@ async fn merge_aliases(
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! 抽取落库回归测试
+    //!
+    //! 重点锁死「`insert_batch` 必须回填 `event_id`」——此前未回填导致
+    //! `event_sentiments`/`financial_data` 外键插入 event_id=0 触发
+    //! `FOREIGN KEY constraint failed (code: 787)`。同时验证空 canonical 事件被跳过、
+    //! 财务数据挂到正确实体（解决 `events` 与 `rows` 下标错位问题）。
+
+    use super::*;
+    use sqlx::SqlitePool;
+
+    /// 建内存库并建好抽取落库链路所需的全部表（含外键）。
+    /// 外键由 sqlx 的 SQLite 连接默认开启（PRAGMA foreign_keys = ON）。
+    async fn setup() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("建内存库失败");
+        sqlx::query("CREATE TABLE articles (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, link TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE entities (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT, \
+                name TEXT NOT NULL, \
+                entity_type TEXT NOT NULL DEFAULT 'company', \
+                aliases TEXT NOT NULL DEFAULT '[]', \
+                enabled INTEGER DEFAULT 1, \
+                alert_rules TEXT, \
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP, \
+                UNIQUE(name, entity_type))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE research_events (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT, \
+                article_id INTEGER NOT NULL, \
+                entity_id INTEGER NOT NULL, \
+                event_type TEXT NOT NULL, \
+                event_date TEXT DEFAULT '', \
+                fact TEXT NOT NULL, \
+                evidence TEXT NOT NULL DEFAULT '', \
+                source_model TEXT DEFAULT '', \
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP, \
+                FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE, \
+                FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE UNIQUE INDEX idx_events_dedupe \
+             ON research_events(article_id, entity_id, event_type, fact)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE event_sentiments (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT, \
+                event_id INTEGER NOT NULL, \
+                sentiment TEXT, \
+                confidence REAL, \
+                FOREIGN KEY (event_id) REFERENCES research_events(id) ON DELETE CASCADE, \
+                UNIQUE(event_id))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE financial_data (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT, \
+                article_id INTEGER NOT NULL, \
+                entity_id INTEGER NOT NULL, \
+                metric_key TEXT NOT NULL, \
+                metric_value TEXT NOT NULL, \
+                metric_numeric REAL DEFAULT 0.0, \
+                currency TEXT DEFAULT '', \
+                period TEXT DEFAULT '', \
+                evidence TEXT NOT NULL DEFAULT '', \
+                source_model TEXT DEFAULT '', \
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP, \
+                FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE, \
+                FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE, \
+                UNIQUE(article_id, entity_id, metric_key))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    /// 回归：event_id 必须回填，否则外键插入失败（787）；并验证空 canonical 跳过与财务对齐。
+    #[tokio::test]
+    async fn event_id_backfilled_and_fk_ok() {
+        let pool = setup().await;
+        let article_id = sqlx::query("INSERT INTO articles (title, link) VALUES (?, ?)")
+            .bind("标题")
+            .bind("https://example.com/a")
+            .execute(&pool)
+            .await
+            .unwrap()
+            .last_insert_rowid();
+
+        let events = vec![
+            ExtractedEvent {
+                canonical_name: "OpenAI".to_string(),
+                aliases: vec!["OpenAI Inc.".to_string()],
+                entity_type: "company".to_string(),
+                event_type: "product".to_string(),
+                event_date: "2026-09-20".to_string(),
+                fact: "OpenAI 发布 GPT-5".to_string(),
+                evidence: "OpenAI 发布 GPT-5".to_string(),
+                sentiment: Some("positive".to_string()),
+                sentiment_confidence: Some(0.9),
+                financial_metrics: Some(vec![("revenue".to_string(), "100亿".to_string())]),
+                article_title: None,
+                article_link: None,
+            },
+            // 空 canonical：应被跳过，不产生事件/情感/财务
+            ExtractedEvent {
+                canonical_name: String::new(),
+                aliases: vec![],
+                entity_type: "company".to_string(),
+                event_type: "ma".to_string(),
+                event_date: String::new(),
+                fact: "残缺事件".to_string(),
+                evidence: String::new(),
+                sentiment: None,
+                sentiment_confidence: None,
+                financial_metrics: Some(vec![("rd_spend".to_string(), "10亿".to_string())]),
+                article_title: None,
+                article_link: None,
+            },
+            ExtractedEvent {
+                canonical_name: "Anthropic".to_string(),
+                aliases: vec![],
+                entity_type: "company".to_string(),
+                event_type: "ma".to_string(),
+                event_date: String::new(),
+                fact: "Anthropic 完成融资".to_string(),
+                evidence: String::new(),
+                sentiment: Some("neutral".to_string()),
+                sentiment_confidence: Some(0.7),
+                financial_metrics: None,
+                article_title: None,
+                article_link: None,
+            },
+        ];
+
+        // 修复前此处会因 event_id=0 抛 FOREIGN KEY constraint failed (code: 787)
+        let inserted = normalize_and_store_events(&pool, article_id, &events, "test-model")
+            .await
+            .expect("抽取落库不应失败");
+        assert_eq!(inserted, 2, "空 canonical 事件应被跳过，仅 2 条入库");
+
+        let ev_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM research_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(ev_count, 2);
+
+        // 每条 event_sentiments 的 event_id 必须真实存在（回填成功，无孤儿外键）
+        let orphan: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM event_sentiments es \
+             LEFT JOIN research_events re ON es.event_id = re.id \
+             WHERE re.id IS NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(orphan, 0, "不应存在指向不存在事件的情感记录");
+
+        let sent_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_sentiments")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(sent_count, 2, "每条入库事件各应有一份情感");
+
+        // 财务数据仅 1 条，且挂到 OpenAI 实体（空 canonical 事件不应产出财务）
+        let fin_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM financial_data")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(fin_count, 1, "空 canonical 事件不应产出财务数据");
+
+        let openai_id: i64 = sqlx::query_scalar("SELECT id FROM entities WHERE name = ?")
+            .bind("OpenAI")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let fin_entity: i64 =
+            sqlx::query_scalar("SELECT entity_id FROM financial_data WHERE metric_key = ?")
+                .bind("revenue")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(fin_entity, openai_id, "财务数据应挂到 OpenAI 实体");
+    }
 }

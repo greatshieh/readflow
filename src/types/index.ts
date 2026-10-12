@@ -491,6 +491,8 @@ export interface ArticlePreview {
   title: string
   /** 原文链接 */
   link: string
+  /** 匹配方式：event=已在研究事件中正式归类；name=标题/摘要文本命中实体名或别名（零 AI 成本） */
+  match_type?: string
 }
 
 /**

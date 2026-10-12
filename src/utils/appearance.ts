@@ -222,3 +222,37 @@ function onSystemThemeChange(): void {
     document.documentElement.dataset.theme = dark ? 'dark' : 'light'
   }
 }
+
+/**
+ * 读取当前界面的主题快照（供报告导出使用）
+ *
+ * # 为什么报告需要它
+ * 研究报告是**离线单文件 HTML**，脱离 App 独立打开，读不到运行时的
+ * `data-theme` / `data-accent` 属性。报告侧只能靠 `@media (prefers-color-scheme)`
+ * 猜系统主题，于是「应用里选了亮色、系统是暗色」这类组合会渲出另一套配色，
+ * 与用户导出时看到的界面对不上。把此刻的主题与主色一并交给报告写进 `:root`，
+ * 两处就严格同源；取不到时报告自动回退媒体查询，定时任务等无前端上下文的路径行为不变。
+ *
+ * # 为什么强调色要从计算值取而不是从 `ACCENT_PRESETS` 查表
+ * 预设表里存的是"卡片上显示的色块"，真正上屏的主色由 styles.css 的
+ * `[data-accent]` 变量组按主题分别给出（暗色下会提亮一档以保证对比度）。
+ * 报告要跟随的是后者，故读 `getComputedStyle` 的实际取值，而非预设表里的字面值。
+ *
+ * @returns `{ mode, accent }`：`mode` 为已解析的 'light' / 'dark'（system 已被 resolveTheme 解析），
+ *          `accent` 为主色的十六进制值；读取失败时返回 null（调用方回退系统主题）
+ */
+export function readThemeSnapshot(): { mode: string; accent: string } | null {
+  try {
+    const root = document.documentElement
+    const mode = root.dataset.theme
+    if (mode !== 'light' && mode !== 'dark') return null
+    // `getPropertyValue` 取的是变量**声明值**（可能是字面量或 var() 链），
+    // 故再经 trim 规整；空值说明样式未加载完成，视为不可用。
+    const accent = getComputedStyle(root).getPropertyValue('--primary').trim()
+    if (!accent) return null
+    return { mode, accent }
+  } catch {
+    // 非浏览器环境（如测试）或样式访问受限：交由调用方回退
+    return null
+  }
+}

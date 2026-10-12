@@ -63,10 +63,20 @@ pub const PRESET_DOMAINS: &[(&str, &[&str])] = &[
     (
         "finance",
         &[
-            "earnings",      // 财报：营收、利润
-            "rating",        // 评级：上调、下调
-            "ipo",           // 上市：申购、挂牌
-            "dividend",      // 分红：派息、回购
+            "earnings",        // 财报：营收、利润
+            "profit_warning",  // 业绩预告 / 业绩修正（预增、预减、变脸）
+            "rating",          // 评级：上调、下调、首次覆盖
+            "ipo",             // 上市：申购、挂牌、过会
+            "dividend",        // 分红：派息、送转
+            "buyback",         // 回购 / 增持
+            "reduce",          // 减持 / 股东抛售
+            "restructuring",   // 重组 / 资产注入 / 剥离
+            "financing",       // 再融资 / 定增 / 发债 / 可转债
+            "unlock",          // 解禁 / 限售股流通
+            "violation",       // 违规 / 立案 / 处罚 / 退市风险
+            "margin",          // 融资融券 / 质押
+            "northbound",      // 北向资金流向
+            "dragon_tiger",    // 龙虎榜
         ],
     ),
 ];
@@ -323,9 +333,16 @@ pub async fn extract_article(
     };
     let raw_output = ai::chat_completion(provider, &prompt, Some(0.1)).await?;
 
-    let events = validate_events(parse_events_loose(&raw_output), effective);
+    let mut events = validate_events(parse_events_loose(&raw_output), effective);
     if events.is_empty() {
         eprintln!("[research] 文章 {} 未抽出事件（或解析失败）", article_id);
+    } else {
+        // 注入来源：事件本身不含文章信息，但通知需要「来源」标注；
+        // article_title/link 为 serde skip 字段，由抽取链路在此统一填充
+        for e in &mut events {
+            e.article_title = Some(article.title.clone());
+            e.article_link = Some(article.link.clone());
+        }
     }
     Ok(events)
 }
@@ -458,6 +475,119 @@ pub async fn extract_batch(
     Ok((processed, total_events, all_events))
 }
 
+/// 实体名称 + 别名（供文本匹配文章时取关键词）
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct EntityNameAlias {
+    name: String,
+    aliases: String,
+}
+
+/// 为单个实体重抽历史事件：对库内标题/摘要文本命中该实体名称的文章逐篇跑 AI 抽取，
+/// 把既往未识别的事件补进 `research_events`，让用户「研究方向变更后」也能看到历史汇总。
+///
+/// 与批量提取的区别：不依赖 `ai_extracted_at` 闸门，按文本匹配主动补抽；抽完仍标记
+/// `ai_extracted_at` 与批量同一口径，避免后续批量任务重复付费。无 AI 事件命中的普通
+/// 相关文章已由 `list_articles_by_entity` 的 name 匹配零成本展示，本函数只负责补齐事件。
+///
+/// # 参数
+/// * `pool` - 数据库连接池
+/// * `entity_id` - 实体 ID
+///
+/// # 返回值
+/// 人类可读的结果描述（重抽篇数 + 新增事件数）
+///
+/// # 错误
+/// 提供商未配置或查询失败时返回错误信息
+pub async fn reextract_entity(pool: &SqlitePool, entity_id: i64) -> Result<String, String> {
+    // 取实体名 + 别名，用于文本命中文章
+    let ent = sqlx::query_as::<_, EntityNameAlias>("SELECT name, aliases FROM entities WHERE id = ?")
+        .bind(entity_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("实体不存在: {}", entity_id))?;
+    let name = ent.name.clone();
+    let aliases_str = ent.aliases.clone();
+
+    // 关键词：实体名 + 别名（JSON 数组优先，非法回退逗号分隔），过滤空串与过短词
+    let mut keywords: Vec<String> = Vec::new();
+    let mut add_kw = |k: &str| {
+        let t = k.trim();
+        if !t.is_empty() && t.chars().count() >= 2 {
+            keywords.push(t.to_string());
+        }
+    };
+    add_kw(&name);
+    if let Ok(arr) = serde_json::from_str::<Vec<String>>(&aliases_str) {
+        for a in arr {
+            add_kw(&a);
+        }
+    } else {
+        for a in aliases_str.split(',') {
+            add_kw(a);
+        }
+    }
+    if keywords.is_empty() {
+        return Ok("该实体无名称/别名，无法匹配文章".to_string());
+    }
+
+    // 构造参数化 LIKE 查询，取命中文章 id（转义 % / _ 通配符，避免关键词含特殊字符时语义错位）
+    let mut conds: Vec<String> = Vec::new();
+    let mut binds: Vec<String> = Vec::new();
+    for kw in &keywords {
+        let esc = kw.replace('%', "\\%").replace('_', "\\_");
+        conds.push("(title LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\')".to_string());
+        binds.push(format!("%{}%", esc));
+        binds.push(format!("%{}%", esc));
+    }
+    let where_sql = conds.join(" OR ");
+    let sql = format!("SELECT id FROM articles WHERE {}", where_sql);
+    let mut q = sqlx::query_scalar::<_, i64>(&sql);
+    for b in &binds {
+        q = q.bind(b);
+    }
+    let article_ids = q.fetch_all(pool).await.map_err(|e| e.to_string())?;
+
+    if article_ids.is_empty() {
+        return Ok("未找到标题/摘要命中该实体的文章".to_string());
+    }
+
+    // 装配 AI 提供商（默认 agnes，与手动单篇提取同一默认）与生效事件类型枚举
+    let provider = match ai::load_provider(pool, "agnes").await {
+        Ok(p) => p,
+        Err(e) => return Err(format!("AI 提供商未配置：{}", e)),
+    };
+    let effective = effective_event_types(pool).await?;
+
+    let mut processed = 0usize;
+    let mut total_events: u64 = 0;
+    for article_id in article_ids {
+        match extract_article(pool, article_id, &provider, None, &effective).await {
+            Ok(events) => {
+                if events.is_empty() {
+                    continue;
+                }
+                match super::normalize::normalize_and_store_events(pool, article_id, &events, &provider.model).await {
+                    Ok(inserted) => {
+                        if let Err(e) = mark_extracted(pool, article_id).await {
+                            eprintln!("[research] 文章 {} 标记提取时间失败: {}", article_id, e);
+                        }
+                        processed += 1;
+                        total_events += inserted;
+                    }
+                    Err(e) => eprintln!("[research] 文章 {} 事件入库失败，跳过: {}", article_id, e),
+                }
+            }
+            Err(e) => eprintln!("[research] 文章 {} 提取失败，跳过: {}", article_id, e),
+        }
+    }
+
+    Ok(format!(
+        "重抽 {} 篇文章，新增 {} 条历史事件（实体：{}）",
+        processed, total_events, name
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     //! `is_significant` 的纯函数验证
@@ -480,6 +610,8 @@ mod tests {
             sentiment: sentiment.map(|s| s.to_string()),
             sentiment_confidence: conf,
             financial_metrics: None,
+            article_title: None,
+            article_link: None,
         }
     }
 
