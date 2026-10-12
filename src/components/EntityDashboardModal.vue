@@ -9,7 +9,7 @@
     入口：实体列表项 / 时间线分组头 / 关系图节点 经 `open-entity-dashboard` 事件，
     由 App.vue 调 uiStore.openEntityDashboard 打开本弹窗。
   -->
-  <BaseModal :open="open" size="2xl" title="实体仪表盘" @close="onClose">
+  <BaseModal :open="open" size="3xl" title="实体仪表盘" @close="onClose">
     <div class="dash-modal">
       <!-- 头部：标题 + 实体名/类型 + 关闭钮（关闭钮复用全局 .btn-icon） -->
       <header class="dash-modal-head">
@@ -32,71 +32,193 @@
         <div v-else-if="error" class="dash-state dash-error">{{ error }}</div>
 
         <div v-else class="dash">
-          <!-- 综合舆情 -->
-          <section class="dash-section">
-            <h4 class="dash-h">综合舆情</h4>
-            <div class="dash-sentiment">
+          <!-- Hero 头：实体名大标题 + 类型徽标 -->
+          <header class="tech-hero">
+            <h3 class="tech-hero-title">{{ entityName }}</h3>
+            <div class="tech-hero-chips">
+              <span v-if="entityTypeLabel" class="badge">{{ entityTypeLabel }}</span>
               <span class="badge" :class="sentimentClass">{{ sentimentLabel }}</span>
-              <span class="dash-stat">
-                利好 {{ counts.positive }} · 利空 {{ counts.negative }} · 中性 {{ counts.neutral }}
-              </span>
             </div>
+          </header>
+
+          <!-- 关键指标四宫格：数据全部来自已加载的聚合结果，零新增查询 -->
+          <div class="tech-kpi-grid">
+            <div class="tech-kpi">
+              <div class="tech-kpi-label">财务</div>
+              <div class="tech-kpi-value">{{ financials.length }}<em>项</em></div>
+            </div>
+            <div class="tech-kpi">
+              <div class="tech-kpi-label">事件</div>
+              <div class="tech-kpi-value">{{ events.length }}</div>
+            </div>
+            <div class="tech-kpi">
+              <div class="tech-kpi-label">来源验证</div>
+              <div class="tech-kpi-value">{{ crossRefs.length }}</div>
+            </div>
+            <div class="tech-kpi">
+              <div class="tech-kpi-label">关联文章</div>
+              <div class="tech-kpi-value">{{ articles.length }}</div>
+            </div>
+          </div>
+
+          <!-- 行情面板（外部数据源能力，突出显示） -->
+          <section class="dash-card">
+            <h4 class="dash-h">行情面板（外部数据源）</h4>
+            <MarketPanel :entity-id="entityId" />
           </section>
 
-          <!-- 财务快照 -->
-          <section class="dash-section">
-            <h4 class="dash-h">财务快照</h4>
-            <ul v-if="financials.length" class="dash-fin">
-              <li v-for="f in financials" :key="f.id" class="fin-item">
-                <span class="fin-k">{{ f.metric_key }}</span>
-                <span class="fin-v">{{ f.metric_value }}<em v-if="f.currency"> {{ f.currency }}</em></span>
-                <span v-if="f.period" class="fin-p">{{ f.period }}</span>
-              </li>
-            </ul>
-            <p v-else class="dash-empty">暂无财务数据</p>
-          </section>
+          <!-- 双列紧凑区：综合舆情 + 财务快照 -->
+          <div class="dash-row">
+            <section class="dash-card">
+              <h4 class="dash-h">综合舆情</h4>
+              <div class="dash-sentiment">
+                <span class="badge" :class="sentimentClass">{{ sentimentLabel }}</span>
+                <span class="dash-stat">
+                  利好 {{ counts.positive }} · 利空 {{ counts.negative }} · 中性 {{ counts.neutral }}
+                </span>
+              </div>
+            </section>
 
-          <!-- 近期事件 -->
-          <section class="dash-section">
+            <section class="dash-card">
+              <h4 class="dash-h">财务快照</h4>
+              <ul v-if="financials.length" class="dash-fin">
+                <li v-for="f in financials" :key="f.id" class="fin-item">
+                  <span class="fin-k">{{ metricLabel(f.metric_key) }}</span>
+                  <span class="fin-v">{{ f.metric_value }}<em v-if="f.currency"> {{ f.currency }}</em></span>
+                  <span v-if="f.period" class="fin-p">{{ f.period }}</span>
+                </li>
+              </ul>
+              <p v-else class="dash-empty">暂无财务数据</p>
+            </section>
+          </div>
+
+          <!-- 近期事件：按事件类型分组，组内按日期倒序（零新增查询，纯前端分组） -->
+          <section class="dash-card">
             <h4 class="dash-h">近期事件</h4>
-            <ul v-if="events.length" class="dash-events">
-              <li v-for="ev in events" :key="ev.id" class="dash-event">
-                <span class="ev-type" :class="`type-${ev.event_type}`">{{ typeLabel(ev.event_type) }}</span>
-                <span class="ev-date">{{ ev.event_date || '日期未知' }}</span>
-                <span class="ev-fact">{{ ev.fact }}</span>
-              </li>
-            </ul>
+            <div v-if="groupedEvents.length" class="tech-groups">
+              <section
+                v-for="(grp, gi) in groupedEvents"
+                :key="grp.type"
+                class="tech-group"
+              >
+                <!-- 分组头：序号 chip + 类型名 + 计数徽标 -->
+                <header class="tech-group-head">
+                  <span class="tech-index">{{ pad2(gi + 1) }}</span>
+                  <span class="tech-group-title">{{ grp.label }}</span>
+                  <span class="tech-count">{{ grp.items.length }} 条</span>
+                </header>
+
+                <!-- 组内卡片流 -->
+                <div class="tech-timeline">
+                  <article
+                    v-for="(ev, ei) in grp.items"
+                    :key="ev.id"
+                    class="tech-tl-item"
+                  >
+                    <div class="tech-card">
+                      <span class="tech-card-num">{{ pad2(ei + 1) }}</span>
+                      <div class="tech-card-body">
+                        <h5 class="tech-card-title">{{ ev.fact }}</h5>
+                        <div class="tech-meta">
+                          <span class="tech-meta-time">{{ ev.event_date || '日期未知' }}</span>
+                          <span class="badge" :class="`type-${ev.event_type}`">
+                            {{ typeLabel(ev.event_type) }}
+                          </span>
+                          <span class="badge" :class="sentClass(ev.sentiment ?? 'neutral')">
+                            {{ sentLabel(ev.sentiment ?? 'neutral') }}
+                          </span>
+                          <span v-if="ev.entity_name" class="tech-meta-src">
+                            {{ ev.entity_name }}
+                          </span>
+                        </div>
+                        <p v-if="ev.evidence" class="tech-summary">{{ ev.evidence }}</p>
+                        <!-- source 跳转：点则收缩弹窗并在主区域打开文章；无链接时禁用 -->
+                        <button
+                          class="tech-link"
+                          :disabled="!ev.article_link"
+                          @click="openArticle(ev)"
+                          :title="ev.article_link ? '在主区域打开来源文章' : '来源文章已被清理，无法跳转'"
+                        >
+                          查看原文
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="7" y1="17" x2="17" y2="7"></line>
+                            <polyline points="7 7 17 7 17 17"></polyline>
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                </div>
+              </section>
+            </div>
             <p v-else class="dash-empty">暂无相关事件</p>
           </section>
 
           <!-- 多源交叉验证 -->
-          <section class="dash-section">
+          <section class="dash-card">
             <h4 class="dash-h">来源验证（{{ crossRefs.length }}）</h4>
-            <ul v-if="crossRefs.length" class="dash-cross">
-              <li v-for="c in crossRefs" :key="c.event_id" class="cross-item">
-                <div class="cross-head">
-                  <span class="cross-src">{{ c.source_name ?? '未知来源' }}</span>
-                  <span class="cross-sent" :class="sentClass(c.sentiment)">{{ sentLabel(c.sentiment) }}</span>
+            <div v-if="crossRefs.length" class="tech-grid">
+              <div v-for="c in crossRefs" :key="c.event_id" class="tech-item">
+                <div class="tech-meta">
+                  <span class="tech-meta-src">{{ c.source_name ?? '未知来源' }}</span>
+                  <span class="badge" :class="sentClass(c.sentiment)">{{ sentLabel(c.sentiment) }}</span>
                 </div>
-                <p class="cross-fact">{{ c.fact }}</p>
-              </li>
-            </ul>
+                <p class="tech-summary">{{ c.fact }}</p>
+              </div>
+            </div>
             <p v-else class="dash-empty">该实体暂无多源报道</p>
           </section>
 
           <!-- 关联文章 -->
-          <section class="dash-section">
+          <section class="dash-card">
             <h4 class="dash-h">关联文章</h4>
-            <ul v-if="articles.length" class="dash-articles">
-              <li v-for="a in articles" :key="a.id" class="art-item">
-                <a :href="a.link" target="_blank" rel="noopener" class="art-link">{{ a.title }}</a>
-              </li>
-            </ul>
+            <div v-if="hasNameMatch" class="dash-reextract">
+              <button
+                class="btn btn-secondary btn-sm"
+                :disabled="reextracting"
+                @click="handleReextract"
+              >
+                {{ reextracting ? '抽取中...' : '重新抽取历史事件' }}
+              </button>
+              <span class="dash-reextract-hint">「名称匹配」文章尚未经 AI 抽取，点击补齐历史事件</span>
+            </div>
+            <div v-if="articles.length" class="tech-grid">
+              <div v-for="a in articles" :key="a.id" class="tech-item">
+                <div class="tech-meta">
+                  <span v-if="a.match_type === 'name'" class="badge">名称匹配</span>
+                  <button
+                    class="tech-link"
+                    :disabled="!a.link"
+                    @click="openArticleById(a)"
+                  >
+                    {{ a.title }}
+                  </button>
+                </div>
+              </div>
+            </div>
             <p v-else class="dash-empty">暂无关联文章</p>
           </section>
         </div>
       </div>
     </div>
+
+    <!-- 收缩态：右上角悬浮按钮（Teleport 到 body，避开面板 overflow 裁剪）
+         v-if 额外要求 props.open：父组件真正关闭弹窗后（关闭钮/Esc）必须一并消失，
+         否则会留下一个"召回已关闭仪表盘"的孤儿按钮。 -->
+    <Teleport to="body">
+      <button
+        v-if="open && collapsed"
+        class="tech-collapse-fab"
+        @click="expand"
+        title="返回实体仪表盘"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="15 18 9 12 15 6"></polyline>
+        </svg>
+        <span>实体仪表盘</span>
+        <span class="tech-fab-badge">{{ events.length }}</span>
+      </button>
+    </Teleport>
   </BaseModal>
 </template>
 
@@ -124,8 +246,9 @@
  * entitiesStore.entities 解析，为空时补拉一次。实体级情感取 entity_sentiment，
  * 事件级情感分布（利好/利空/中性计数）由近期事件列表本地统计，避免再发聚合查询。
  */
-import { ref, watch, computed } from 'vue'
+import { ref, watch, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import BaseModal from './BaseModal.vue'
+import MarketPanel from './MarketPanel.vue'
 import { useResearchStore } from '@/stores/research'
 import { useEntitiesStore } from '@/stores/entities'
 import { useEventTypesStore } from '@/stores/eventTypes'
@@ -178,6 +301,10 @@ const events = ref<ResearchEventWithContext[]>([])
 const crossRefs = ref<CrossReferenceEntry[]>([])
 /** 关联文章列表 */
 const articles = ref<ArticlePreview[]>([])
+/** 重新抽取（补历史事件）按钮 loading */
+const reextracting = ref(false)
+/** 是否存在"名称匹配"文章（尚未经过 AI 抽取，可触发补抽） */
+const hasNameMatch = computed(() => articles.value.some((a) => a.match_type === 'name'))
 
 /** 事件级情感分布计数（利好/利空/中性） */
 const counts = computed(() => {
@@ -212,6 +339,94 @@ function typeLabel(t: string): string {
   return eventTypesStore.effectiveTypes.find((i) => i.value === t)?.label ?? t
 }
 
+/** 序号补零：分组序号与卡片序号统一两位（01 / 02），对齐科技风的数字锚点语汇 */
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : String(n)
+}
+
+/**
+ * 近期事件按「事件类型」分组，组内按日期倒序
+ *
+ * # 为什么在前端分组
+ * `events` 已是 `getEntityEvents` 拉回的完整列表（含 event_type / event_date），
+ * 分组只是换个展示顺序，**不需要任何新增查询**——这与项目「零新增请求」的边界一致。
+ *
+ * # 排序规则
+ * 组间：保持后端返回的顺序（即按该类型的最新事件聚在一起，语义稳定，
+ * 不做二次排序以免与用户对"主要类型"的直觉错位）；组内：`event_date` 倒序，
+ * 日期为空的事件排在最后（空值统一兜底成空串，避免 `''` 排在最前）。
+ *
+ * # 日期解析
+ * `event_date` 形如 `YYYY-MM-DD`（可能为空）。用字符串比较即可——
+ * 该格式字典序与时间序一致，无需 `new Date()`（避免时区把日期偏移一天）。
+ */
+const groupedEvents = computed(() => {
+  const map = new Map<string, ResearchEventWithContext[]>()
+  for (const ev of events.value) {
+    const key = ev.event_type || 'other'
+    const list = map.get(key)
+    if (list) list.push(ev)
+    else map.set(key, [ev])
+  }
+  return Array.from(map.entries()).map(([type, items]) => ({
+    type,
+    label: typeLabel(type),
+    items: items.slice().sort((a, b) => (b.event_date ?? '').localeCompare(a.event_date ?? ''))
+  }))
+})
+
+/** 是否处于收缩态（弹窗已隐藏但状态保留，由右上角悬浮按钮召回） */
+const collapsed = ref(false)
+
+/** 展开（从收缩态恢复弹窗）。nextTick 等 DOM 回来后再聚焦，键盘用户不错位。 */
+async function expand() {
+  collapsed.value = false
+  await nextTick()
+}
+
+/**
+ * 打开某条事件的来源文章：收缩弹窗 + 在主区域正文区打开 + 高亮订阅与列表
+ *
+ * # 交互契约（需求：source 跳转但不关闭仪表盘）
+ * 1. 先收缩（`collapsed=true`）——弹窗只是隐藏，组件不销毁，
+ *    数据与滚动位置原样保留，用户可随时用右上角按钮召回；
+ * 2. 派发 `dashboard-jump` 事件，由 ArticleColumn 消费：
+ *    切订阅源 → 展开对应折叠分组 → 打开文章 → 滚动并高亮该条目；
+ * 3. 真正关闭仍只走关闭钮或 Esc（收缩态下 BaseModal 已出栈、
+ *    它自身的 Esc 失效，故由本组件的 keydown 监听接管，见 `onKeydown`）。
+ *
+ * # 为什么传 articleId 而不是链接
+ * `ResearchEvent` 自带 `article_id`（事件与来源文章的关联键），
+ * 直接用 id 让订阅栏能精确定位所属源、用列表能精确定位条目；
+ * 若传链接则订阅源无从得知，"高亮对应订阅"这条需求就无法满足。
+ *
+ * 用 window CustomEvent 而非直接调 store：仪表盘可能来自研究工作台/关系图等多入口，
+ * 事件解耦后各订阅方只关心自己那部分，避免仪表盘硬依赖三栏布局的实现细节
+ * （与命令面板的 `command-palette-jump` 同一思路）。
+ */
+function openArticle(ev: ResearchEventWithContext) {
+  if (!ev.article_link) return
+  collapsed.value = true
+  window.dispatchEvent(
+    new CustomEvent('dashboard-jump', { detail: { articleId: ev.article_id, articleLink: ev.article_link } })
+  )
+}
+
+/**
+ * 打开关联文章区的一条文章（同 `openArticle` 的跳转契约，只是入参形态不同）
+ *
+ * 关联文章走的是 `ArticlePreview`（含文章 id 与原文链接，但**不含 feed_id**——
+ * 后端 `list_articles_by_entity` 只回预览字段）。因此这里只派发文章 id：
+ * 由 ArticleColumn 在列表里定位该文章，订阅源则由 `selectArticle` 内部
+ * 依据文章自身的 feed_id 自动切换（见 stores/articles.ts），
+ * 避免为一次跳转在预览结构上新增字段（预览结构是后端 SQL 定死的）。
+ */
+function openArticleById(a: ArticlePreview) {
+  if (!a.link) return
+  collapsed.value = true
+  window.dispatchEvent(new CustomEvent('dashboard-jump', { detail: { articleId: a.id } }))
+}
+
 /** 情感 → 中文标签 */
 const SENTIMENT_LABELS: Record<string, string> = {
   positive: '利好',
@@ -223,6 +438,68 @@ function sentLabel(s: string): string {
 }
 function sentClass(s: string): string {
   return `sentiment-${s === 'positive' || s === 'negative' || s === 'neutral' ? s : 'neutral'}`
+}
+
+/**
+ * 财务指标键 → 中文标签
+ *
+ * `metric_key` 由 AI 抽取时自由生成（英文 snake_case，无固定枚举），为保证财务快照区
+ * 对中文用户可读，这里维护一份常见键的中文映射。命中即显示中文；未命中（模型产出
+ * 的非预期键）回退原键，避免空白或乱码。新增常见键只需在此表补充。
+ */
+const METRIC_LABELS: Record<string, string> = {
+  revenue: '营收',
+  revenue_growth: '营收增速',
+  net_revenue: '净营收',
+  sales: '销售额',
+  income: '收入',
+  gross_profit: '毛利',
+  gross_margin: '毛利率',
+  operating_profit: '营业利润',
+  operating_margin: '营业利润率',
+  net_profit: '净利润',
+  net_margin: '净利率',
+  profit: '利润',
+  eps: '每股收益',
+  roe: '净资产收益率',
+  roa: '总资产收益率',
+  roi: '投资回报率',
+  market_cap: '市值',
+  market_value: '市值',
+  total_assets: '总资产',
+  total_liabilities: '总负债',
+  total_equity: '净资产',
+  debt_ratio: '资产负债率',
+  pe: '市盈率',
+  pb: '市净率',
+  ps: '市销率',
+  pct: '市现率',
+  growth_rate: '增长率',
+  growth: '增长',
+  acquisition_price: '收购价格',
+  valuation: '估值',
+  funding: '融资额',
+  investment: '投资额',
+  cost: '成本',
+  expense: '费用',
+  rd_spend: '研发费用',
+  rd_expense: '研发费用',
+  rd_intensity: '研发费用率',
+  cash_flow: '现金流',
+  free_cash_flow: '自由现金流',
+  dividend: '股息',
+  dividend_yield: '股息率',
+  users: '用户数',
+  subscribers: '订阅用户数',
+  mau: '月活用户',
+  dau: '日活用户',
+  orders: '订单数',
+  shipments: '出货量',
+  production: '产量',
+  guidance: '业绩指引'
+}
+function metricLabel(k: string): string {
+  return METRIC_LABELS[k] ?? k
 }
 
 /**
@@ -282,6 +559,26 @@ async function load() {
   loading.value = false
 }
 
+/**
+ * 为当前实体重抽历史事件（补齐既往未识别的 AI 事件）
+ *
+ * 仅当存在"名称匹配"文章时可用：这些文章已被 `list_articles_by_entity` 零成本关联，
+ * 但尚无 AI 事件。点击后逐篇补抽，完成后重新聚合（文章关联 / 近期事件都会刷新）。
+ */
+async function handleReextract() {
+  if (reextracting.value || props.entityId == null) return
+  reextracting.value = true
+  try {
+    await researchStore.reextractEntity(props.entityId)
+    // 补抽完成后重新聚合五类数据（文章关联 / 近期事件都会刷新）
+    await load()
+  } catch (e) {
+    console.error('重新抽取历史事件失败:', e)
+  } finally {
+    reextracting.value = false
+  }
+}
+
 // 弹窗常驻挂载：打开或切换实体时重新聚合五类数据；关闭态（open=false）不触发加载。
 // 用 `open ? entityId : null` 作为依赖，确保只在"打开且有实体"时聚合，避免关闭瞬间空跑。
 watch(
@@ -291,6 +588,41 @@ watch(
   },
   { immediate: true }
 )
+
+/**
+ * 父组件真正关闭弹窗时清掉收缩态
+ *
+ * 若不复位，`collapsed` 会残留为 true，下次打开弹窗时 BaseModal 直接可见
+ * （`:class="{show: open}"` 只看 open），但悬浮按钮的 `v-if="open && collapsed"`
+ * 也会同时成立——于是弹窗和"召回按钮"一起出现，状态错乱。
+ */
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (!isOpen) collapsed.value = false
+  }
+)
+
+/**
+ * 收缩态下的 Esc = 彻底关闭仪表盘
+ *
+ * # 为什么需要自己监听
+ * 收缩态下 BaseModal 已因 `open=false` 出栈，它的 Esc 监听随之失效（`dialogStack`
+ * 里也不再登记本弹窗），用户按 Esc 不会有任何反应——但需求明确"关闭只走关闭钮或
+ * Esc"，所以这里补一个仅在「打开且已收缩」时生效的监听，把 Esc 解释为关闭。
+ *
+ * # 为什么不与 BaseModal 抢
+ * 展开态下 BaseModal 自己处理 Esc（会先走 dialogStack 判定与全局确认框让路逻辑）；
+ * 本监听在展开态直接 return，两者不会同时响应。
+ */
+function onKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Escape') return
+  if (!props.open || !collapsed.value) return
+  onClose()
+}
+
+onMounted(() => window.addEventListener('keydown', onKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 </script>
 
 <style scoped>
@@ -351,7 +683,7 @@ watch(
 
 /* 内容居中容器：整屏太宽时把文本收窄到舒适阅读宽度，但不挤占图表/事件区 */
 .dash {
-  max-width: 1080px;
+  max-width: 100%;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -367,10 +699,24 @@ watch(
 .dash-error {
   color: var(--danger);
 }
-.dash-section {
+/* 分区卡片化：每区包成浅色卡片，整体从「设置页列表」变「仪表盘」 */
+.dash-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: var(--sp-3) var(--sp-4);
   display: flex;
   flex-direction: column;
-  gap: var(--sp-15);
+  gap: var(--sp-2);
+}
+
+/* 顶部关键指标概览带：5 块指标自适应排布，窄屏自动换行 */
+
+/* 双列紧凑区：综合舆情 + 财务快照 并排；窄屏自动塌成单列 */
+.dash-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--sp-4);
 }
 .dash-h {
   margin: 0;
@@ -422,7 +768,8 @@ watch(
 .fin-k {
   font-size: var(--fs-xs);
   color: var(--text-tertiary);
-  min-width: 72px;
+  min-width: 100px;
+  flex-shrink: 0;
 }
 .fin-v {
   font-size: var(--fs-md);
@@ -441,30 +788,6 @@ watch(
 }
 
 /* 近期事件 */
-.dash-events {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-05);
-}
-.dash-event {
-  display: flex;
-  align-items: baseline;
-  gap: var(--sp-15);
-  padding: var(--sp-05) 0;
-  border-bottom: 1px dashed var(--border);
-}
-.ev-type {
-  flex-shrink: 0;
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  padding: var(--sp-025) var(--sp-2);
-  border-radius: var(--r-sm);
-  color: var(--text-secondary);
-  background: var(--border);
-}
 .type-product { color: var(--tone-fg); background: var(--entity-product); }
 .type-executive { color: var(--tone-fg); background: var(--entity-executive); }
 .type-ma { color: var(--tone-fg); background: var(--entity-ma); }
@@ -472,82 +795,28 @@ watch(
 .type-strategy { color: var(--tone-fg); background: var(--entity-strategy); }
 .type-competition { color: var(--tone-fg); background: var(--entity-competition); }
 .type-industry_signal { color: var(--tone-fg); background: var(--entity-industry_signal); }
-.ev-date {
-  flex-shrink: 0;
-  font-size: var(--fs-xs);
-  color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
-}
-.ev-fact {
-  flex: 1;
-  font-size: var(--fs-sm);
-  color: var(--text-primary);
-  line-height: 1.5;
-}
 
 /* 多源交叉验证 */
-.dash-cross {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-}
-.cross-item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: var(--sp-05) 0;
-  border-bottom: 1px dashed var(--border);
-}
-.cross-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-05);
-}
-.cross-src {
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-.cross-sent {
-  flex-shrink: 0;
-  padding: 0 var(--sp-05);
-  border-radius: var(--r-sm);
-  font-size: var(--fs-xs);
-  color: var(--tone-fg);
-}
-.cross-sent.sentiment-positive { background: var(--entity-product); }
-.cross-sent.sentiment-negative { background: var(--entity-regulatory); }
-.cross-sent.sentiment-neutral { background: var(--entity-other); }
-.cross-fact {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--text-primary);
-  line-height: 1.4;
-  word-break: break-all;
-}
 
 /* 关联文章 */
-.dash-articles {
-  margin: 0;
-  padding: 0;
-  list-style: none;
+
+/* 文章项：链接 + 标签同行，标签不挤压链接 */
+
+/* 名称匹配标签：区分「AI 已归类」与「仅文本命中」两类关联文章 */
+
+/* 重新抽取历史事件操作条 */
+.dash-reextract {
   display: flex;
-  flex-direction: column;
-  gap: var(--sp-05);
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+  padding: var(--sp-2);
+  background: var(--fill);
+  border-radius: var(--r-md);
 }
-.art-item {
-  padding: var(--sp-025) 0;
+.dash-reextract-hint {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
 }
-.art-link {
-  font-size: var(--fs-sm);
-  color: var(--primary);
-  text-decoration: none;
-  line-height: 1.4;
-  word-break: break-all;
-}
-.art-link:hover { text-decoration: underline; }
 </style>

@@ -114,6 +114,21 @@ pub async fn send(pool: &SqlitePool, title: &str, body: &str) {
     }
 }
 
+/// 发送一条价格预警通知
+///
+/// 复用 [`send`] 的全局开关 / 窗口离开守卫，保证与既有事件预警一致的行为。
+///
+/// # 参数
+/// * `pool` - 数据库连接池（读通知开关）
+/// * `symbol` - 证券代码
+/// * `price` - 当前价
+/// * `op` - 比较运算符（>`/`<`/`>=`/`<=`）
+/// * `target` - 触发阈值
+pub async fn notify_price_alert(pool: &SqlitePool, symbol: &str, price: f64, op: &str, target: f64) {
+    let body = format!("{} 现价 {:.2} 已{} {:.2}", symbol, price, op, target);
+    send(pool, "ReadFlow · 价格预警", &body).await;
+}
+
 /// 发送一条自动化任务的执行结果通知
 ///
 /// 把"成功 / 失败"映射成标题措辞，正文直接用执行器给出的人类可读描述
@@ -163,6 +178,91 @@ static LAST_ALERT_AT: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new(
 /// 同一实体的限频窗口（30 分钟）
 const ALERT_COOLDOWN: Duration = Duration::from_secs(30 * 60);
 
+/// 情感 → 中文标签（用作通知文案的事实前缀，传达利好/利空/中性）
+fn sentiment_tag(s: &Option<String>) -> &'static str {
+    match s.as_deref() {
+        Some("positive") => "利好",
+        Some("negative") => "利空",
+        Some("neutral") => "中性",
+        _ => "",
+    }
+}
+
+/// 把「实体名 → 事件列表」聚合并发送为一条系统通知
+///
+/// [`send_event_alert`] 与 [`send_rule_alerts`] 的公共下发逻辑：负责进程内限频
+/// （跳过窗口内实体）→ 拼装文案（每条事实带情感标签与来源）→ 发送。
+/// `rate_map` 为各通道独立的限频表（两通道各持一份 static，互不干扰）。
+async fn dispatch(
+    app: &AppHandle,
+    by_entity: HashMap<String, Vec<&ExtractedEvent>>,
+    title_prefix: &str,
+    rate_map: &Mutex<HashMap<String, Instant>>,
+) {
+    let now = Instant::now();
+    let mut guard = rate_map.lock().await;
+    let mut to_send: HashMap<String, Vec<&ExtractedEvent>> = HashMap::new();
+    for (name, evs) in by_entity {
+        // 限频窗口内跳过，避免重复刷屏
+        if let Some(last) = guard.get(&name) {
+            if now.saturating_duration_since(*last) < ALERT_COOLDOWN {
+                continue;
+            }
+        }
+        to_send.insert(name, evs);
+    }
+    if to_send.is_empty() {
+        return;
+    }
+    // 刷新限频时间戳（仅本次实际推送的实体）
+    for name in to_send.keys() {
+        guard.insert(name.clone(), now);
+    }
+    drop(guard);
+
+    // 拼装正文：每条事件 = 情感标签 + 事实 +（来源）
+    let mut bodies: Vec<String> = Vec::new();
+    for (name, evs) in &to_send {
+        let mut lines: Vec<String> = Vec::new();
+        for e in evs {
+            let fact = e.fact.trim();
+            if fact.is_empty() {
+                continue;
+            }
+            let mut line = String::new();
+            let tag = sentiment_tag(&e.sentiment);
+            if !tag.is_empty() {
+                line.push_str(&format!("[{}] ", tag));
+            }
+            line.push_str(fact);
+            if let Some(title) = &e.article_title {
+                if !title.is_empty() {
+                    line.push_str(&format!("（来源：{}）", title));
+                }
+            }
+            lines.push(line);
+        }
+        if lines.is_empty() {
+            continue;
+        }
+        bodies.push(format!("【{}】{}：{}", name, title_prefix, lines.join("；")));
+    }
+    if bodies.is_empty() {
+        return;
+    }
+
+    let title = if bodies.len() == 1 {
+        format!("ReadFlow · 事件预警（{}）", title_prefix)
+    } else {
+        format!("ReadFlow · 事件预警（{} · {} 个实体）", title_prefix, bodies.len())
+    };
+    let body = bodies.join("\n");
+
+    if let Err(e) = app.notification().builder().title(&title).body(&body).show() {
+        eprintln!("发送事件预警通知失败（不影响主流程）: {}", e);
+    }
+}
+
 /// 抽取发现重大事件时主动推桌面通知（P0-D 事件预警）
 ///
 /// 与 [`send`] 共用三重门（句柄已注入 + 窗口离开 + 系统通知总开关），
@@ -175,12 +275,6 @@ const ALERT_COOLDOWN: Duration = Duration::from_secs(30 * 60);
 /// * `events` - 本批抽取出的全部事件（内部按强情感门槛筛选）
 pub async fn send_event_alert(pool: &SqlitePool, events: &[ExtractedEvent]) {
     if events.is_empty() {
-        return;
-    }
-    // 仅保留强情感事件（P0-D 门槛）：`extract_batch` 已回传全部事件，
-    // 这里按情感维度二道筛，避免把中性或模型拿不准的事件当成"重大事件"推送
-    let sig: Vec<&ExtractedEvent> = events.iter().filter(|e| is_significant(e)).collect();
-    if sig.is_empty() {
         return;
     }
     // 启动早期句柄尚未注入，任务不可能已运行，直接返回
@@ -197,65 +291,24 @@ pub async fn send_event_alert(pool: &SqlitePool, events: &[ExtractedEvent]) {
         return;
     }
 
-    // 按实体聚合：同一实体多条事件合并到一条通知，减少打扰；
-    // 同时过滤处于限频窗口内的实体（避免重复刷屏）
-    let rate_map = LAST_ALERT_AT.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut guard = rate_map.lock().await;
-    let now = Instant::now();
-
-    let mut by_entity: HashMap<&str, Vec<&ExtractedEvent>> = HashMap::new();
+    // 二道筛：只保留强情感事件（P0-D 门槛），其余不推送
+    let sig: Vec<&ExtractedEvent> = events.iter().filter(|e| is_significant(e)).collect();
+    if sig.is_empty() {
+        return;
+    }
+    // 按实体聚合（限频与拼装统一下沉到 dispatch）
+    let mut by_entity: HashMap<String, Vec<&ExtractedEvent>> = HashMap::new();
     for e in &sig {
-        let name = e.canonical_name.trim();
-        if let Some(last) = guard.get(name) {
-            if now.saturating_duration_since(*last) < ALERT_COOLDOWN {
-                continue; // 限频窗口内，跳过本实体
-            }
-        }
-        by_entity.entry(name).or_default().push(e);
+        let name = e.canonical_name.trim().to_string();
+        by_entity.entry(name).or_default().push(*e);
     }
-    if by_entity.is_empty() {
-        return;
-    }
-
-    // 刷新限频时间戳（只更新本次实际推送的实体）
-    for name in by_entity.keys() {
-        guard.insert(name.to_string(), now);
-    }
-    drop(guard);
-
-    // 组装通知正文：每条实体「【实体名】发生新事件：事实1；事实2」
-    let mut bodies: Vec<String> = Vec::new();
-    for (name, evs) in &by_entity {
-        let facts: Vec<&str> = evs
-            .iter()
-            .map(|e| e.fact.trim())
-            .filter(|s| !s.is_empty())
-            .collect();
-        if facts.is_empty() {
-            continue;
-        }
-        bodies.push(format!("【{}】发生新事件：{}", name, facts.join("；")));
-    }
-    if bodies.is_empty() {
-        return;
-    }
-
-    let title = if bodies.len() == 1 {
-        "ReadFlow · 事件预警".to_string()
-    } else {
-        format!("ReadFlow · 事件预警（{} 个实体）", bodies.len())
-    };
-    let body = bodies.join("\n");
-
-    if let Err(e) = app
-        .notification()
-        .builder()
-        .title(&title)
-        .body(&body)
-        .show()
-    {
-        eprintln!("发送事件预警通知失败（不影响主流程）: {}", e);
-    }
+    dispatch(
+        app,
+        by_entity,
+        "发生新事件",
+        LAST_ALERT_AT.get_or_init(|| Mutex::new(HashMap::new())),
+    )
+    .await;
 }
 
 /// 实体告警规则（解析自 `entities.alert_rules` 列的 JSON）
@@ -388,61 +441,18 @@ pub async fn send_rule_alerts(pool: &SqlitePool, events: &[ExtractedEvent]) {
     if matched.is_empty() {
         return;
     }
-
-    // 按实体聚合 + 独立限频（key 为实体名，与 P0-D 的强情感预警限频互不干扰）
-    let rate_map = LAST_RULE_ALERT_AT.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut guard = rate_map.lock().await;
-    let now = Instant::now();
-
+    // 按实体聚合（限频与拼装统一下沉到 dispatch）
     let mut by_entity: HashMap<String, Vec<&ExtractedEvent>> = HashMap::new();
     for (name, e) in &matched {
-        if let Some(last) = guard.get(name) {
-            if now.saturating_duration_since(*last) < ALERT_COOLDOWN {
-                continue;
-            }
-        }
         by_entity.entry(name.clone()).or_default().push(*e);
     }
-    if by_entity.is_empty() {
-        return;
-    }
-    for name in by_entity.keys() {
-        guard.insert(name.clone(), now);
-    }
-    drop(guard);
-
-    let mut bodies: Vec<String> = Vec::new();
-    for (name, evs) in &by_entity {
-        let facts: Vec<&str> = evs
-            .iter()
-            .map(|e| e.fact.trim())
-            .filter(|s| !s.is_empty())
-            .collect();
-        if facts.is_empty() {
-            continue;
-        }
-        bodies.push(format!("【{}】触发你的告警规则：{}", name, facts.join("；")));
-    }
-    if bodies.is_empty() {
-        return;
-    }
-
-    let title = if bodies.len() == 1 {
-        "ReadFlow · 实体告警".to_string()
-    } else {
-        format!("ReadFlow · 实体告警（{} 个实体）", bodies.len())
-    };
-    let body = bodies.join("\n");
-
-    if let Err(e) = app
-        .notification()
-        .builder()
-        .title(&title)
-        .body(&body)
-        .show()
-    {
-        eprintln!("发送实体告警通知失败（不影响主流程）: {}", e);
-    }
+    dispatch(
+        app,
+        by_entity,
+        "触发你的告警规则",
+        LAST_RULE_ALERT_AT.get_or_init(|| Mutex::new(HashMap::new())),
+    )
+    .await;
 }
 
 #[cfg(test)]
@@ -528,6 +538,8 @@ mod tests {
             sentiment: sentiment.map(|s| s.to_string()),
             sentiment_confidence: Some(0.9),
             financial_metrics: None,
+            article_title: None,
+            article_link: None,
         }
     }
 

@@ -70,6 +70,25 @@
   /* 情感徽标的「中性」色：此前 `.eg-sentiment-neutral` 等三处引用了未定义的
      --entity-other，整条 background 声明被静默作废（var 未定义规则），补上正式定义。 */
   --entity-other: var(--tone-slate);
+  /* finance 预设领域的事件类型色（与后端 `research::extract` 的 PRESET_DOMAINS.finance 对应）。
+     此前研究面板只映射了 business 七类，finance 四类被「去投资化」无专属色，落到默认样式。
+     这里补上，保证同一类型在类型徽章 / 时间线标记 / 关系图节点上同色（同 business 七类约定）。 */
+  --entity-earnings: var(--tone-sky);
+  --entity-rating: var(--tone-violet);
+  --entity-ipo: var(--tone-green);
+  --entity-dividend: var(--tone-amber);
+  /* 新增 finance 事件类型色（与后端 PRESET_DOMAINS.finance 扩展同步；复用既有 --tone-* 调色板，不新增色相） */
+  --entity-profit_warning: var(--tone-amber);
+  --entity-buyback: var(--tone-indigo);
+  --entity-reduce: var(--tone-red);
+  --entity-restructuring: var(--tone-slate);
+  --entity-financing: var(--tone-sky);
+  --entity-unlock: var(--tone-indigo);
+  --entity-violation: var(--tone-red);
+  --entity-margin: var(--tone-amber);
+  --entity-northbound: var(--tone-green);
+  --entity-dragon_tiger: var(--tone-violet);
+
 
   /* ── 危险色（语义色，不随强调色预设变化）──
      此前项目里从未定义过 --danger / --danger-fg，各组件只能写
@@ -631,6 +650,26 @@ body {
   display: none;
 }
 
+/* 研究事件类型徽标（finance 预设领域）全局类
+   时间线 / 仪表盘 / 关系图节点统一通过 `type-${event_type}` 引用这些类。
+   business 七类在其组件 scoped 内定义，finance 四类此前缺失、落到默认样式（去投资化）。
+   这里补齐，token 见 :root 的 --entity-earnings/rating/ipo/dividend；文字色恒定白（与 business 类一致）。 */
+.type-earnings { color: var(--tone-fg); background: var(--entity-earnings); }
+.type-rating { color: var(--tone-fg); background: var(--entity-rating); }
+.type-ipo { color: var(--tone-fg); background: var(--entity-ipo); }
+.type-dividend { color: var(--tone-fg); background: var(--entity-dividend); }
+/* 新增 finance 事件类型徽标（与后端 PRESET_DOMAINS.finance 扩展同步） */
+.type-profit_warning { color: var(--tone-fg); background: var(--entity-profit_warning); }
+.type-buyback { color: var(--tone-fg); background: var(--entity-buyback); }
+.type-reduce { color: var(--tone-fg); background: var(--entity-reduce); }
+.type-restructuring { color: var(--tone-fg); background: var(--entity-restructuring); }
+.type-financing { color: var(--tone-fg); background: var(--entity-financing); }
+.type-unlock { color: var(--tone-fg); background: var(--entity-unlock); }
+.type-violation { color: var(--tone-fg); background: var(--entity-violation); }
+.type-margin { color: var(--tone-fg); background: var(--entity-margin); }
+.type-northbound { color: var(--tone-fg); background: var(--entity-northbound); }
+.type-dragon_tiger { color: var(--tone-fg); background: var(--entity-dragon_tiger); }
+
 /* Scrollbar（全应用统一风格）
    以订阅列表 / 文章列表长期使用的"细条"形态为准：4px 宽、--border 浅灰、
    全圆角胶囊，安静地贴在面板右缘，不与内容抢注意力。
@@ -1172,4 +1211,381 @@ select:focus-visible {
 
 .panel-overlay.show {
   display: block;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   科技风仪表盘组件类族（.tech-*）
+   ═══════════════════════════════════════════════════════════════════════
+   供实体仪表盘（EntityDashboardModal）与研究报告 HTML 共用的设计语汇：
+   分组序号 chip / 计数徽标 / 左侧强调竖条卡片 / 竖向时间线 / 双列网格。
+
+   **配色纪律**：本组不定义任何色值，全部引用既有令牌
+   （--primary / --accent / --glass-* / --cap-* / --tone-* / --entity-*）。
+   因此亮暗主题与 9 套强调色预设自动生效——换主题即换配色，无需改这里。
+   新增令牌时必须用 var(--x) 引用已定义变量，否则整条声明会静默作废
+   （CSS 规范：未定义的自定义属性让声明失效，而非回退到无样式）。 */
+:root {
+  /* 强调色描边：从 --primary 派生，亮暗各自动适配。
+     用于卡片发丝描边与序号 chip 边框，是"发光轮廓"语汇的唯一来源。 */
+  --tech-line: color-mix(in srgb, var(--primary) 26%, transparent);
+  --tech-line-strong: color-mix(in srgb, var(--primary) 46%, transparent);
+  /* 卡片悬浮时的主色光晕：极低透明度，只在 hover 时显形 */
+  --tech-glow: color-mix(in srgb, var(--primary) 12%, transparent);
+  /* 左侧强调竖条：实心主色，不透明度略低于 1 以免过于抢眼 */
+  --tech-rail: color-mix(in srgb, var(--primary) 72%, transparent);
+}
+
+/* ── 分组头：序号 chip + 类型名 + 右侧计数徽标 ────────────────────────
+   布局用 flex + gap；计数徽标 margin-left:auto 推到行尾。
+   ⚠️ flex 行内基准宽之和若超出容器，末位元素会被压成最小内容宽度
+   （文字折成竖排或被裁）。故窄容器下靠 .tech-group-head 的
+   flex-wrap + 徽标换行兜底，见下方 @media。 */
+.tech-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--tech-line);
+}
+
+/* 分组序号：等宽字体 + 主色描边，是参考页「大号数字做视觉锚点」语汇 */
+.tech-index {
+  font-family: var(--ui-font);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--primary);
+  border: 1px solid var(--tech-line-strong);
+  border-radius: var(--r-sm);
+  padding: var(--sp-025) var(--sp-2);
+  flex-shrink: 0;
+}
+
+/* 分组标题 */
+.tech-group-title {
+  font-size: var(--fs-lg);
+  font-weight: 650;
+  color: var(--text-primary);
+  min-width: 0;
+}
+
+/* 计数徽标：贴行尾。flex-shrink:0 + nowrap 防止被压扁（末位元素挤压坑） */
+.tech-count {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  background: var(--fill);
+  border: 1px solid var(--tech-line);
+  padding: var(--sp-025) var(--sp-3);
+  border-radius: var(--r-pill);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* ── 情报卡片：左竖条 + hover 上浮 ────────────────────────────────────
+   position:relative 使 ::before 的绝对定位以卡片为基准。
+   overflow:hidden 裁掉竖条溢出（竖条不设圆角，靠卡片圆角裁切）。 */
+.tech-card {
+  position: relative;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--tech-line);
+  border-radius: var(--r-lg);
+  padding: var(--sp-4) var(--sp-5);
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  gap: var(--sp-3);
+  transition: transform var(--dur, 0.22s) ease,
+              border-color var(--dur, 0.22s) ease,
+              box-shadow var(--dur, 0.22s) ease;
+}
+
+/* 左侧 3px 强调竖条：卡片主色的身份标识 */
+.tech-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--tech-rail);
+}
+
+.tech-card:hover {
+  border-color: var(--tech-line-strong);
+  box-shadow: var(--shadow-hover), 0 0 26px var(--tech-glow);
+  transform: translateY(-2px);
+}
+
+/* 卡片序号：与分组序号同族，但用主色实心以形成层级差 */
+.tech-card-num {
+  font-family: var(--ui-font);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--primary);
+  padding-top: 2px;
+}
+
+/* 卡片标题：允许换行，min-width:0 防 grid 子项溢出 */
+.tech-card-title {
+  font-size: var(--fs-base);
+  font-weight: 650;
+  line-height: 1.45;
+  color: var(--text-primary);
+  margin-bottom: var(--sp-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 元信息行：时间 / 来源 / 类型徽标。flex-wrap 换行，末位不压缩 */
+.tech-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-2);
+}
+
+/* 等宽字体元信息（时间/来源名）：科技风细节 */
+.tech-meta-time,
+.tech-meta-src {
+  font-family: var(--ui-font);
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 摘要正文 */
+.tech-summary {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  line-height: 1.65;
+  margin-bottom: var(--sp-2);
+}
+
+/* source 跳转触发器：等宽小字 + 主色，hover 时箭头右上位移 */
+.tech-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+  color: var(--primary);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: color var(--dur, 0.22s) ease;
+}
+
+.tech-link:hover {
+  color: var(--primary-hover);
+}
+
+.tech-link svg {
+  width: 12px;
+  height: 12px;
+  transition: transform 0.2s ease;
+}
+
+.tech-link:hover svg {
+  transform: translate(2px, -2px);
+}
+
+/* 不可跳转态：article_link 为 null（来源文章已被清理策略删除） */
+.tech-link[disabled] {
+  color: var(--text-tertiary);
+  cursor: not-allowed;
+}
+
+.tech-link[disabled]:hover svg {
+  transform: none;
+}
+
+/* ── 竖向时间线：发光节点 + 连接线 ────────────────────────────────────
+   每条 .tech-tl-item 左侧留出节点槽（padding-left），
+   ::before 画节点圆点，::after 画向下连接线（末项用 :last-child 去掉）。 */
+.tech-timeline {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.tech-tl-item {
+  position: relative;
+  padding-left: var(--sp-6);
+}
+
+.tech-tl-item::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--primary);
+  box-shadow: 0 0 8px var(--tech-glow);
+}
+
+.tech-tl-item::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 16px;
+  bottom: calc(var(--sp-3) * -1);
+  width: 1px;
+  background: var(--tech-line);
+}
+
+.tech-tl-item:last-child::after {
+  display: none;
+}
+
+/* ── 双列情报网格：关联文章 / 来源验证 ────────────────────────────────
+   auto-fit + minmax(220px,1fr) 自适应；容器变窄时自动降为单列。
+   ⚠️ grid 子项默认 min-width:auto，长标题会撑破轨道 —— 靠 .tech-item 的
+   min-width:0 + overflow-wrap 断开。 */
+.tech-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--sp-3);
+}
+
+.tech-item {
+  min-width: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--tech-line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  transition: border-color var(--dur, 0.22s) ease,
+              transform var(--dur, 0.22s) ease;
+}
+
+.tech-item:hover {
+  border-color: var(--tech-line-strong);
+  transform: translateY(-1px);
+}
+
+/* ── Hero 头：实体名大标题 + 类型徽标 ────────────────────────────────── */
+.tech-hero {
+  border-bottom: 1px solid var(--tech-line);
+  padding-bottom: var(--sp-4);
+  margin-bottom: var(--sp-4);
+}
+
+.tech-hero-title {
+  font-size: var(--fs-2xl);
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: var(--sp-2);
+  overflow-wrap: anywhere;
+}
+
+.tech-hero-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+/* ── KPI 四宫格 ────────────────────────────────────────────────────────
+   repeat(auto-fit, minmax(120px,1fr))：容器宽时 4 列，窄时自动降列。
+   minmax 下限 120px 保证标签不断字。 */
+.tech-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--sp-3);
+}
+
+.tech-kpi {
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--tech-line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+}
+
+.tech-kpi-label {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  margin-bottom: var(--sp-1);
+}
+
+.tech-kpi-value {
+  font-size: var(--fs-xl);
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 右上角收缩悬浮按钮 ────────────────────────────────────────────────
+   仪表盘点 source 收缩后，用它在右上角把弹窗恢复。
+   · position:fixed + Teleport 到 body，避开弹窗面板的 overflow 裁剪
+     （面板内 overflow:hidden 会把 fixed 定位的参照系改成自身——这是坑点）
+   · 靠右上的 inset 而非固定像素，配合不同窗口宽度。
+   · z-index 高于遮罩(250)/弹窗层，确保始终可见可点。 */
+.tech-collapse-fab {
+  position: fixed;
+  top: calc(var(--tb-h) + var(--sp-3));
+  right: var(--sp-4);
+  z-index: 400;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--glass-strong);
+  backdrop-filter: blur(var(--blur)) saturate(1.8);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.8);
+  border: 1px solid var(--tech-line-strong);
+  border-radius: var(--r-pill);
+  box-shadow: var(--shadow-pop);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  animation: tech-fab-in 0.22s cubic-bezier(0.34, 1.26, 0.64, 1);
+  transition: border-color var(--dur, 0.22s) ease,
+              box-shadow var(--dur, 0.22s) ease;
+}
+
+.tech-collapse-fab:hover {
+  border-color: var(--primary);
+  box-shadow: var(--shadow-pop), 0 0 20px var(--tech-glow);
+}
+
+.tech-collapse-fab svg {
+  width: 14px;
+  height: 14px;
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+/* 悬浮按钮上的计数徽标：绝对定位挂右上，不占布局宽度 */
+.tech-fab-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-pill);
+  background: var(--primary);
+  color: var(--primary-fg);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 进场：自上向下滑入 + 淡入（弹回曲线给"弹出"手感） */
+@keyframes tech-fab-in {
+  from { opacity: 0; transform: translateY(-10px) scale(0.96); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ── 窄容器兜底：分组头换行 + 卡片降为单列 ─────────────────────────────
+   仪表盘是 3xl(960px) 弹窗，正常不会触发；但窗口极窄或未来改小尺寸时，
+   这里保证序号/标题/计数不互相挤压（flex 行溢出坑的兜底）。 */
+@media (max-width: 720px) {
+  .tech-group-head { flex-wrap: wrap; }
+  .tech-count { margin-left: 0; }
+  .tech-card { grid-template-columns: 1fr; }
+  .tech-card-num { font-size: var(--fs-xs); }
 }

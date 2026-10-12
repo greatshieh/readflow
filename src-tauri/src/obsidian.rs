@@ -647,3 +647,66 @@ fn clean_blank_lines(text: &mut String) {
     }
     *text = result;
 }
+
+#[cfg(test)]
+mod tests {
+    //! 纯函数单元测试：覆盖零依赖的 Markdown 转换、文件名清理、YAML 字面量与空行压缩。
+    //! 评审遗留项「obsidian.rs 零单测」的闭环——此前该模块无任何 #[test]。
+
+    use super::*;
+
+    #[test]
+    fn html_to_markdown_handles_headings_and_bold() {
+        let md = html_to_markdown("<h1>标题</h1><p>正文 <strong>加粗</strong></p>");
+        assert!(md.contains("# 标题"), "h1 应转为 # 标题，实际：{md}");
+        assert!(md.contains("**加粗**"), "strong 应转为 **加粗**，实际：{md}");
+    }
+
+    #[test]
+    fn html_to_markdown_decodes_entities() {
+        let md = html_to_markdown("<p>a &amp; b &lt; c &gt; d</p>");
+        assert!(md.contains("a & b < c > d"), "命名实体应被解码，实际：{md}");
+    }
+
+    #[test]
+    fn html_to_markdown_renders_links() {
+        let md = html_to_markdown("<a href=\"http://x.com\">链接</a>");
+        assert!(md.contains("[链接](http://x.com)"), "a 应转为 [文本](href)，实际：{md}");
+    }
+
+    #[test]
+    fn html_to_markdown_empty_input_is_empty() {
+        assert_eq!(html_to_markdown("   "), "");
+        assert_eq!(html_to_markdown(""), "");
+    }
+
+    #[test]
+    fn sanitize_filename_replaces_illegal_chars() {
+        assert_eq!(sanitize_filename("a/b:c"), "a_b_c");
+        assert_eq!(sanitize_filename("a*b?"), "a_b_");
+        assert_eq!(sanitize_filename(""), "untitled");
+    }
+
+    #[test]
+    fn sanitize_filename_truncates_long_names() {
+        let long = "x".repeat(200);
+        let out = sanitize_filename(&long);
+        assert!(out.chars().count() <= 120, "应截断到 120 字符，实际 {}", out.chars().count());
+        assert!(!out.is_empty());
+    }
+
+    #[test]
+    fn yaml_str_quotes_and_escapes() {
+        assert_eq!(yaml_str("a: b"), "\"a: b\"");
+        assert_eq!(yaml_str("he\"llo"), "\"he'llo\"");
+        assert_eq!(yaml_str("a\\b"), "\"a\\\\b\"");
+    }
+
+    #[test]
+    fn clean_blank_lines_compresses_runs() {
+        let mut t = "a\n\n\n\n\nb".to_string();
+        clean_blank_lines(&mut t);
+        // 连续空行压成一行；末行后保留换行（调用方 html_to_markdown 会整体 trim）
+        assert_eq!(t, "a\n\nb\n");
+    }
+}

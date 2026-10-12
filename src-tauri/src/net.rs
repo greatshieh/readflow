@@ -14,7 +14,8 @@
 //! # 分工
 //! 按超时档位各建一个客户端，互不共享：
 //! - [`feed_client`]：抓订阅源，宽容（30s），异常源不该长期占用刷新任务；
-//! - [`probe_client`]：实例连通性探测，最严格（6s），只需要知道对方是否活着。
+//! - [`probe_client`]：实例连通性探测，最严格（6s），只需要知道对方是否活着；
+//! - [`market_client`]：行情/财务数据源（Tushare / 新浪等），中等（15s），单笔请求失败不应卡住整轮同步。
 
 use reqwest::Client;
 use std::sync::OnceLock;
@@ -45,6 +46,15 @@ static FEED_CLIENT: OnceLock<Client> = OnceLock::new();
 
 /// 实例探测用的共享客户端
 static PROBE_CLIENT: OnceLock<Client> = OnceLock::new();
+
+/// 行情/财务数据源用的共享客户端
+static MARKET_CLIENT: OnceLock<Client> = OnceLock::new();
+
+/// 行情数据源的单次超时
+///
+/// 取 15 秒：Tushare / 新浪单次 HTTP 调用通常在 1~3 秒内返回，超过 15 秒基本可判定
+/// 该数据源当时不可达，继续等只会拖住「同步某实体行情」这类交互式操作。
+const MARKET_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// 构建带超时的客户端
 ///
@@ -80,4 +90,12 @@ pub fn feed_client() -> &'static Client {
 /// 进程内唯一的客户端引用；自身即带 [`PROBE_TIMEOUT`] 超时
 pub fn probe_client() -> &'static Client {
     PROBE_CLIENT.get_or_init(|| build(PROBE_TIMEOUT))
+}
+
+/// 取行情/财务数据源用的共享客户端（首次调用时构建）
+///
+/// # 返回值
+/// 进程内唯一的客户端引用；自身即带 [`MARKET_TIMEOUT`] 超时
+pub fn market_client() -> &'static Client {
+    MARKET_CLIENT.get_or_init(|| build(MARKET_TIMEOUT))
 }

@@ -22,6 +22,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { readThemeSnapshot } from '@/utils/appearance'
 import type {
   ResearchEvent,
   ResearchEventWithContext,
@@ -274,7 +275,12 @@ export const useResearchStore = defineStore('research', () => {
     const res = await invoke<ReportGenResult>('research_report_generate', {
       kind,
       days,
-      channel
+      channel,
+      // 导出瞬间的界面主题（亮/暗 + 强调色主色）。报告是离线单文件 HTML，
+      // 读不到运行时的 data-theme/data-accent，故必须由前端把快照传下去，
+      // 否则只能靠系统配色猜测，与用户看到的界面不一致。取不到时传 null，
+      // 后端回退 prefers-color-scheme（定时任务等无前端上下文的路径同样走回退）。
+      theme: readThemeSnapshot()
     })
     await loadReports()
     if (res.file_name) {
@@ -456,6 +462,20 @@ export const useResearchStore = defineStore('research', () => {
   }
 
   /**
+   * 为单个实体重抽历史事件（补齐既往未识别的 AI 事件）
+   *
+   * 与 `getEntityArticles` 的零成本名称匹配互补：名称匹配只解决「看得到文章」，
+   * 本函数进一步对这些文章跑 AI 抽取，把漏掉的历史事件补进时间线。
+   *
+   * @param entityId - 实体 ID
+   * @returns 结果描述（重抽篇数 + 新增事件数）
+   * @throws 后端失败时原样抛出
+   */
+  async function reextractEntity(entityId: number): Promise<string> {
+    return invoke<string>('research_reextract_entity', { entityId })
+  }
+
+  /**
    * 获取指定实体的近期事件（仪表盘「近期事件」区用）
    *
    * 复用 `research_events_timeline` 命令的实体筛选能力，但只取数、不写入全局
@@ -515,6 +535,7 @@ export const useResearchStore = defineStore('research', () => {
     getEntitySentiment,
     getCrossReference,
     getEntityArticles,
+    reextractEntity,
     getEntityEvents
   }
 })

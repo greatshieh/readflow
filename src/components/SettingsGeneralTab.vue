@@ -72,6 +72,27 @@
       </p>
     </div>
 
+    <div class="divider"></div>
+
+    <!-- 金融数据源：新浪免 token 默认（实时快照/价格预警）；Tushare / 东财按设置凭据启用 -->
+    <div class="form-group">
+      <label class="form-label">金融数据源</label>
+      <p class="form-hint">
+        新浪实时行情与价格预警<strong>开箱即用、无需任何配置</strong>；若需历史走势、财务快照、财报日历，
+        填入下列任一凭据（仅存本机，不上传）。留空时对应区块在行情面板显示占位提示。
+      </p>
+      <div class="ds-fields">
+        <div class="ds-field">
+          <label class="ds-label">Tushare Token</label>
+          <input class="form-input" type="password" v-model="tushareToken" placeholder="粘贴 Tushare token" />
+        </div>
+        <div class="ds-field">
+          <label class="ds-label">东财 API Key</label>
+          <input class="form-input" type="password" v-model="emApiKey" placeholder="粘贴东方财富 apikey" />
+        </div>
+      </div>
+    </div>
+
     <!-- 刷新频率：写入 settings.refresh_interval_minutes，调度器在下次启动时读取生效 -->
     <div class="form-group">
       <label class="form-label">刷新频率</label>
@@ -369,6 +390,9 @@ const accentPresets = ACCENT_PRESETS
 const accent = ref(accentPresets[0].key)
 /** RSSHub 实例地址（添加订阅时路由自动拼接此前缀） */
 const rsshubUrl = ref('')
+/** 金融数据源凭据（仅存本机；新浪免 token 默认，Tushare/东财可选配置） */
+const tushareToken = ref('')
+const emApiKey = ref('')
 /** 文章保留策略：保留天数（字符串数字，0 = 永久保留）与是否保留未读 */
 const retentionDays = ref('30')
 const keepUnread = ref(true)
@@ -535,6 +559,9 @@ watch(
     void loadFonts()
     // RSSHub 实例地址（缺省官方实例）
     rsshubUrl.value = settingsStore.getSetting('rsshub_base_url') || 'https://rsshub.app'
+    // 金融数据源凭据：Tushare / 东财（新浪免 token，无需配置；留空即未启用对应深度数据）
+    tushareToken.value = settingsStore.getSetting('tushare_token') || ''
+    emApiKey.value = settingsStore.getSetting('emapi_key') || ''
     // 文章保留策略：保留天数（缺省 30 天）与保留未读开关（缺省开启）
     retentionDays.value = settingsStore.getSetting('article_retention_days') || '30'
     keepUnread.value = settingsStore.getSetting('retention_keep_unread') !== '0'
@@ -626,6 +653,8 @@ async function saveGeneral() {
       settingsStore.setSetting('content_font', contentFont.value),
       // RSSHub 实例地址：去尾部斜杠归一化，避免拼路由时出现双斜杠
       settingsStore.setSetting('rsshub_base_url', rsshubUrl.value.trim().replace(/\/+$/, '')),
+      settingsStore.setSetting('tushare_token', tushareToken.value.trim()),
+      settingsStore.setSetting('emapi_key', emApiKey.value.trim()),
       settingsStore.setSetting('article_retention_days', retentionDays.value),
       settingsStore.setSetting('retention_keep_unread', keepUnread.value ? '1' : '0'),
       settingsStore.setSetting('notify_enabled', notifyEnabled.value ? '1' : '0'),
@@ -715,6 +744,11 @@ defineExpose({ save: saveGeneral })
   box-shadow: var(--ring-inset);
 }
 .accent-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 金融数据源：Tushare / 东财 凭据输入区（仅在设置页出现，scoped 即可） */
+.ds-fields { display: flex; flex-direction: column; gap: var(--sp-2); margin-top: var(--sp-2); }
+.ds-field { display: flex; flex-direction: column; gap: var(--sp-1); }
+.ds-label { font-size: var(--fs-sm); color: var(--text-secondary); }
 
 /* 事件类型分类：预设领域多选 chips（无默认，可多选取并集） */
 .domain-chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); }

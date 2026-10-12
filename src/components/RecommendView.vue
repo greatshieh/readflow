@@ -209,7 +209,7 @@ onMounted(async () => {
   flex-direction: column;
   height: 100%;
   overflow: hidden;
-  background: var(--bg, #fff);
+  background: var(--surface, #fff);
 }
 .rv-head {
   display: flex;
@@ -222,17 +222,17 @@ onMounted(async () => {
   margin: 0;
   font-size: 18px;
   font-weight: 700;
-  color: var(--text, #111);
+  color: var(--text-primary, #111);
 }
 .rv-sub {
   margin: 4px 0 0;
   font-size: 12px;
-  color: var(--text-dim, #888);
+  color: var(--text-tertiary, #888);
 }
 .rv-refresh {
   border: 1px solid var(--border, #ddd);
   background: var(--surface, #f6f6f6);
-  color: var(--text, #111);
+  color: var(--text-primary, #111);
   border-radius: 8px;
   padding: 6px 14px;
   font-size: 13px;
@@ -249,12 +249,12 @@ onMounted(async () => {
   justify-content: center;
   padding: 40px;
   text-align: center;
-  color: var(--text-dim, #888);
+  color: var(--text-tertiary, #888);
   font-size: 14px;
   line-height: 1.7;
 }
 .rv-error {
-  color: #d33;
+  color: var(--danger);
 }
 .rv-groups {
   flex: 1;
@@ -284,19 +284,19 @@ onMounted(async () => {
 .rv-entity {
   font-weight: 700;
   font-size: 15px;
-  color: var(--text, #111);
+  color: var(--text-primary, #111);
 }
 .rv-type {
   font-size: 11px;
-  color: var(--accent, #3b82f6);
-  border: 1px solid var(--accent, #3b82f6);
+  color: var(--primary, #3b82f6);
+  border: 1px solid var(--primary, #3b82f6);
   border-radius: 999px;
   padding: 1px 8px;
 }
 .rv-count {
   margin-left: auto;
   font-size: 12px;
-  color: var(--text-dim, #999);
+  color: var(--text-tertiary, #999);
 }
 .rv-cards {
   list-style: none;
@@ -310,7 +310,7 @@ onMounted(async () => {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  background: var(--bg, #fff);
+  background: var(--surface, #fff);
   border: 1px solid var(--border, #eee);
   border-radius: 10px;
   padding: 10px 12px;
@@ -323,12 +323,12 @@ onMounted(async () => {
   display: block;
   font-size: 14px;
   font-weight: 600;
-  color: var(--text, #111);
+  color: var(--text-primary, #111);
   text-decoration: none;
   line-height: 1.5;
 }
 .rv-card-title:hover {
-  color: var(--accent, #3b82f6);
+  color: var(--primary, #3b82f6);
 }
 .rv-card-meta {
   display: flex;
@@ -337,21 +337,21 @@ onMounted(async () => {
   gap: 6px;
   margin-top: 6px;
   font-size: 12px;
-  color: var(--text-dim, #999);
+  color: var(--text-tertiary, #999);
 }
 .rv-score {
   font-weight: 600;
-  color: var(--text-dim, #999);
+  color: var(--text-tertiary, #999);
 }
 .rv-score.hot {
-  color: #e0532a;
+  color: var(--tone-amber);
 }
 .rv-tag {
   font-size: 11px;
   border: 1px solid var(--border, #ddd);
   border-radius: 999px;
   padding: 0 7px;
-  color: var(--text-dim, #888);
+  color: var(--text-tertiary, #888);
 }
 .rv-card-actions {
   display: flex;
@@ -360,7 +360,7 @@ onMounted(async () => {
 }
 .rv-act {
   border: 1px solid var(--border, #eee);
-  background: var(--bg, #fff);
+  background: var(--surface, #fff);
   border-radius: 8px;
   width: 32px;
   height: 28px;
@@ -374,7 +374,7 @@ onMounted(async () => {
 }
 .rv-act.active {
   opacity: 1;
-  border-color: var(--accent, #3b82f6);
-  background: color-mix(in srgb, var(--accent, #3b82f6) 12%, var(--bg, #fff));
+  border-color: var(--primary, #3b82f6);
+  background: color-mix(in srgb, var(--primary, #3b82f6) 12%, var(--surface, #fff));
 }
 </style>

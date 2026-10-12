@@ -153,13 +153,13 @@ function jump(event: string): void {
   margin: 0;
   font-size: var(--fs-xl);
   font-weight: 650;
-  color: var(--text-1);
+  color: var(--text-primary);
 }
 .onb-desc {
   margin: 0;
   font-size: var(--fs-base);
   line-height: 1.6;
-  color: var(--text-2);
+  color: var(--text-secondary);
   min-height: 3.2em;
 }
 

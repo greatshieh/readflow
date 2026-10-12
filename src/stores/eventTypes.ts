@@ -109,7 +109,11 @@ export const useEventTypesStore = defineStore('eventTypes', () => {
    * @throws 后端失败时原样抛出
    */
   async function addCustomType(value: string, label?: string) {
-    await invoke('add_custom_event_type', { value, label: label ?? null })
+    // 归一化：value 作为匹配键统一小写 + 去空格，避免 "Clinical" ≠ "clinical"
+    // 导致抽取时 validate_events 静默丢弃；展示文案 label 保留用户原样（缺省取原 value）
+    const normalized = value.trim().toLowerCase()
+    const displayLabel = label && label.trim() ? label.trim() : value.trim()
+    await invoke('add_custom_event_type', { value: normalized, label: displayLabel })
     await loadCustomTypes()
   }
 

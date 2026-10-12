@@ -302,8 +302,13 @@ export const useArticlesStore = defineStore('articles', () => {
   /**
    * 加载单篇文章详情
    *
+   * # 两类调用方
+   * 1. `selectArticle` 内部：当前列表里找不到该文时，用它补全详情再写入选中态；
+   * 2. ArticleColumn 的仪表盘跳转编排：需要**先知道文章属于哪个订阅源**才能切源定位，
+   *    而这层信息只有完整文章对象才带（预览结构无 `feed_id`），故对外暴露本函数。
+   *
    * @param id - 文章 ID（对应 Rust 端同名 `id`，单名词无需 camelCase 转换）
-   * @returns 文章对象；找不到或调用失败时返回 null
+   * @returns 文章对象（含 `feed_id`）；找不到或调用失败时返回 null
    * @throws 不向外抛出：异常被捕获后打印日志并返回 null
    */
   async function loadArticle(id: number): Promise<Article | null> {
@@ -776,6 +781,7 @@ export const useArticlesStore = defineStore('articles', () => {
     setTagFilter,
     loadArticles,
     loadMoreArticles,
+    loadArticle,
     selectArticle,
     setRead,
     setProgress,

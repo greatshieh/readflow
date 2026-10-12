@@ -66,9 +66,19 @@ export const PRESET_EVENT_TYPES: Record<string, EventTypeItem[]> = {
   ],
   finance: [
     { value: 'earnings', label: '财报' },
+    { value: 'profit_warning', label: '业绩预告' },
     { value: 'rating', label: '评级' },
     { value: 'ipo', label: '上市' },
     { value: 'dividend', label: '分红' },
+    { value: 'buyback', label: '回购增持' },
+    { value: 'reduce', label: '减持' },
+    { value: 'restructuring', label: '重组' },
+    { value: 'financing', label: '再融资' },
+    { value: 'unlock', label: '解禁' },
+    { value: 'violation', label: '违规退市' },
+    { value: 'margin', label: '两融质押' },
+    { value: 'northbound', label: '北向' },
+    { value: 'dragon_tiger', label: '龙虎榜' },
   ],
 }
 
