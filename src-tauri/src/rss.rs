@@ -20,6 +20,8 @@
 //!   `a` / `img` / `h1`-`h6` / `ul` / `li` / `blockquote` 等排版标签以还原富文本样式，
 //!   同时剥离 `<script>`、内联事件处理器（`onclick` 等）与危险 URL 协议，
 //!   从而能在前端 `v-html` 渲染时既保留排版又杜绝脚本注入。
+//!   白名单另放行 `video` / `source` 两个标签，但媒体 `src` 仅当主机名恰为
+//!   `video.twimg.com` 时保留（Twitter 源的原生视频直链，见 [`sanitize_html`]）。
 //! - **失败可观测**：抓取链路中的错误一律转成 `String`，便于 Tauri command
 //!   直接回传前端提示，而调度器侧的失败只打印日志、不中断整体刷新。
 
@@ -92,6 +94,12 @@ pub struct ParsedItem {
 /// 先发起带自定义 UA 的 GET 请求（部分站点会拒绝空 UA 或默认爬虫 UA），
 /// 再根据响应头 `Content-Type` 决定解析分支；头部缺失时按 XML 处理。
 ///
+/// # 错误可定位性
+/// 非 2xx 响应直接报「HTTP {状态码} {原因}」并附响应体片段；解析失败时嗅探响应体，
+/// 区分「返回的是 HTML 网页」（需登录 / 实例错误页 / 被限流）与「返回的是 JSON 但
+/// Content-Type 未标记」两种情况，避免把"HTML 错误页"和"Atom 文档"报成同一个
+/// 无法区分的解析错误。
+///
 /// # 参数
 /// * `url` - Feed 的 URL 地址
 ///
@@ -99,7 +107,7 @@ pub struct ParsedItem {
 /// 解析后的 Feed 数据，包含标题和文章列表
 ///
 /// # 错误
-/// 网络请求失败、响应体读取失败或文档解析失败时返回错误信息
+/// 网络请求失败、非 2xx 响应、响应体读取失败或文档解析失败时返回错误信息
 pub async fn fetch_feed(url: &str) -> Result<ParsedFeed, String> {
     // 复用进程内共享客户端：一轮刷新会依次访问几十个订阅源，公用连接池可省下
     // 每个源一次 TCP + TLS 握手（超时档见 crate::net）
@@ -112,6 +120,8 @@ pub async fn fetch_feed(url: &str) -> Result<ParsedFeed, String> {
         .await
         .map_err(|e| format!("请求失败: {}", e))?;
 
+    // status / headers 必须在 text() 消费 resp 之前取出
+    let status = resp.status();
     let content_type = resp
         .headers()
         .get("content-type")
@@ -121,11 +131,19 @@ pub async fn fetch_feed(url: &str) -> Result<ParsedFeed, String> {
 
     let body = resp.text().await.map_err(|e| format!("读取响应失败: {}", e))?;
 
-    // 根据内容类型选择解析器；只要头部里有 json 就走 JSON Feed 分支
+    // 非 2xx：先报状态码与原因，再附响应体片段——限流页 / 实例错误页 / 需登录
+    // 都会走到这里，没有状态码的话错误信息完全无法定位
+    if !status.is_success() {
+        let reason = status.canonical_reason().unwrap_or("Unknown");
+        return Err(http_error_message(status.as_u16(), reason, &body));
+    }
+
+    // 根据内容类型选择解析器；只要头部里有 json 就走 JSON Feed 分支。
+    // 解析失败时结合响应体补齐可读提示（HTML 错误页 / JSON 未标记类型）
     let mut parsed = if content_type.contains("json") {
-        parse_json_feed(&body)?
+        parse_json_feed(&body).map_err(|e| enrich_parse_error(e, &body, true))?
     } else {
-        parse_xml_feed(&body)?
+        parse_xml_feed(&body).map_err(|e| enrich_parse_error(e, &body, false))?
     };
 
     // 图标兜底：channel 未自带图标时，回退为源站点根路径的 /favicon.ico。
@@ -136,6 +154,90 @@ pub async fn fetch_feed(url: &str) -> Result<ParsedFeed, String> {
     }
 
     Ok(parsed)
+}
+
+/// 构造非 2xx 响应的错误信息
+///
+/// 格式「HTTP {状态码} {原因}（响应内容：{片段}）」。抽成纯函数便于单测：
+/// 真实链路需要起 HTTP 服务才能触发非 2xx 分支，单测直接喂参数即可覆盖信息拼装。
+///
+/// # 参数
+/// * `status` - HTTP 状态码（如 403）
+/// * `reason` - 状态原因短语（如 "Forbidden"）
+/// * `body` - 响应体原文（内部会压缩空白并截断）
+///
+/// # 返回值
+/// 可直接展示给用户的错误字符串
+fn http_error_message(status: u16, reason: &str, body: &str) -> String {
+    format!(
+        "HTTP {} {}（响应内容：{}）",
+        status,
+        reason,
+        body_snippet(body, 120)
+    )
+}
+
+/// 解析失败时结合响应体给出更可定位的错误信息
+///
+/// 嗅探响应体开头（跳过 BOM / 空白）：
+/// - 像 HTML（`<!doctype html` / 含 `<html`）→ 提示"返回的是网页而非订阅内容"；
+/// - 像 JSON（`{` / `[` 开头）且本次走的是 XML 分支 → 提示"是 JSON 但 Content-Type 未标记"；
+/// - 其它 → 保留原解析错误并附响应体片段。
+///
+/// # 参数
+/// * `err` - 原始解析错误
+/// * `body` - 响应体原文
+/// * `json_branch` - 本次解析是否走的 JSON 分支
+///
+/// # 返回值
+/// 补全提示后的错误字符串
+fn enrich_parse_error(err: String, body: &str, json_branch: bool) -> String {
+    let head = body_head(body, 200);
+    let lower = head.to_ascii_lowercase();
+    if lower.starts_with("<!doctype html") || lower.contains("<html") {
+        return format!(
+            "{}——该地址返回的是网页而非订阅内容（可能需要登录、实例错误页或被限流）",
+            err
+        );
+    }
+    if !json_branch && (head.starts_with('{') || head.starts_with('[')) {
+        return format!("{}——返回的是 JSON，但 Content-Type 未标记为 json", err);
+    }
+    format!("{}（响应片段：{}）", err, body_snippet(body, 120))
+}
+
+/// 取响应体的可读片段：跳过 BOM，把换行 / 连续空白压成单空格，截断到 `max_chars` 字符
+///
+/// # 参数
+/// * `body` - 响应体原文
+/// * `max_chars` - 最多保留的字符数（按 Unicode 标量计）
+///
+/// # 返回值
+/// 压平并截断后的单行片段
+fn body_snippet(body: &str, max_chars: usize) -> String {
+    body.trim_start_matches('\u{feff}')
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max_chars)
+        .collect()
+}
+
+/// 取响应体开头（跳过 BOM 与前导空白），用于"是否像 HTML / JSON"的判断
+///
+/// # 参数
+/// * `body` - 响应体原文
+/// * `max_chars` - 最多保留的字符数
+///
+/// # 返回值
+/// 跳过 BOM 与空白、截断后的开头字符串（保留原始空白，仅用于前缀判断）
+fn body_head(body: &str, max_chars: usize) -> String {
+    body.trim_start_matches('\u{feff}')
+        .trim_start()
+        .chars()
+        .take(max_chars)
+        .collect()
 }
 
 /// 从 Feed URL 推导兜底图标地址
@@ -190,7 +292,101 @@ fn infer_enclosure_mime(url: &str) -> String {
     }
 }
 
-/// 解析 XML 格式的 RSS/Atom feed
+/// 解析 XML 格式的 RSS / Atom feed（按根标签分派）
+///
+/// `rss` crate 只认 `<rss>` 根标签，Atom 的 `<feed>` 会直接报
+/// "the input did not begin with an rss tag"（Feed 添加时表现为"该源无法解析"）。
+/// 本函数先轻量检测根元素名：`rss` → [`parse_rss_feed`]、`feed` → [`parse_atom_feed`]；
+/// 检测不出时两个解析器都试一遍取成功者，都失败则返回聚合两个分支原因的错误。
+///
+/// # 参数
+/// * `content` - Feed 原始 XML 文本
+///
+/// # 返回值
+/// 解析后的 Feed 数据；两个分支都失败时返回组合错误
+fn parse_xml_feed(content: &str) -> Result<ParsedFeed, String> {
+    match detect_xml_root(content).as_deref() {
+        Some("rss") => parse_rss_feed(content),
+        Some("feed") => parse_atom_feed(content),
+        _ => {
+            // 根标签既非 rss 也非 feed（或检测不出）：两个解析器都试，取成功者。
+            // 检测器只做"跳过 BOM / 声明 / 注释后看首个标签"的轻量判断，边角形态可能漏判，
+            // 故此处兜底再试，不因检测器的局限误拒合法文档。
+            let rss_err = match parse_rss_feed(content) {
+                Ok(parsed) => return Ok(parsed),
+                Err(e) => e,
+            };
+            match parse_atom_feed(content) {
+                Ok(parsed) => Ok(parsed),
+                Err(atom_err) => Err(format!(
+                    "无法解析为 RSS 或 Atom（RSS 分支：{}；Atom 分支：{}）",
+                    rss_err, atom_err
+                )),
+            }
+        }
+    }
+}
+
+/// 轻量检测 XML 文档的根元素名（小写）
+///
+/// 依次跳过 UTF-8 BOM、空白、`<?xml ... ?>` 声明 / 处理指令、`<!-- ... -->` 注释与
+/// `<!DOCTYPE ...>`，然后读取首个元素的标签名。仅用于"分派给哪个解析器"的粗判，
+/// 不做完整 XML 校验——真正的合法性由两个解析库各自保证。
+///
+/// # 参数
+/// * `content` - Feed 原始 XML 文本
+///
+/// # 返回值
+/// 根元素名（小写）；空文档 / 非 `<` 开头 / 畸形而无法定位时返回 `None`
+fn detect_xml_root(content: &str) -> Option<String> {
+    let bytes = content.as_bytes();
+    let mut i = if content.starts_with('\u{feff}') { 3 } else { 0 };
+    while i < bytes.len() {
+        // 跳过标签之间的空白
+        while i < bytes.len() && (bytes[i] as char).is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() || bytes[i] != b'<' {
+            return None;
+        }
+        i += 1;
+        match bytes.get(i).copied()? {
+            // 处理指令 / XML 声明：跳到 `?>`
+            b'?' => {
+                i += content[i..].find("?>")? + 2;
+            }
+            // 注释 `<!-- -->` 或 `<!DOCTYPE ...>`：分别跳到各自结尾
+            b'!' => {
+                let rest = &content[i..];
+                if let Some(after_open) = rest.strip_prefix("!--") {
+                    // after_open = 注释体 + "-->"（3 为 "!--" 的长度）
+                    i += 3 + after_open.find("-->")? + 3;
+                } else {
+                    i += rest.find('>')? + 1;
+                }
+            }
+            // 普通元素起始：读取标签名
+            _ => {
+                let start = i;
+                while i < bytes.len() {
+                    let c = bytes[i] as char;
+                    if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ':' {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if i == start {
+                    return None;
+                }
+                return Some(content[start..i].to_ascii_lowercase());
+            }
+        }
+    }
+    None
+}
+
+/// 解析 RSS 2.0 / 0.9x 的 `<rss>` 文档
 ///
 /// 使用 `rss` crate 读取 `<channel>`，逐条把 `<item>` 映射为 [`ParsedItem`]。
 /// 各字段都做了缺省兜底，单个条目的字段缺失不会导致整篇 Feed 解析失败。
@@ -200,9 +396,9 @@ fn infer_enclosure_mime(url: &str) -> String {
 ///
 /// # 返回值
 /// 解析后的 Feed 数据；文档结构非法时返回错误
-fn parse_xml_feed(content: &str) -> Result<ParsedFeed, String> {
+fn parse_rss_feed(content: &str) -> Result<ParsedFeed, String> {
     let channel = rss::Channel::read_from(Cursor::new(content))
-        .map_err(|e| format!("XML 解析失败: {}", e))?;
+        .map_err(|e| format!("RSS 解析失败: {}", e))?;
 
     let mut items = Vec::new();
     for item in channel.items() {
@@ -273,6 +469,122 @@ fn parse_xml_feed(content: &str) -> Result<ParsedFeed, String> {
         items,
     })
 }
+
+/// 解析 Atom 1.0 的 `<feed>` 文档
+///
+/// 各字段都做了缺省兜底，单个条目的字段缺失不会导致整篇 Feed 解析失败。
+/// 所有 HTML 字段（content / summary）与 RSS 路径同样过 [`sanitize_html`]，
+/// 保证交给前端 `v-html` 渲染时既有排版又安全。
+///
+/// # 字段映射
+/// - 标题：`Feed::title().as_str()`；图标：`Feed::icon()`（可能相对 URL，保持原样）
+/// - guid：`Entry::id()`；标题：`Entry::title().as_str()`
+/// - link：优先 `rel` 为 `alternate` / 空的 link，兜底首个 link
+/// - content：优先 `Entry::content().value()`，兜底 `Entry::summary()`
+/// - author：`Entry::authors()` 首个元素的 name
+/// - 时间：优先 `published()`，兜底 `updated()`
+/// - enclosure：`<link rel="enclosure">` 的 href；mime 取 link 的 `type`，
+///   缺省时按 URL 扩展名兜底（与 RSS 路径行为一致）
+///
+/// # 参数
+/// * `content` - Feed 原始 XML 文本
+///
+/// # 返回值
+/// 解析后的 Feed 数据；文档结构非法时返回错误
+fn parse_atom_feed(content: &str) -> Result<ParsedFeed, String> {
+    let feed = atom_syndication::Feed::read_from(Cursor::new(content))
+        .map_err(|e| format!("Atom 解析失败: {}", e))?;
+
+    let mut items = Vec::new();
+    for entry in feed.entries() {
+        // guid：Atom 的 id 是必填且要求稳定，直接作为去重依据
+        let guid = entry.id().to_string();
+        let title = entry.title().as_str().to_string();
+
+        // link：优先 alternate（官方的"可读页面"链接），rel 缺省（空串）也视为 alternate；
+        // 都没有时退到首个 link，保证不会因 rel 命名差异而丢链接
+        let link = entry
+            .links()
+            .iter()
+            .find(|l| matches!(l.rel(), "alternate" | ""))
+            .or_else(|| entry.links().first())
+            .map(|l| l.href().to_string())
+            .unwrap_or_default();
+
+        // 正文：优先 content（inline HTML 正文），为空时回退 summary，
+        // 与 RSS 路径的"content 优先、description 回退"保持一致的语义
+        let raw_content = entry
+            .content()
+            .and_then(|c| c.value())
+            .unwrap_or_default();
+        let raw_summary = entry.summary().map(|s| s.as_str()).unwrap_or_default();
+        let content = sanitize_html(raw_content);
+        let content = if content.is_empty() {
+            sanitize_html(raw_summary)
+        } else {
+            content
+        };
+
+        let author = entry
+            .authors()
+            .first()
+            .map(|p| p.name().to_string())
+            .unwrap_or_default();
+
+        // 时间：优先 published（首次发布），回退 updated（最后修改）；
+        // FixedDateTime = DateTime<FixedOffset>，转 RFC3339 字符串后复用 parse_date
+        let published_at = entry
+            .published()
+            .or(Some(entry.updated()))
+            .map(|d| parse_date(&d.to_rfc3339()))
+            .unwrap_or_else(Utc::now);
+
+        // enclosure：Atom 用 <link rel="enclosure"> 表达附件；
+        // mime 缺失时按 URL 扩展名兜底，保证前端总能选 <audio>/<video>
+        let (enclosure_url, enclosure_type) = match entry
+            .links()
+            .iter()
+            .find(|l| l.rel() == "enclosure")
+        {
+            Some(l) => {
+                let url = Some(l.href().to_string()).filter(|u| !u.trim().is_empty());
+                let mime = l
+                    .mime_type()
+                    .map(|m| m.to_string())
+                    .filter(|m| !m.trim().is_empty())
+                    .or_else(|| url.as_ref().map(|u| infer_enclosure_mime(u)));
+                (url, mime)
+            }
+            None => (None, None),
+        };
+
+        items.push(ParsedItem {
+            guid,
+            title,
+            link,
+            // summary 与 content 均来自不可信外部站点，入库前统一清洗防 XSS
+            summary: sanitize_html(raw_summary),
+            content,
+            author,
+            published_at,
+            enclosure_url,
+            enclosure_type,
+        });
+    }
+
+    // feed 自带图标：Atom 的 <icon>；缺失时由 fetch_feed 做 favicon 兜底
+    let icon = feed
+        .icon()
+        .map(|s| s.to_string())
+        .filter(|s| !s.trim().is_empty());
+
+    Ok(ParsedFeed {
+        title: feed.title().as_str().to_string(),
+        icon,
+        items,
+    })
+}
+
 ///
 /// 宽松读取 JSON Feed 规范的常用字段：条目在 `items` 数组下，
 /// 标题取 `title`，链接优先 `url`、回退 `external_url`，正文优先
@@ -444,6 +756,17 @@ fn parse_date(s: &str) -> DateTime<Utc> {
 /// 杜绝脚本注入。
 /// 链接统一追加 `rel="noopener noreferrer"`，防止 `target="_blank"` 的 tabnabbing 攻击。
 ///
+/// # 视频媒体放行（Twitter 源）
+/// 默认白名单不含 `video` / `source`——RSSHub 的 Twitter 路由把推文视频渲染为原生
+/// `<video src="https://video.twimg.com/...mp4" controls>`（非 iframe），此前整个标签
+/// 被剥掉，用户读推文源看不到任何视频。这里显式放行两个标签及其 `src` 等属性，
+/// 但媒体 `src` 仅当主机名**恰为** `video.twimg.com` 时保留：既让 Twitter 视频可播，
+/// 又避免任意域名媒体加载与跟踪画像。主机名经 `url` crate 解析后严格相等判断，
+/// userinfo@ 欺骗、子域变体与尾点 FQDN 都会被解析出不同主机名而拒绝。
+///
+/// **只对重新抓取的文章生效**：存量文章的正文在入库时就已按旧白名单净化，
+/// 且数据库无原始 HTML 备份列，被剥掉的内容不可逆——这是已知限制。
+///
 /// # 图片尺寸处理
 /// 第三方 RSS 常在 `<img>` 上写死 `width` / `height`（如 Substack 的 1456px 宽），
 /// 若不剥离，前端即便用 `max-width:100%` 也会被固有像素尺寸撑破布局、产生横向滚动条。
@@ -461,18 +784,50 @@ fn parse_date(s: &str) -> DateTime<Utc> {
 /// 因此提升为模块间共享，避免逻辑重复。
 pub(crate) fn sanitize_html(html: &str) -> String {
     Builder::default()
+        // 放行 <video> / <source>（Twitter 源的原生视频直链，见函数文档）。
+        // 仅放行标签不够——属性同样要走白名单，故 src / controls / type 逐个补上。
+        .add_tags(["video", "source"])
+        .add_tag_attributes("video", ["src", "controls"])
+        .add_tag_attributes("source", ["src", "type"])
         .link_rel(Some("noopener noreferrer"))
         // 丢弃 <img> 的 width / height 固有尺寸，交由前端 CSS 控制自适应宽度
         // attribute_filter 的返回值类型是 Option<Cow<str>>，故保留的属性需包成 Cow::Borrowed
         .attribute_filter(|element, attribute, value| {
             if element == "img" && (attribute == "width" || attribute == "height") {
                 None
+            } else if (element == "video" || element == "source") && attribute == "src" {
+                // 媒体 src 只放行受信的 Twitter 视频 CDN：严格主机名相等，
+                // 不用宽后缀匹配（pbs.twimg.com 等非视频子域无必要放行）
+                if is_trusted_twimg_video_src(value) {
+                    Some(std::borrow::Cow::Borrowed(value))
+                } else {
+                    None
+                }
             } else {
                 Some(std::borrow::Cow::Borrowed(value))
             }
         })
         .clean(html)
         .to_string()
+}
+
+/// 判断视频媒体 URL 是否来自受信的 Twitter 视频 CDN
+///
+/// 严格三项：协议 `https`、主机名恰为 `video.twimg.com`。经 `url` crate 解析后
+/// 比对，因此 `https://video.twimg.com@evil.com/`（userinfo 欺骗）、
+/// `https://video.twimg.com.evil.com/`（子域绕过）、`https://VIDEO.TWIMG.COM./x`
+/// （大小写 / 尾点 FQDN）等变体都会解析出不同主机名而被拒绝。
+///
+/// # 参数
+/// * `value` - `<video>` / `<source>` 的 `src` 属性原值
+///
+/// # 返回值
+/// 受信返回 `true`；不可解析或主机名不符返回 `false`
+fn is_trusted_twimg_video_src(value: &str) -> bool {
+    match url::Url::parse(value.trim()) {
+        Ok(u) => u.scheme() == "https" && u.host_str() == Some("video.twimg.com"),
+        Err(_) => false,
+    }
 }
 
 /// 将解析后的文章存储到数据库
@@ -505,4 +860,225 @@ pub async fn store_items(
     let filters = crate::db::FilterRule::list_enabled(pool).await.unwrap_or_default();
     let folder_id = crate::db::Feed::folder_id_of(pool, feed_id).await.unwrap_or(0);
     Article::batch_insert(pool, feed_id, feed_name, folder_id, &filters, &items.to_vec()).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Twitter 源的原生视频：video 标签、src 与 controls 都应保留
+    /// （RSSHub twitter 路由的实际产物形态，见函数文档）
+    #[test]
+    fn sanitize_html_keeps_trusted_twimg_video() {
+        let html = r#"<p>前</p><video src="https://video.twimg.com/ext_tw_video/123/pu/vid/640x360/x.mp4" controls></video><p>后</p>"#;
+        let out = sanitize_html(html);
+        assert!(out.contains("<video"), "video 标签应保留: {out}");
+        assert!(
+            out.contains("https://video.twimg.com/ext_tw_video/123/pu/vid/640x360/x.mp4"),
+            "受信 src 应保留: {out}"
+        );
+        assert!(out.contains("controls"), "controls 属性应保留: {out}");
+        assert!(out.contains("前") && out.contains("后"));
+    }
+
+    /// 不可信主机名的 src 必须被剥掉，但 video 标签本身保留
+    /// （标签保留是为了不破坏正文结构；媒体加载不了，页面不会挂）
+    #[test]
+    fn sanitize_html_strips_untrusted_video_src() {
+        let html = r#"<video src="https://evil.com/x.mp4" controls></video>"#;
+        let out = sanitize_html(html);
+        assert!(out.contains("<video"), "video 标签应保留: {out}");
+        assert!(!out.contains("evil.com"), "不可信 src 应被剥掉: {out}");
+        assert!(!out.contains("src="), "src 属性应整体消失: {out}");
+    }
+
+    /// userinfo 欺骗：主机名实为 evil.com，必须拒绝
+    /// （若用字符串前缀判断就会误放行，这是走 URL 解析的原因）
+    #[test]
+    fn sanitize_html_strips_video_src_userinfo_spoof() {
+        let html = r#"<video src="https://video.twimg.com@evil.com/x.mp4"></video>"#;
+        let out = sanitize_html(html);
+        assert!(!out.contains("evil.com"), "userinfo 欺骗应被拒绝: {out}");
+        assert!(!out.contains("src="), "src 属性应整体消失: {out}");
+    }
+
+    /// source 标签（多码率兜底形态）：受信 src 与 type 保留，不可信 src 被剥
+    #[test]
+    fn sanitize_html_handles_source_tag() {
+        let ok = sanitize_html(r#"<video controls><source src="https://video.twimg.com/a.mp4" type="video/mp4"></video>"#);
+        assert!(ok.contains("<source"), "source 标签应保留: {ok}");
+        assert!(ok.contains("https://video.twimg.com/a.mp4"), "受信 source src 应保留: {ok}");
+        assert!(ok.contains("type"), "type 属性应保留: {ok}");
+
+        let bad = sanitize_html(r#"<video controls><source src="https://cdn.example.com/a.mp4" type="video/mp4"></video>"#);
+        assert!(!bad.contains("cdn.example.com"), "不可信 source src 应被剥掉: {bad}");
+    }
+
+    /// 脚本注入仍是硬边界：放行 video 不得削弱原有 XSS 防护
+    #[test]
+    fn sanitize_html_still_removes_script_and_events() {
+        let out = sanitize_html(r#"<script>alert(1)</script><p onclick="steal()">正文</p>"#);
+        assert!(!out.contains("script"), "script 应被剥掉: {out}");
+        assert!(!out.contains("alert"), "脚本内容应被剥掉: {out}");
+        assert!(!out.contains("onclick"), "事件处理器应被剥掉: {out}");
+        assert!(out.contains("正文"), "安全内容应保留: {out}");
+    }
+
+    // ─── P1：Atom 解析 / 根标签分派 ────────────────────────────────────────────
+
+    /// 最小 RSS 文档：分派到 RSS 解析器，字段正确提取
+    #[test]
+    fn parse_xml_feed_handles_rss_document() {
+        let xml = r#"<?xml version="1.0"?>
+<rss version="2.0"><channel><title>测试源</title>
+<item><title>文章一</title><link>https://example.com/1</link><guid>g1</guid>
+<description>正文一</description><pubDate>Wed, 02 Oct 2024 10:00:00 GMT</pubDate></item>
+</channel></rss>"#;
+        let parsed = parse_xml_feed(xml).expect("RSS 应解析成功");
+        assert_eq!(parsed.title, "测试源");
+        assert_eq!(parsed.items.len(), 1);
+        let item = &parsed.items[0];
+        assert_eq!(item.guid, "g1");
+        assert_eq!(item.title, "文章一");
+        assert_eq!(item.link, "https://example.com/1");
+        assert!(item.content.contains("正文一"), "content: {}", item.content);
+    }
+
+    /// 最小 Atom 文档：验证 entry / author / alternate link / published 的映射
+    #[test]
+    fn parse_xml_feed_handles_atom_document() {
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Atom 测试源</title>
+  <icon>https://example.com/icon.png</icon>
+  <updated>2024-10-02T12:00:00Z</updated>
+  <entry>
+    <title>Atom 文章一</title>
+    <id>urn:uuid:1</id>
+    <link rel="alternate" href="https://example.com/atom/1"/>
+    <author><name>作者甲</name></author>
+    <published>2024-10-02T10:00:00Z</published>
+    <updated>2024-10-02T11:00:00Z</updated>
+    <content type="html">&lt;p&gt;Atom 正文&lt;/p&gt;</content>
+  </entry>
+</feed>"#;
+        let parsed = parse_xml_feed(xml).expect("Atom 应解析成功");
+        assert_eq!(parsed.title, "Atom 测试源");
+        assert_eq!(parsed.icon.as_deref(), Some("https://example.com/icon.png"));
+        assert_eq!(parsed.items.len(), 1);
+        let item = &parsed.items[0];
+        assert_eq!(item.guid, "urn:uuid:1");
+        assert_eq!(item.title, "Atom 文章一");
+        assert_eq!(item.link, "https://example.com/atom/1");
+        assert_eq!(item.author, "作者甲");
+        assert!(
+            item.content.contains("Atom 正文"),
+            "content: {}",
+            item.content
+        );
+        // published 优先于 updated
+        assert_eq!(item.published_at.to_rfc3339(), "2024-10-02T10:00:00+00:00");
+    }
+
+    /// Atom 的 published 缺失时应回退到 updated
+    #[test]
+    fn parse_atom_falls_back_to_updated_when_published_missing() {
+        let xml = r#"<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>T</title><updated>2024-01-01T00:00:00Z</updated>
+  <entry><title>E</title><id>i</id>
+    <link href="https://example.com/e"/>
+    <updated>2024-03-05T08:30:00Z</updated>
+  </entry>
+</feed>"#;
+        let parsed = parse_xml_feed(xml).expect("Atom 应解析成功");
+        assert_eq!(
+            parsed.items[0].published_at.to_rfc3339(),
+            "2024-03-05T08:30:00+00:00"
+        );
+    }
+
+    /// Atom 的 <link rel="enclosure"> 应映射为附件；mime 缺失时按扩展名兜底
+    #[test]
+    fn parse_atom_maps_enclosure_link() {
+        let xml = r#"<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>T</title><updated>2024-01-01T00:00:00Z</updated>
+  <entry><title>E</title><id>i</id>
+    <updated>2024-01-01T00:00:00Z</updated>
+    <link rel="enclosure" href="https://example.com/ep.mp3"/>
+  </entry>
+</feed>"#;
+        let parsed = parse_xml_feed(xml).expect("Atom 应解析成功");
+        let item = &parsed.items[0];
+        assert_eq!(item.enclosure_url.as_deref(), Some("https://example.com/ep.mp3"));
+        assert_eq!(item.enclosure_type.as_deref(), Some("audio/mpeg"));
+    }
+
+    /// 畸形输入（HTML 网页）应报错，而不是被当成 feed 解析出垃圾
+    #[test]
+    fn parse_xml_feed_rejects_html_page() {
+        let html = "<!DOCTYPE html>\n<html><head><title>登录</title></head><body>请登录</body></html>";
+        assert!(parse_xml_feed(html).is_err(), "HTML 网页不应被解析为 feed");
+    }
+
+    /// 空文档应报错
+    #[test]
+    fn parse_xml_feed_rejects_empty_document() {
+        assert!(parse_xml_feed("").is_err());
+        assert!(parse_xml_feed("   \n  ").is_err());
+    }
+
+    /// 根元素检测应跳过 XML 声明、注释与空白
+    #[test]
+    fn detect_xml_root_skips_declaration_and_comment() {
+        assert_eq!(detect_xml_root("<?xml version=\"1.0\"?><rss></rss>").as_deref(), Some("rss"));
+        assert_eq!(
+            detect_xml_root("\u{feff}\n<!-- 注释 -->\n<feed>x</feed>").as_deref(),
+            Some("feed")
+        );
+        assert_eq!(detect_xml_root("<unknown").as_deref(), Some("unknown"));
+        assert_eq!(detect_xml_root("not xml"), None);
+    }
+
+    // ─── P2a：抓取 / 解析错误信息 ─────────────────────────────────────────────
+
+    /// 非 2xx 错误信息应含状态码、原因与响应片段
+    #[test]
+    fn http_error_message_includes_status_and_snippet() {
+        let msg = http_error_message(403, "Forbidden", "<html>\n  <body>blocked</body>\n</html>");
+        assert!(msg.contains("HTTP 403 Forbidden"), "msg: {msg}");
+        assert!(msg.contains("blocked"), "应含响应体片段: {msg}");
+    }
+
+    /// HTML 响应 → 提示"返回的是网页而非订阅内容"
+    #[test]
+    fn enrich_parse_error_flags_html_page() {
+        let msg = enrich_parse_error(
+            "RSS 解析失败: 坏标签".into(),
+            "<!DOCTYPE html>\n<html><body>登录</body></html>",
+            false,
+        );
+        assert!(msg.contains("网页而非订阅内容"), "msg: {msg}");
+    }
+
+    /// XML 分支遇到 JSON 体 → 提示"是 JSON 但 Content-Type 未标记"
+    #[test]
+    fn enrich_parse_error_flags_unmarked_json() {
+        let msg = enrich_parse_error("RSS 解析失败: x".into(), r#"{"items":[]}"#, false);
+        assert!(msg.contains("Content-Type 未标记为 json"), "msg: {msg}");
+    }
+
+    /// JSON 分支下不应误报"未标记为 json"，只附响应片段
+    #[test]
+    fn enrich_parse_error_json_branch_keeps_snippet() {
+        let msg = enrich_parse_error("JSON 解析失败: x".into(), r#"{"broken":}"#, true);
+        assert!(!msg.contains("未标记为 json"), "msg: {msg}");
+        assert!(msg.contains("响应片段"), "msg: {msg}");
+    }
+
+    /// 响应片段应压缩换行 / 连续空白并过滤 BOM
+    #[test]
+    fn body_snippet_collapses_whitespace() {
+        assert_eq!(body_snippet("\u{feff}  a\n\n  b\tc  ", 100), "a b c");
+        assert_eq!(body_snippet("abcdef", 3), "abc");
+    }
 }

@@ -75,7 +75,7 @@
               :active="feedsStore.selectedFeed?.id === feed.id"
               :data-feed-id="feed.id"
               @select="selectFeed(feed)"
-              @manage="openManage(feed)"
+              @contextmenu="onFeedContextMenu(feed, $event)"
             />
             </div>
           </div>
@@ -215,9 +215,21 @@ backdrop-filter 又使 position:fixed 退化为 absolute —— 两者叠加会
     </div>
 
     <!-- 订阅源管理弹窗：改名、重新归类、更换文件夹、修改链接、删除。
-         由 feed 条目上的「⋯」按钮打开（managingFeed 非空即为打开态）；
+         由右键菜单的「编辑订阅…」打开（managingFeed 非空即为打开态）；
          遮罩 / Esc / 焦点陷阱 / 滚动锁由 BaseModal 提供，表单与删除确认在组件内自持。 -->
     <FeedManageModal :feed="managingFeed" @close="closeManage" />
+
+    <!-- 订阅源配置右键菜单：由 feed 行上右键 / Shift+F10 / 菜单键触发。
+         items 与坐标都来自本组件的状态——菜单组件本身不认识"订阅源"这个业务概念，
+         这样它才能被复用到别的右键菜单上。 -->
+    <ContextMenu
+      v-if="ctxMenu"
+      :items="ctxItems"
+      :x="ctxMenu.x"
+      :y="ctxMenu.y"
+      @select="onCtxSelect"
+      @close="closeCtxMenu"
+    />
     <!-- 添加订阅弹窗：地址 + 可选标题 + 分组（showAdd 为 true 即打开） -->
     <FeedAddModal :open="showAdd" @close="showAdd = false" />
 
@@ -280,6 +292,8 @@ import InsightsModal from './InsightsModal.vue'
 import FeedListItem from './FeedListItem.vue'
 import FeedAddModal from './FeedAddModal.vue'
 import FeedManageModal from './FeedManageModal.vue'
+import ContextMenu from './ContextMenu.vue'
+import type { ContextMenuItem } from './ContextMenu.vue'
 import SelectCapsule from './SelectCapsule.vue'
 import AppLogo from './AppLogo.vue'
 import { useCursorGlow } from '@/composables/useCursorGlow'
@@ -768,8 +782,8 @@ async function openArticleFromDigest(article: Article) {
  * 打开订阅源管理弹窗
  *
  * 只需装入目标 Feed：名称 / 链接 / 文件夹副本的回填由 FeedManageModal
- * watch(:feed) 完成。由 feed 条目上的「⋯」按钮以 `@click.stop` 触发，
- * 故不会连带触发"选中订阅源"。
+ * watch(:feed) 完成。由右键菜单的「编辑订阅…」触发（右键本身不改变选中态），
+ * 故不会连带切走当前正在读的文章。
  */
 function openManage(feed: Feed) {
   managingFeed.value = feed
@@ -783,6 +797,174 @@ function openManage(feed: Feed) {
  */
 function closeManage() {
   managingFeed.value = null
+}
+
+// ─── 订阅源配置右键菜单 ─────────────────────────────────────────────────────
+
+/**
+ * 菜单图标（SVG path 的 d 值，24×24 视图框，描边风格）
+ *
+ * 存 d 而不是整段 SVG 字符串：既避免 v-html 的注入面，也让描边粗细/圆角在
+ * ContextMenu 内部统一，调用方只需选图标。
+ */
+const CTX_ICONS = {
+  refresh: 'M23 4v6h-6M20.49 15a9 9 0 1 1-2.12-9.36L23 10',
+  check: 'M20 6L9 17l-5-5',
+  edit: 'M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z',
+  folder: 'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z',
+  link: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71',
+  trash: 'M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6',
+} as const
+
+/**
+ * 右键菜单状态
+ *
+ * 非 null 即打开。坐标是鼠标事件的视口坐标（ContextMenu 里 fixed + Teleport 到 body，
+ * 与 getBoundingClientRect 同一参照系，见该组件的注释）。
+ * `viaKeyboard` 决定关闭后要不要把焦点还回那一行——鼠标操作时若也抢焦点，
+ * 用户点别处时焦点会被硬拽回订阅列表。
+ */
+const ctxMenu = ref<{ feed: Feed; x: number; y: number; viaKeyboard: boolean } | null>(null)
+
+/**
+ * 右键菜单的菜单项
+ *
+ * 「移动到文件夹」的子项按当前文件夹列表动态生成，并把该源**当前所在**的那一项
+ * 置灰——列出来是为了看得见归属，而不是给一个点了没反应的选项。
+ *
+ * @returns 菜单项数组；菜单未打开时为空数组
+ */
+const ctxItems = computed<ContextMenuItem[]>(() => {
+  const feed = ctxMenu.value?.feed
+  if (!feed) return []
+  const currentFolder = feed.folder_id || 0
+  const folderChildren: ContextMenuItem[] = [
+    { key: 'move:0', label: '未分类', disabled: currentFolder === 0 },
+    ...feedsStore.folders.map((f) => ({
+      key: `move:${f.id}`,
+      label: f.name,
+      disabled: f.id === currentFolder,
+    })),
+  ]
+  return [
+    { key: 'refresh', label: '刷新', icon: CTX_ICONS.refresh },
+    { key: 'markAllRead', label: '全部标记为已读', icon: CTX_ICONS.check },
+    { key: 'sep-1', separator: true },
+    { key: 'edit', label: '编辑订阅…', icon: CTX_ICONS.edit },
+    { key: 'move', label: '移动到文件夹', icon: CTX_ICONS.folder, children: folderChildren },
+    { key: 'copyUrl', label: '复制订阅链接', icon: CTX_ICONS.link },
+    { key: 'sep-2', separator: true },
+    { key: 'unsubscribe', label: '取消订阅', icon: CTX_ICONS.trash, danger: true },
+  ]
+})
+
+/**
+ * 在哪一行、哪个位置弹出配置菜单
+ *
+ * 鼠标路径直接用事件坐标；键盘路径（Shift+F10 / 菜单键）没有坐标，
+ * 退化锚到该行的左下角——菜单仍贴着用户正在操作的那一行。
+ *
+ * @param feed - 被右键的订阅源
+ * @param e - 触发事件（鼠标或键盘）
+ * @returns 无返回值
+ */
+function onFeedContextMenu(feed: Feed, e: MouseEvent | KeyboardEvent) {
+  // 两个浮层互斥：底部「更多」菜单留着的话，会与本菜单同屏出现两个玻璃面板
+  showMoreMenu.value = false
+  const viaKeyboard = !(e instanceof MouseEvent)
+  let x: number
+  let y: number
+  if (e instanceof MouseEvent) {
+    x = e.clientX
+    y = e.clientY
+  } else {
+    const r = (e.target as HTMLElement | null)?.getBoundingClientRect()
+    x = r ? r.left + 12 : 12
+    y = r ? r.bottom - 4 : 12
+  }
+  ctxMenu.value = { feed, x, y, viaKeyboard }
+}
+
+/**
+ * 关闭右键菜单
+ *
+ * 仅当菜单是**键盘**打开的才把焦点还回那一行：否则鼠标用户点了别处时，
+ * 焦点会被硬拽回订阅列表，后续键盘操作落在意料之外的元素上。
+ *
+ * @returns 无返回值
+ */
+function closeCtxMenu() {
+  const opened = ctxMenu.value
+  ctxMenu.value = null
+  if (!opened?.viaKeyboard) return
+  void nextTick(() => {
+    feedListRef.value
+      ?.querySelector<HTMLElement>(`.feed-item[data-feed-id="${opened.feed.id}"]`)
+      ?.focus()
+  })
+}
+
+/**
+ * 执行右键菜单里的一项
+ *
+ * 先关菜单再执行：动作可能打开弹窗（编辑订阅）或弹确认框，
+ * 菜单留到那时才关会在弹窗之上残留一层玻璃面板。
+ *
+ * @param key - 菜单项 key；「移动到文件夹」的子项形如 `move:<folderId>`
+ * @returns 无返回值；Promise 在动作完成后 resolve
+ */
+async function onCtxSelect(key: string) {
+  const feed = ctxMenu.value?.feed
+  if (!feed) {
+    closeCtxMenu()
+    return
+  }
+  const viaKeyboard = ctxMenu.value?.viaKeyboard ?? false
+  ctxMenu.value = null
+
+  try {
+    if (key === 'refresh') {
+      await feedsStore.refreshOneFeed(feed.id)
+      // 刷新的正是当前在读的源时，列表要跟着取回新文章——否则"刷新成功但列表没变"
+      // 看起来像没生效。标签视图下不能这样重载：loadArticles 会同时带上 tagId 与
+      // feedId，两个范围取交集必为空。
+      if (articlesStore.tagFilterId === null && feedsStore.selectedFeed?.id === feed.id) {
+        await articlesStore.loadArticles(feed.id)
+      }
+    } else if (key === 'markAllRead') {
+      // 复用 store 的批量置已读：它内部会重算未读数并重载侧边栏角标。
+      // 注意 store 会把当前标签范围一并带上，故标签视图下这里是"该源 ∩ 该标签"，
+      // 与文章列表「全部已读」的既有口径一致。
+      await articlesStore.markAllRead(feed.id)
+    } else if (key === 'edit') {
+      openManage(feed)
+    } else if (key === 'copyUrl') {
+      await navigator.clipboard.writeText(feed.url)
+    } else if (key === 'unsubscribe') {
+      const ok = await modalStore.showConfirm({
+        title: '取消订阅',
+        message: `确定取消订阅「${feed.name}」吗？\n该源下的所有文章也会一并删除，且不可恢复。`,
+      })
+      if (ok) await feedsStore.deleteFeed(feed.id)
+    } else if (key.startsWith('move:')) {
+      await feedsStore.moveFeedToFolder(feed.id, Number(key.slice(5)))
+    }
+  } catch (e) {
+    // 失败必须说出来：菜单点了没反应，用户只会以为功能没实现
+    await modalStore.showAlert({
+      title: '操作失败',
+      message: e instanceof Error ? e.message : String(e),
+    })
+  } finally {
+    // 键盘打开的菜单：动作跑完把焦点还给那一行，键盘用户才能接着在列表里走
+    if (viaKeyboard) {
+      void nextTick(() => {
+        feedListRef.value
+          ?.querySelector<HTMLElement>(`.feed-item[data-feed-id="${feed.id}"]`)
+          ?.focus()
+      })
+    }
+  }
 }
 
 /**

@@ -1,7 +1,19 @@
 <template>
-  <!-- 单条订阅源行：未读点 / 首字母头像（含图标叠加回退）/ 名称截断 / 管理按钮 / 未读数。
-       折叠（v-show）与 v-for 由父组件控制，本组件只负责一行的渲染与两个动作。 -->
-  <div class="feed-item" :class="{ active, unread: feed.unread_count > 0 }" @click="emit('select')">
+  <!-- 单条订阅源行：未读点 / 首字母头像（含图标叠加回退）/ 名称截断 / 未读数。
+       折叠（v-show）与 v-for 由父组件控制，本组件只负责一行的渲染与三个动作
+       （选中 / 右键开配置菜单 / 键盘的同名操作）。
+
+       本行可聚焦（tabindex=0）：配置入口已由"hover 才出现的「⋯」按钮"改为右键菜单，
+       若不给键盘留出等价入口，键盘用户将完全够不到订阅源的配置功能——
+       故补 Shift+F10 / 菜单键开菜单、Enter / Space 选中，与鼠标语义一一对应。 -->
+  <div
+    class="feed-item"
+    :class="{ active, unread: feed.unread_count > 0 }"
+    tabindex="0"
+    @click="emit('select')"
+    @contextmenu.prevent="emit('contextmenu', $event)"
+    @keydown="onKeydown"
+  >
     <div class="feed-item-dot"></div>
     <div class="feed-item-avatar">
       {{ feed.name.charAt(0) }}
@@ -20,20 +32,36 @@
     </div>
     <div class="feed-item-info">
       <!-- 名称单行截断（见 .feed-item-title 的 ellipsis）：订阅栏扣掉缩进、头像、
-           未读数与间距后只剩约 130px，长标题必然被切。title 让鼠标悬浮时能读到
-           全称——此处不能用"悬停时展开换行"来实现，因为管理按钮同样在 hover 时
-           才出现，行高一旦变化，鼠标划过列表会让下方内容整体跳动。 -->
+           未读数与间距后只剩约 130px，长标题必然被切。title 让鼠标悬浮时能读到全称——
+           此处不能用"悬停时展开换行"来实现：行高一旦变化，鼠标划过列表会让下方内容整体跳动。 -->
       <div class="feed-item-title" :title="feed.name">{{ feed.name }}</div>
+      <!-- 源级错误图标：抓取失败的源旁常驻显示感叹号，hover / focus 查看失败原因。
+           常驻可见是刻意的——否则用户永远不知道这个源已经坏了。
+           传 focusable：让图标进入 Tab 顺序，键盘用户可以聚焦它、读到失败原因，
+           而不是只能靠鼠标 hover。aria-label 挂在 trigger 上（经 $attrs 透传），
+           为焦点落点提供文字说明；内层 svg 保持 aria-hidden，避免重复朗读。 -->
+      <AppTooltip
+        v-if="feed.last_error"
+        :content="feed.last_error"
+        focusable
+        aria-label="订阅源抓取失败，查看详情"
+      >
+        <svg
+          class="feed-error-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+          <line x1="12" y1="9" x2="12" y2="13"></line>
+          <line x1="12" y1="17" x2="12.01" y2="17"></line>
+        </svg>
+      </AppTooltip>
     </div>
-    <!-- 管理入口：悬浮在条目上时显示，点击打开订阅源管理弹窗（查看链接 / 重命名 / 删除）。
-         @click.stop 阻止冒泡，避免误触"选中订阅源"逻辑而切走当前文章。 -->
-    <button class="feed-manage-btn" :title="'管理订阅源'" @click.stop="emit('manage')">
-      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-        <circle cx="12" cy="5" r="2"></circle>
-        <circle cx="12" cy="12" r="2"></circle>
-        <circle cx="12" cy="19" r="2"></circle>
-      </svg>
-    </button>
     <!-- 未读数：直接以彩色数字显示在最右端（非 pill/tag 样式）；
          仅在有未读时渲染，避免满屏 0。样式是全局类（styles.css 的 .feed-item-count），
          因为文件夹分组头与标签行也用同一个类。 -->
@@ -46,8 +74,8 @@
  * 订阅源侧边栏的单行条目
  *
  * # 职责
- * 渲染一行订阅源（未读点 / 头像与图标回退 / 名称 / 管理按钮 / 未读数），
- * 并把两个动作上抛：点击行 → `select`，点击「⋯」→ `manage`。
+ * 渲染一行订阅源（未读点 / 头像与图标回退 / 名称 / 错误图标 / 未读数），
+ * 并把三个动作上抛：点击行 → `select`，右键或 Shift+F10 → `contextmenu`（父组件据此开配置菜单）。
  * 与 ArticleListItem 同款范式：父组件（FeedPanel）持有列表、分组与选中态，本组件无状态。
  *
  * # 与文章列表的 .feed-item 的关系
@@ -55,6 +83,7 @@
  * 两者几何不同、互不相通；styles.css 窄屏全局规则对两者同时生效（类名契约，不可改名）。
  */
 
+import AppTooltip from '@/components/AppTooltip.vue'
 import type { Feed } from '@/types'
 
 defineProps<{
@@ -65,11 +94,42 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{
-  /** 点击行：父组件写入选中态并收起窄屏抽屉 */
+  /** 点击行 / 键盘 Enter·Space：父组件写入选中态并收起窄屏抽屉 */
   (e: 'select'): void
-  /** 点击「⋯」：父组件打开管理弹窗 */
-  (e: 'manage'): void
+  /** 右键 / 键盘 Shift+F10·菜单键：父组件在事件坐标处弹出配置菜单 */
+  (e: 'contextmenu', event: MouseEvent | KeyboardEvent): void
 }>()
+
+/**
+ * 行级键盘处理
+ *
+ * 把鼠标的两条路径补齐到键盘上，缺一不可：
+ * - 菜单键 / Shift+F10 → 开配置菜单（Windows 与多数 Linux 桌面的通用约定）
+ * - Enter / Space → 选中该源（与点击等价）
+ *
+ * 不改用 `@keydown.enter` 这类修饰符：菜单键在 Vue 里对应的是 `ContextMenu` 这个
+ * key 值，hyphenate 之后是 `context-menu`，写成 `.contextmenu` 静默匹配不上。
+ *
+ * 只在本行自身持有焦点时生效：行内还嵌着可聚焦的错误图标（AppTooltip 的 trigger），
+ * 若把从它冒泡上来的按键也当成本行的语义，用户 Tab 到图标后按 Space 会意外切换订阅源
+ * （列表被重置，阅读位置也一起丢），而预期只是看错误原因。
+ *
+ * @param e - keydown 事件
+ * @returns 无返回值
+ */
+function onKeydown(e: KeyboardEvent) {
+  if (e.target !== e.currentTarget) return
+  if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
+    e.preventDefault()
+    emit('contextmenu', e)
+    return
+  }
+  if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+    // 阻止 Space 的默认滚动：本行的 Space 语义是"选中"，不应连同滚动页面
+    e.preventDefault()
+    emit('select')
+  }
+}
 
 /**
  * 订阅源图标加载失败时的回退
@@ -160,8 +220,18 @@ function hideBrokenIcon(e: Event) {
   color: var(--primary);
 }
 
-.feed-item-info { flex: 1; min-width: 0; }
+.feed-item-info {
+  flex: 1;
+  min-width: 0;
+  /* 改为 flex 行：标题占满剩余空间（flex:1 + min-width:0 保住 ellipsis），
+     错误图标固定在右端不被压缩 */
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
 .feed-item-title {
+  flex: 1;
+  min-width: 0;
   font-size: var(--fs-sm);
   color: var(--text-secondary);
   white-space: nowrap;
@@ -169,21 +239,20 @@ function hideBrokenIcon(e: Event) {
   text-overflow: ellipsis;
   line-height: 1.3;
 }
-
-/* 订阅源「管理」入口：悬浮在 feed 条目右侧，默认隐藏，hover 条目时显现，避免常驻干扰列表阅读 */
-.feed-manage-btn {
-  border: none;
-  background: none;
-  cursor: pointer;
-  color: var(--text-tertiary);
-  padding: var(--sp-1);
-  border-radius: var(--r-sm);
-  display: none;
+/* 源级错误图标：抓取失败时常驻显示，取 danger 语义色（styles.css 的 --danger） */
+.feed-error-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--danger);
   flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
 }
-.feed-item:hover .feed-manage-btn { display: flex; }
-.feed-manage-btn:hover { color: var(--primary); background: var(--fill); }
-.feed-manage-btn svg { width: 16px; height: 16px; }
+
+/* 键盘聚焦环：订阅行现在可聚焦（配置入口改走右键菜单后，键盘必须有一条路能抵达）。
+   用 :focus-visible 而非 :focus——鼠标点击同样会产生焦点，若用 :focus，
+   每次点订阅源都会多出一个只在键盘操作时才有意义的方框。
+   offset 取负值把环压在行内：面板是 overflow:hidden，向外扩的环会被栏边缘裁掉。 */
+.feed-item:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
 </style>

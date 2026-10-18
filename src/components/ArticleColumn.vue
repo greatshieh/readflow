@@ -197,25 +197,45 @@ const activeTag = computed<Tag | null>(() => {
 })
 
 /**
+ * 范围的「基准」部分
+ *
+ * 只表达**取数范围**：`all`（全部）/ `feed:{id}`（某源）/ `tag:{id}`（某标签），
+ * 不含任何视图筛选后缀。抽成独立 computed 是为了让「切换范围」与「切换视图筛选」
+ * 两类变化可被分别监听——退出搜索只该由前者触发（见下方 `watch(baseScope)`）。
+ *
+ * 标签优先级高于订阅源：选中标签时会先清空源选择，二者互斥。
+ *
+ * @returns 范围基准标识字符串
+ */
+const baseScope = computed<string>(() => {
+  if (articlesStore.tagFilterId !== null) return `tag:${articlesStore.tagFilterId}`
+  if (feedsStore.selectedFeed) return `feed:${feedsStore.selectedFeed.id}`
+  return 'all'
+})
+
+/**
  * 范围键
  *
- * 把「当前范围」压成一个可与 watch 比较的字符串：`all` / `feed:{id}` / `tag:{id}`，
- * 视图筛选再追加 `|bm`（书签）或 `|un`（仅未读），如 `feed:3|bm`。
- * 用一个键而不是分别 watch selectedFeed 与 tagFilterId，是为了避免切换范围时
- * 两者先后变化触发**两次**加载（先按旧范围拉一页、再按新范围拉一页，中间白白闪一次）。
+ * 在 [`baseScope`] 之上再追加**视图筛选后缀**，压成一个可与 watch 比较的完整字符串：
+ * `all` / `feed:{id}` / `tag:{id}`，选书签加 `|bm`、未读加 `|un`、喜欢加 `|lk`、跳过加 `|sk`，
+ * 如 `feed:3|bm`。用一个键而不是分别 watch selectedFeed 与 tagFilterId，是为了避免切换
+ * 范围时两者先后变化触发**两次**加载（先按旧范围拉一页、再按新范围拉一页，中间白白闪一次）。
  *
- * 为什么书签与未读都要进范围键：两者自走后端参数（`bookmarked` / `unread`）后，
- * 进出对应视图**必须重新拉取**，否则后端过滤了、前端还拿着未过滤的旧列表。
+ * 为什么四种视图筛选都要进范围键：它们全部走后端参数（`bookmarked` / `unread` /
+ * `userPreference`）后，进出对应视图**必须重新拉取**，否则后端过滤了、前端还拿着未过滤的
+ * 旧列表。此前只覆盖了书签 / 未读，喜欢 / 跳过遗漏 → 切到该视图不触发重载，后端
+ * `user_preference` 过滤实际未下发（前端只在已加载页兜底，散落历史里的命中会漏，
+ * 且 `loadMoreArticles` 的 offset 会按未过滤的列表长度错位）。补上 `|lk` / `|sk` 修正。
  * 「全部」视图不追加后缀——它是无范围的基准形态。
  *
  * @returns 范围标识字符串
  */
 const scopeKey = computed<string>(() => {
-  let key = 'all'
-  if (articlesStore.tagFilterId !== null) key = `tag:${articlesStore.tagFilterId}`
-  else if (feedsStore.selectedFeed) key = `feed:${feedsStore.selectedFeed.id}`
+  const key = baseScope.value
   if (articlesStore.viewFilter === 'bookmarked') return `${key}|bm`
   if (articlesStore.viewFilter === 'unread') return `${key}|un`
+  if (articlesStore.viewFilter === 'liked') return `${key}|lk`
+  if (articlesStore.viewFilter === 'skipped') return `${key}|sk`
   return key
 })
 
@@ -562,6 +582,14 @@ watch(scopeKey, async () => {
   showArticleList.value = true
   // 列表整体换掉了，胶囊要跟着落到新列表里当前选中的那一篇
   void nextTick(() => syncCapsule())
+})
+
+// 切换范围（源 / 标签 / 全部）时退出搜索：搜索结果来自全库 FTS（`articles_search` 不带
+// feedId），与当前范围无关，保留它会让用户误以为「切源失败」——列表仍显示全库结果。
+// 刻意 watch `baseScope` 而非 `scopeKey`：切「未读 / 书签 / 喜欢 / 跳过」等视图筛选时
+// 不该清掉用户已输入的搜索词，退出搜索只应由「取数范围」变化触发。
+watch(baseScope, () => {
+  if (searchActive.value) clearSearch()
 })
 
 /**

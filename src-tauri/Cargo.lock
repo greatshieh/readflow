@@ -3632,6 +3632,7 @@ name = "readflow"
 version = "0.1.0"
 dependencies = [
  "ammonia",
+ "atom_syndication",
  "chrono",
  "dirs 5.0.1",
  "quick-xml 0.31.0",

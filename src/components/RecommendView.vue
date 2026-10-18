@@ -128,7 +128,7 @@ function formatDate(iso: string): string {
 onMounted(async () => {
   // 进入推荐流先补评分：评分命令此前只由摘要弹窗/研究页手动触发，
   // 推荐流若直接查 entity_score 会永远为空。这里先确保评分已跑
-  // （batch_score_entities 仅更新 NULL/0，幂等，可重复进入）。
+  // （batch_score_entities 按当前启用实体全量重算、分数未变的文章不写库，幂等，可重复进入）。
   try {
     await entitiesStore.scoreArticles()
   } catch (e) {

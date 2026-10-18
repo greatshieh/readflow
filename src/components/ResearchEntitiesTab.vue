@@ -161,7 +161,7 @@ async function runScore() {
   scoreError.value = false
   try {
     const count = await entitiesStore.scoreArticles()
-    scoreMsg.value = count > 0 ? `已重新评分 ${count} 篇文章` : '没有需要评分的文章'
+    scoreMsg.value = count > 0 ? `已重新评分 ${count} 篇文章` : '所有文章评分已是最新'
   } catch (e) {
     scoreError.value = true
     scoreMsg.value = `评分失败：${e instanceof Error ? e.message : String(e)}`

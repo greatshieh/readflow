@@ -18,6 +18,13 @@ export interface Feed {
   folder_id: number
   /** 未读文章数 */
   unread_count: number
+  /**
+   * 最近一次抓取失败的原因（成功时为 null / 缺失）
+   *
+   * 由后端刷新流程写入，前端据此在订阅源旁显示错误图标（hover 查看详情）。
+   * 字段名与后端 `feeds.last_error` 列一致（snake_case 直出）。
+   */
+  last_error?: string | null
   /** 创建时间 */
   created_at: string
   /** 更新时间 */

@@ -77,6 +77,11 @@ pub struct Feed {
     pub folder_id: i64,
     /// 未读文章数（冗余字段，由刷新流程统一重算，避免列表页频繁 COUNT）
     pub unread_count: i64,
+    /// 最近一次抓取失败的原因（成功时为 `None`）
+    ///
+    /// 由刷新流程在抓取失败时写入、成功时清空；前端据此在订阅源旁显示错误图标，
+    /// hover 查看详情。字段名与表列一致（snake_case 直出），前端用 `feed.last_error`。
+    pub last_error: Option<String>,
     /// 创建时间
     pub created_at: DateTime<Utc>,
     /// 更新时间
@@ -175,14 +180,22 @@ pub struct Article {
 /// 批量提取的 `entity_score >= 40` 粗筛永远命中 0 篇（且任务仍记为 success，无人察觉）。
 ///
 /// 用独立结构体承接部分列：既消除该缺陷，也不必为了凑齐字段而把正文整表读进内存。
+///
+/// # 共享注意（改动前必读）
+/// 本结构体被 [`batch_score_entities`] 与 [`Entity::graph`] 两处 `query_as` 共同映射。
+/// `FromRow` 按列名取值、**要求列必须存在**：凡映射本结构体的 SELECT 都必须提供以下
+/// **全部**列（含 `entity_score`），少一列即运行期 `ColumnNotFound`。日后给本结构体加列时，
+/// 务必同步这两处 SQL（这正是"承接结构体与查询列集不匹配"的老坑）。
 #[derive(Debug, Clone, FromRow)]
 struct ArticleDigest {
-    /// 文章 ID（回写评分时使用）
+    /// 文章 ID（`batch_score_entities` 回写评分时使用）
     id: i64,
     /// 标题（参与实体命中统计）
     title: String,
     /// 摘要（参与实体命中统计）
     summary: String,
+    /// 现有评分（`batch_score_entities` 比对「重算结果是否变化」时使用；`Entity::graph` 忽略此列）
+    entity_score: Option<i64>,
 }
 
 /// 应用设置
@@ -494,11 +507,13 @@ impl Entity {
         // 千余篇文章会重复分配数万次字符串，纯属浪费
         let needles: Vec<String> = entities.iter().map(|e| e.name.to_lowercase()).collect();
 
-        // 承接结构体用 ArticleDigest 而非 Article：本查询只取三列，
+        // 承接结构体用 ArticleDigest 而非 Article：本查询只取四列，
         // 用 Article 会因缺少 feed_id 等列报 ColumnNotFound（见 ArticleDigest 文档）。
         // COALESCE 兜底：列声明虽是 NOT NULL/有默认值，但历史行仍可能存进 NULL。
+        // 注意：entity_score 列必须一并 SELECT——ArticleDigest 同时被评分流程复用，
+        // 其 FromRow 要求列集完整（graph 本身并不使用该列，见结构体「共享注意」）。
         const DIGEST_SQL: &str =
-            "SELECT id, COALESCE(title, '') AS title, COALESCE(summary, '') AS summary FROM articles";
+            "SELECT id, COALESCE(title, '') AS title, COALESCE(summary, '') AS summary, entity_score FROM articles";
         let rows = if days > 0 {
             let cutoff = Utc::now() - chrono::Duration::days(days);
             let sql = format!("{} WHERE published_at >= ?", DIGEST_SQL);
@@ -1869,6 +1884,7 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
             folder_id INTEGER DEFAULT 0,
             last_fetch_at DATETIME,
             unread_count INTEGER DEFAULT 0,
+            last_error TEXT DEFAULT NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
@@ -2517,7 +2533,7 @@ impl Feed {
     pub async fn list_all(pool: &SqlitePool) -> Result<Vec<Feed>, String> {
         // 只 SELECT 结构体映射需要的列，避免把刷新流程字段一并取出
         sqlx::query_as::<_, Feed>(
-            "SELECT id, name, url, icon, folder_id, unread_count, created_at, updated_at \
+            "SELECT id, name, url, icon, folder_id, unread_count, last_error, created_at, updated_at \
              FROM feeds ORDER BY name",
         )
         .fetch_all(pool)
@@ -2817,7 +2833,7 @@ impl Feed {
         // SELECT 明确列而非 *：feeds 表还有 last_fetch_at 等未映射进 Feed 的列，
         // 使用 * 会导致 sqlx 按名称匹配失败。
         sqlx::query_as::<_, Feed>(
-            "SELECT id, name, url, icon, folder_id, unread_count, created_at, updated_at \
+            "SELECT id, name, url, icon, folder_id, unread_count, last_error, created_at, updated_at \
              FROM feeds WHERE id = ? LIMIT 1",
         )
         .bind(id)
@@ -4620,14 +4636,21 @@ pub async fn run_retention_cleanup(pool: &SqlitePool) -> Result<u64, String> {
 ///
 /// 遍历所有启用的实体，统计每篇文章标题和摘要中出现的实体命中次数，
 /// 将命中数映射到 0-100 分（命中 N 个实体 → score = min(N*20, 100)）。
-/// 结果写入 `articles.entity_score`，不覆盖已有评分。
+/// 结果写入 `articles.entity_score`。
+///
+/// # 为什么是全量重算（而非只补算未评分文章）
+/// 实体的增删改都会改变「命中集合」，从而改变已有文章的应得分数：删掉 / 停用某个实体后，
+/// 其历史命中推高的分数必须回退。若只补算 `entity_score IS NULL OR entity_score = 0` 的文章，
+/// 已得正分的文章永不复算，实体删除 / 停用在数据上就不生效（评分虚高，并污染研究粗筛的
+/// `entity_score >= 阈值`）。故这里对候选文章一律按**当前启用实体**重算，仅跳过「分数未变化」
+/// 的写回，避免每次全量重算退化成 N 次 fsync。
 ///
 /// # 参数
 /// * `pool` - 数据库连接池
 /// * `article_ids` - 需要评分的文章 ID 列表（为空时全库评分）
 ///
 /// # 返回值
-/// 实际更新的文章条数
+/// **实际发生变化的文章条数**（分数与库中相同的不计入）
 ///
 /// # 注意
 /// 此为后台任务，不应阻塞主线程。调用方应在 `spawn` 或调度器中异步执行。
@@ -4637,18 +4660,18 @@ pub async fn batch_score_entities(
 ) -> Result<u64, String> {
     // 取全部已启用实体
     let entities = Entity::list_enabled(pool).await?;
-    if entities.is_empty() {
-        return Ok(0);
-    }
+    // 刻意**不**在实体为空时早退：实体全删 / 全停用后，存量文章的旧分数必须被清零，
+    // 否则「删除 / 停用实体」在数据上永远不生效（这正是只补算未评分文章的旧逻辑漏掉的一半）。
 
-    // 取需要评分的文章（entity_score IS NULL 或 0）
+    // 取候选文章
     //
-    // 查询只取标题与摘要，故用 ArticleDigest 而不是 Article 承接——
+    // 不再按 `entity_score IS NULL OR = 0` 过滤：全量重算才能让实体删除 / 停用回退既有分数
+    // （见函数文档）。查询只取标题、摘要与现有分数，故用 ArticleDigest 而不是 Article 承接——
     // 用 Article 会因缺少 feed_id 等列而让 sqlx 报 ColumnNotFound（见 ArticleDigest 文档）。
     let articles = if article_ids.is_empty() {
         // 全库评分：无 ID 过滤
         sqlx::query_as::<_, ArticleDigest>(
-            "SELECT id, title, summary FROM articles WHERE entity_score IS NULL OR entity_score = 0",
+            "SELECT id, title, summary, entity_score FROM articles",
         )
         .fetch_all(pool)
         .await
@@ -4658,7 +4681,7 @@ pub async fn batch_score_entities(
         let id_list: Vec<String> = article_ids.iter().map(|i| i.to_string()).collect();
         let cond = format!("id IN ({})", id_list.join(","));
         let sql = format!(
-            "SELECT id, title, summary FROM articles WHERE {} AND (entity_score IS NULL OR entity_score = 0)",
+            "SELECT id, title, summary, entity_score FROM articles WHERE {}",
             cond
         );
         sqlx::query_as::<_, ArticleDigest>(&sql)
@@ -4667,7 +4690,9 @@ pub async fn batch_score_entities(
             .map_err(|e| e.to_string())?
     };
 
-    let mut updated = 0u64;
+    // 全部写回包进一个事务：全量重算会触及大量行，逐条自动提交既慢又可能在中断后留下半截结果
+    let mut changed = 0u64;
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     for article in &articles {
         let text = format!("{} {}", article.title, article.summary).to_lowercase();
         let mut hit_count = 0i64;
@@ -4678,17 +4703,21 @@ pub async fn batch_score_entities(
         }
         // 映射：每命中 1 个实体加 20 分，最高 100 分
         let score = (hit_count * 20).min(100);
-        sqlx::query(
-            "UPDATE articles SET entity_score = ? WHERE id = ?",
-        )
-        .bind(score)
-        .bind(article.id)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-        updated += 1;
+        // 分数没变就不写库：全量重算若不比对，每次都写会退化成 N 次 fsync；
+        // 同时"未变化"也不计入返回值，让调用方拿到的是真正的「有变化的条数」。
+        if article.entity_score == Some(score) {
+            continue;
+        }
+        sqlx::query("UPDATE articles SET entity_score = ? WHERE id = ?")
+            .bind(score)
+            .bind(article.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        changed += 1;
     }
-    Ok(updated)
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(changed)
 }
 
 /// 获取指定时间范围内按实体维度的高分文章（用于每日摘要生成）
@@ -4953,22 +4982,22 @@ mod tests {
     /// "处理 0 篇"，健康度还是 success，所以这条链路坏了很久都没被发现。
     /// 本用例把"分数确实落库"钉死，避免同类静默失效再次发生。
     ///
-    /// 同时验证口径：停用的实体不参与命中，未命中的文章写 0 分
-    /// （写 0 而非留 NULL，是为了"给新实体补评分"时能被重新扫到）。
+    /// 同时验证口径：停用的实体不参与命中；全量重算下「分数未变化」的文章不计入返回值——
+    /// 未命中那篇初始 0 分、重算后仍 0 分，故只应回写变化的那 1 篇。
     #[tokio::test]
     async fn batch_score_writes_scores_to_articles() {
         let pool = setup_digest().await;
         insert_entity(&pool, "OpenAI", 1).await;
         insert_entity(&pool, "已停用实体", 0).await;
 
-        // 分数传 0：走"待评分"分支（NULL 与 0 都算未评分）
+        // 两篇初始分数都传 0：全量重算下均在候选集内（不再有"待评分"分支之说）
         let hit = insert_scored_article(&pool, "OpenAI 发布新模型", "能力提升", 0).await;
         let miss = insert_scored_article(&pool, "无关标题", "无关摘要", 0).await;
 
         let updated = batch_score_entities(&pool, Vec::new())
             .await
             .expect("评分不应失败");
-        assert_eq!(updated, 2, "两篇待评分文章都应被回写");
+        assert_eq!(updated, 1, "只有命中的那篇分数发生变化（0→20）；未命中那篇 0→0 无变化、不计入");
 
         let hit_score: i64 = sqlx::query_scalar("SELECT entity_score FROM articles WHERE id = ?")
             .bind(hit)
@@ -4982,7 +5011,54 @@ mod tests {
             .expect("读取未命中文章分数失败");
 
         assert_eq!(hit_score, 20, "命中 1 个启用实体 = 20 分");
-        assert_eq!(miss_score, 0, "未命中写 0，而不是留空");
+        assert_eq!(miss_score, 0, "未命中保持 0 分（初始即为 0，重算后无变化）");
+    }
+
+    /// 回归：实体停用后，其历史命中推高的分数必须回退（全量重算的关键语义）
+    ///
+    /// 旧实现只补算 `entity_score IS NULL OR = 0` 的文章，已得正分的文章永不复算——
+    /// 于是「停用 / 删除实体」在数据上不生效，分数虚高，并污染研究粗筛
+    /// （`entity_score >= 阈值` 仍会放行已不匹配任何启用实体的文章）。本用例钉死回退语义。
+    #[tokio::test]
+    async fn batch_score_reverts_when_entity_disabled() {
+        let pool = setup_digest().await;
+        let entity = insert_entity(&pool, "OpenAI", 1).await;
+        let hit = insert_scored_article(&pool, "OpenAI 发布新模型", "能力提升", 0).await;
+
+        // 首次重算：命中启用实体 → 0 变 20
+        let first = batch_score_entities(&pool, Vec::new())
+            .await
+            .expect("首次评分不应失败");
+        assert_eq!(first, 1, "分数 0→20 应计为 1 条变化");
+        let score: i64 = sqlx::query_scalar("SELECT entity_score FROM articles WHERE id = ?")
+            .bind(hit)
+            .fetch_one(&pool)
+            .await
+            .expect("读取分数失败");
+        assert_eq!(score, 20, "命中 1 个启用实体 = 20 分");
+
+        // 停用该实体后重算：命中集合为空 → 分数必须回退到 0
+        sqlx::query("UPDATE entities SET enabled = 0 WHERE id = ?")
+            .bind(entity)
+            .execute(&pool)
+            .await
+            .expect("停用实体失败");
+        let second = batch_score_entities(&pool, Vec::new())
+            .await
+            .expect("复评不应失败");
+        assert_eq!(second, 1, "分数 20→0 应计为 1 条变化");
+        let reverted: i64 = sqlx::query_scalar("SELECT entity_score FROM articles WHERE id = ?")
+            .bind(hit)
+            .fetch_one(&pool)
+            .await
+            .expect("读取回退分数失败");
+        assert_eq!(reverted, 0, "实体停用后分数应回退为 0");
+
+        // 分数已稳定：再跑一次不应有任何写回，返回值恒为 0
+        let third = batch_score_entities(&pool, Vec::new())
+            .await
+            .expect("复跑不应失败");
+        assert_eq!(third, 0, "无变化时应返回 0，不产生写回");
     }
 
     /// 分组按实体名命中，文章多的实体排在前面，组内保持评分倒序

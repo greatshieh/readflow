@@ -52,6 +52,29 @@
         </div>
       </div>
 
+      <!-- 内嵌视频播放器：YouTube 源（RSSHub 等）的文章直接在此播放，
+           不必跳转网页视图或系统浏览器。地址由 utils/videoEmbed 从文章链接
+           提取 ID 后构造（youtube-nocookie.com/embed/{id}），非视频文章不渲染。
+           与附件播放器同位置同性质：滚动区之外常驻可见，边读边看。
+           sandbox 只授播放必需能力；src 是前端构造的受信地址，不含 RSS 原文 URL。 -->
+      <div class="embed-player" v-if="videoEmbedUrl">
+        <div class="ep-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="6 4 20 12 6 20 6 4"></polygon>
+          </svg>
+          视频
+        </div>
+        <iframe
+          class="embed-iframe"
+          :src="videoEmbedUrl"
+          sandbox="allow-scripts allow-same-origin allow-presentation"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+          referrerpolicy="no-referrer"
+          loading="lazy"
+          title="视频播放器"
+        ></iframe>
+      </div>
+
       <!-- 媒体附件播放器：播客音频 / 视频源直接内嵌播放，置于标题与正文之间，
            常驻可见（在滚动区之外），便于边读边听。无附件时不渲染。 -->
       <div class="enclosure-player" v-if="enclosureUrl">
@@ -190,6 +213,7 @@ import { useFeedsStore } from '@/stores/feeds'
 import { useUiStore } from '@/stores/ui'
 import { useSettingsStore } from '@/stores/settings'
 import { formatFullDate } from '@/utils/format'
+import { youtubeEmbedUrl } from '@/utils/videoEmbed'
 import { collectTocItems, type TocItem } from '@/utils/articleToc'
 import type { Article } from '@/types'
 
@@ -308,8 +332,30 @@ async function restoreProgress(): Promise<void> {
 /** 当前选中的文章 */
 const selectedArticle = computed<Article | null>(() => articlesStore.selectedArticle)
 
+/**
+ * 内嵌视频播放地址：从文章链接提取 YouTube ID 构造受信 embed URL
+ *
+ * 不信正文 content——入库前 ammonia 白名单已把 RSSHub 的嵌入 iframe 剥掉
+ * （见 utils/videoEmbed.ts 文件头）；link 字段不经净化，是唯一可靠信息源。
+ * 非 YouTube 文章为 null，模板据此整体不渲染播放器。
+ */
+const videoEmbedUrl = computed(() =>
+  selectedArticle.value ? youtubeEmbedUrl(selectedArticle.value.link) : null,
+)
+
 /** 当前文章的媒体附件 URL（无附件时为空串） */
-const enclosureUrl = computed(() => selectedArticle.value?.enclosure_url ?? '')
+const enclosureUrl = computed(() => {
+  const a = selectedArticle.value
+  const url = a?.enclosure_url ?? ''
+  if (!url) return ''
+  const t = a?.enclosure_type ?? ''
+  // RSSHub YouTube 源的附件 mime 是 text/html、URL 是嵌入播放器地址——
+  // 它既不是音频也不是可直接 <video> 播放的媒体文件，原样透出会落到下方
+  // <audio> 分支渲染一个必然播不出的"播客音频"播放器。识别为可信 YouTube
+  // 嵌入地址时整个抑制（该视频由上方 videoEmbedUrl 从 link 接管，同一个视频）。
+  if (t.startsWith('text/html') && youtubeEmbedUrl(url)) return ''
+  return url
+})
 /** 附件是否为视频（按 MIME 前缀判断，决定渲染 <video> 还是 <audio>） */
 const enclosureIsVideo = computed(() => {
   const t = selectedArticle.value?.enclosure_type ?? ''
@@ -765,6 +811,24 @@ onUnmounted(() => {
   max-height: 320px;
   border-radius: var(--r-md);
   background: var(--fill);
+}
+/* 内嵌视频播放器：与附件播放器同构（同宽、居中、常驻），16:9 自适应容器。
+   标签复用 .ep-label；src 是前端从文章链接构造的受信地址（utils/videoEmbed.ts），
+   sandbox / allow 在模板中显式声明，只给播放器必要的能力。 */
+.embed-player {
+  max-width: var(--read-max);
+  width: 100%;
+  margin: 0 auto;
+  padding: var(--sp-2) 0;
+  flex-shrink: 0;
+}
+.embed-iframe {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--fill);
+  display: block;
 }
 .content-source { color: var(--primary); }
 .content-time, .content-author { color: var(--text-tertiary); }

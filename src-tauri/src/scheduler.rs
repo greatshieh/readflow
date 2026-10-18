@@ -86,6 +86,11 @@ pub struct RefreshProgress {
     pub done: usize,
     /// 本轮待刷新的源总数
     pub total: usize,
+    /// 本次抓取该源失败的原因（成功时为 `None`）
+    ///
+    /// 定时 / 全量刷新路径下前端唯一能收到错误的方式：失败时该字段非空，
+    /// 前端据此在订阅源旁显示错误图标。成功时传 `None`（清空该源的错误状态）。
+    pub error: Option<String>,
 }
 
 /// 后台刷新管理器
@@ -278,21 +283,45 @@ pub(crate) async fn refresh_all_feeds(
                     }
                 }
 
-                // 更新最后抓取时间（用 SQLite 的 CURRENT_TIMESTAMP，避免 Rust 侧时区差异）
-                sqlx::query("UPDATE feeds SET last_fetch_at = CURRENT_TIMESTAMP WHERE id = ?")
+                // 更新最后抓取时间并清空上一次的错误状态（用 SQLite 的 CURRENT_TIMESTAMP，
+                // 避免 Rust 侧时区差异）。两条写操作合并为一条 UPDATE，少一次往返。
+                sqlx::query(
+                    "UPDATE feeds SET last_fetch_at = CURRENT_TIMESTAMP, last_error = NULL WHERE id = ?",
+                )
+                .bind(feed.id)
+                .execute(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+
+                // 该源处理完毕：立即重算未读数并广播进度（error=None 表示成功）
+                emit_feed_progress(pool, app, feed.id, &feed.name, new_count, done, total, None)
+                    .await;
+            }
+            // 抓取失败（超时 / 解析失败）同样只记录，保证整轮刷新不被拖垮；
+            // 仍广播一次进度（new_count=0），让前端 n/m 不至于停在中途。
+            // 错误原因落库并随事件广播，前端才能在源旁显示错误图标。
+            Err(e) => {
+                eprintln!("抓取 {} 失败: {}", feed.name, e);
+                // 单独写错误列：失败路径不动 last_fetch_at，避免"失败也算抓过"掩盖问题
+                if let Err(werr) = sqlx::query("UPDATE feeds SET last_error = ? WHERE id = ?")
+                    .bind(&e)
                     .bind(feed.id)
                     .execute(pool)
                     .await
-                    .map_err(|e| e.to_string())?;
-
-                // 该源处理完毕：立即重算未读数并广播进度
-                emit_feed_progress(pool, app, feed.id, &feed.name, new_count, done, total).await;
-            }
-            // 抓取失败（超时 / 解析失败）同样只记录，保证整轮刷新不被拖垮；
-            // 仍广播一次进度（new_count=0），让前端 n/m 不至于停在中途
-            Err(e) => {
-                eprintln!("抓取 {} 失败: {}", feed.name, e);
-                emit_feed_progress(pool, app, feed.id, &feed.name, 0, done, total).await;
+                {
+                    eprintln!("写入 {} 的错误状态失败: {}", feed.name, werr);
+                }
+                emit_feed_progress(
+                    pool,
+                    app,
+                    feed.id,
+                    &feed.name,
+                    0,
+                    done,
+                    total,
+                    Some(e),
+                )
+                .await;
             }
         }
     }
@@ -518,6 +547,7 @@ mod new_article_notify_tests {
 /// * `new_count` - 本次该源新增的文章数
 /// * `done` - 已完成源序号（从 1 起）
 /// * `total` - 本轮源总数
+/// * `error` - 本次抓取该源失败的原因；成功传 `None`（随事件广播给前端）
 pub(crate) async fn emit_feed_progress(
     pool: &SqlitePool,
     app: Option<&AppHandle>,
@@ -526,6 +556,7 @@ pub(crate) async fn emit_feed_progress(
     new_count: i64,
     done: usize,
     total: usize,
+    error: Option<String>,
 ) {
     // 先 COUNT 再回写（而非 UPDATE + 查询），两条语句都极轻量：
     // 该源文章数通常为几十到几百，单次 COUNT 的代价可忽略
@@ -562,6 +593,7 @@ pub(crate) async fn emit_feed_progress(
             unread_count: unread,
             done,
             total,
+            error,
         };
         if let Err(e) = app.emit("refresh-progress", payload) {
             eprintln!("发送刷新进度事件失败: {}", e);

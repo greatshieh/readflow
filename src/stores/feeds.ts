@@ -45,6 +45,12 @@ interface RefreshProgressPayload {
   done: number
   /** 本轮待刷新的源总数 */
   total: number
+  /**
+   * 本次抓取该源失败的原因（成功时为 null）
+   *
+   * 定时 / 全量刷新路径下前端唯一能收到源级错误的方式——据此在源旁显示错误图标。
+   */
+  error: string | null
 }
 
 /**
@@ -139,9 +145,14 @@ export const useFeedsStore = defineStore('feeds', () => {
         // ① 逐源刷新进度：刷新过程中实时更新未读数与 n/m
         listen<RefreshProgressPayload>('refresh-progress', (event) => {
           const p = event.payload
-          // 原地更新对应源的未读数（该源可能刚被删除而不在列表中，此时忽略即可）
+          // 原地更新对应源的未读数与错误状态（该源可能刚被删除而不在列表中，此时忽略即可）。
+          // error 为 null 表示本次抓取成功，同时清空该源的错误图标——成功与失败两个分支
+          // 后端都会广播本事件，因此这里一次赋值即可覆盖"写入"与"清空"两种语义。
           const feed = feeds.value.find((f) => f.id === p.feedId)
-          if (feed) feed.unread_count = p.unreadCount
+          if (feed) {
+            feed.unread_count = p.unreadCount
+            feed.last_error = p.error
+          }
           // 推进 n/m 进度；done === total 时保留最后值，由 refreshFeeds 的 finally 统一复位
           refreshProgress.value = { done: p.done, total: p.total }
         })

@@ -1705,20 +1705,46 @@ async fn feeds_refresh_one(feed_id: i64, app: tauri::AppHandle) -> Result<i64, S
                     }
                 }
             }
-            // 标记本次尝试时间（"尝试过"而非"有新内容"，避免时效源被高频重试）
-            sqlx::query("UPDATE feeds SET last_fetch_at = CURRENT_TIMESTAMP WHERE id = ?")
-                .bind(feed.id)
-                .execute(&pool)
-                .await
-                .map_err(|e| e.to_string())?;
+            // 标记本次尝试时间并清空上一次的错误状态（"尝试过"而非"有新内容"，
+            // 避免时效源被高频重试）；两条写操作合并为一条 UPDATE，少一次往返
+            sqlx::query(
+                "UPDATE feeds SET last_fetch_at = CURRENT_TIMESTAMP, last_error = NULL WHERE id = ?",
+            )
+            .bind(feed.id)
+            .execute(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
             // 重算该源未读数、写回 feeds 表并广播单源进度事件（done=1/total=1）。
             // 复用调度器的 emit_feed_progress，与全量刷新的载荷格式保持一致；
             // 该函数对 SQL/事件失败自带日志兜底，不影响本次刷新结果
-            scheduler::emit_feed_progress(&pool, Some(&app), feed.id, &feed.name, count, 1, 1).await;
+            scheduler::emit_feed_progress(&pool, Some(&app), feed.id, &feed.name, count, 1, 1, None)
+                .await;
             Ok(count)
         }
-        // 抓取失败直接返回错误，由前端提示（不静默吞掉，否则用户以为刷新成功）
-        Err(e) => Err(format!("抓取 {} 失败: {}", feed.name, e)),
+        // 抓取失败：先把错误原因写入源级状态并广播（前端据此在源旁显示错误图标），
+        // 再返回错误文案由前端提示——不静默吞掉，否则用户以为刷新成功
+        Err(e) => {
+            if let Err(werr) = sqlx::query("UPDATE feeds SET last_error = ? WHERE id = ?")
+                .bind(&e)
+                .bind(feed.id)
+                .execute(&pool)
+                .await
+            {
+                eprintln!("写入 {} 的错误状态失败: {}", feed.name, werr);
+            }
+            scheduler::emit_feed_progress(
+                &pool,
+                Some(&app),
+                feed.id,
+                &feed.name,
+                0,
+                1,
+                1,
+                Some(e.clone()),
+            )
+            .await;
+            Err(format!("抓取 {} 失败: {}", feed.name, e))
+        }
     }
 }
 
@@ -2523,13 +2549,15 @@ async fn entity_graph(
 /// 批量计算文章实体匹配评分
 ///
 /// 遍历所有已启用实体，统计每篇文章标题+摘要中的命中数，
-/// 映射到 0-100 分后写入 `entity_score`。仅更新尚未评分的文章。
+/// 映射到 0-100 分后写入 `entity_score`。
+/// **按当前启用实体全量重算**：实体的增删改都会改变命中集合，若只补算未评分的文章，
+/// 被删除/停用实体留下的旧分数会永久残留（详见 `db::batch_score_entities`）。
 ///
 /// # 参数
 /// * `article_ids` - 指定文章 ID 列表；为空时全库评分
 ///
 /// # 返回值
-/// 实际更新的文章条数
+/// 实际发生变化的文章条数（分数未变的文章不写库、不计入）
 #[tauri::command]
 async fn score_articles(article_ids: Option<Vec<i64>>) -> Result<u64, String> {
     let pool = db_pool().await.map_err(|e| e.to_string())?;

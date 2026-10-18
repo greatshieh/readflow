@@ -132,6 +132,31 @@ import type { Article } from '@/types'
 const open = ref(false)
 /** 输入框内容（v-model） */
 const keyword = ref('')
+
+/**
+ * 上次使用的检索词（仅会话内记忆，不落盘）
+ *
+ * # 为什么记
+ * 面板此前是严格无状态的：唤起即清空，跳转即关闭。代价是"搜一个词 → 跳去看 →
+ * 想回头再看一眼其余结果"这条路径必须把关键词重输一遍。
+ *
+ * # 为什么只存词、不存结果
+ * 存结果意味着要自己维护失效逻辑（文章可能被删、订阅可能已刷新），
+ * 而重新检索一次的成本远低于维护一份可能过期的快照。show() 里直接重跑 runSearch，
+ * 拿到的一定是当前真实结果。
+ *
+ * # 为什么不用 localStorage
+ * 跨重启带出旧关键词会让人拿陈旧的检索条件去找东西，且关键词本身可能敏感。
+ *
+ * # 何时写入
+ * 只在 jump() 里（即用户真的"用这个词去看了某篇东西"），
+ * Esc 关闭或看空结果不算——那种情况下记住它只会下次唤起时莫名被预填。
+ *
+ * 非响应式：它只在 show() / jump() 里读写，不驱动任何渲染，故用普通 let 而非 ref。
+ * （`<script setup>` 顶层的代码在每个实例上各跑一次，本组件全局只挂载一份，
+ *   故此处的"模块级"与"实例级"等价。）
+ */
+let lastKeyword = ''
 /** 检索结果 */
 const results = ref<Article[]>([])
 /** 当前高亮项下标 */
@@ -177,6 +202,28 @@ let reqSeq = 0
 let debounceTimer: ReturnType<typeof setTimeout> | undefined
 
 /**
+ * 是否屏蔽 watch(keyword) 的下一次触发
+ *
+ * # 为什么需要它
+ * `watch(keyword)` 在 setup 期就注册好了，而 `show()` 的 `keyword.value = q`
+ * 是一次真实赋值——只要值确实变了，Vue 就会把 watch 排进 pre 队列，
+ * 150ms 后再跑一次 `runSearch(q)`。于是唤起面板会检索两次：
+ * 第二次进全文段时还会把 `loading` 重新置 true，**已经出来的结果列表被骨架屏
+ * 顶掉再闪回来**——比多查一次更难接受。故程序化回填时必须屏蔽这一次触发。
+ *
+ * # 为什么只在"值确实要变且要沿用旧词"时置位
+ * 值没变时 watch 根本不会触发，标记会留下来吞掉用户之后的**第一次真实击键**
+ * （那次击键就搜不出东西了）。故严格限定置位条件，让标记必定被本次回填消费掉。
+ *
+ * # 为什么空词路径不屏蔽
+ * `q` 为空时让 watch 照常走它的空分支反而更好：那一支会作废在途请求
+ * （`reqSeq++`）并撤掉待执行的防抖，正好清掉"关面板前敲了一半"留下的尾巴。
+ *
+ * 非响应式：仅在 show() 与 watch 回调之间同步传话，不参与渲染。
+ */
+let suppressKeywordWatch = false
+
+/**
  * 结果集整体换掉时把列表滚回顶部
  *
  * 用 watch 而非在 runSearch 的两个分支里各写一次：换结果有三条路径
@@ -196,19 +243,75 @@ watch(results, async () => {
 /**
  * 打开命令面板
  *
- * 由全局 `Ctrl/⌘+K` 触发。打开时清空上一次的关键词与结果——
- * 面板是"一次性"的，重新唤起应当是干净起点。
+ * 由全局 `Ctrl/⌘+K` 触发。
  *
- * @returns 无返回值；副作用为置位 open、聚焦输入框
+ * # 为什么沿用上一次的关键词，而不是清空
+ * 面板此前严格无状态（唤起即清空），代价落在最常见的一条路径上：
+ * 「搜一个词 → 跳过去读完 → 回头想看看其余结果」必须把词重输一遍。
+ * 而"跳过去读完再回来接着挑"恰恰是命令面板区别于一次性搜索框的价值所在——
+ * 一次性搜索框用完就丢是合理的，多结果浏览工具丢掉上下文则是纯粹的摩擦。
+ * 故改为沿用 `lastKeyword`，让面板回到"随时回到刚才那次检索"的工具形态。
+ *
+ * 注意这只改**起点**，不改**结果**：结果仍然每次现搜（见 lastKeyword 的注释），
+ * 因此不存在"面板里挂着过期的检索快照"这种问题。
+ *
+ * # 为什么要 select() 全选而不是只 focus()
+ * 沿用旧词时用户大概率是要改词或直接翻结果，两者都是"覆盖式"操作：
+ * 全选后直接打字即改词，直接按 ↓ 即看结果。若只聚焦，光标落在末尾，
+ * 想换个词得先手动清空，多一步无谓操作。
+ *
+ * # 为什么 focus() 与 select() 都要调，不能二选一
+ * `select()` 不保证让元素获得焦点（MDN 用词是 "not necessarily"，非"一定不聚焦"），
+ * `focus()` 又只定位光标、不选中文本，故两者互补。详见 show() 内该分支的注释。
+ * 同帧连续调用，不引入时延。
+ *
+ * # 为什么先置 loading 再开面板
+ * results 已清空而检索尚未发起，这一帧若不置 loading 会闪出"没有匹配…"——
+ * 那是在说谎（真相是"还没查"）。loading 先置位、骨架先出现，结果回来再替换。
+ *
+ * @returns 无返回值；副作用为置位 open、回填关键词、按需重跑检索、选中或聚焦输入框
  */
 async function show() {
-  keyword.value = ''
-  results.value = []
+  const q = lastKeyword
+  // 值确实要变才置屏蔽标记：见 suppressKeywordWatch 的注释。
+  // 空词不屏蔽——让 watch 的空分支替我们作废在途请求、撤掉残留防抖。
+  if (q && keyword.value !== q) suppressKeywordWatch = true
+  keyword.value = q
   index.value = 0
   mode.value = 'title'
+  results.value = []
+  // 沿用旧词时先置loading，避免 results 已空而检索未完时闪出"没有匹配…"
+  loading.value = q ? true : false
   open.value = true
   await nextTick()
-  inputRef.value?.focus()
+  if (q) {
+    // 必须先 focus() 再 select()，两者互补、不可二选一：
+    //   · select() 不保证让元素获得焦点（MDN："will not necessarily focus the input"）；
+    //   · focus() 只定位光标、不选中文本，全选仍要靠 select()。
+    // 同帧连续调用，不引入时延，"唤起即可打字"的手感不受影响。
+    //
+    // 为什么要显式补 focus()：它把「不保证」变成「保证」，从而**不依赖引擎实现细节**
+    // （本项目三端分别是 WebKitGTK / WKWebView / WebView2，出自不同引擎团队）。
+    // 附带收益是让两个分支对称——空词分支本就调 focus()，原先沿用分支不调，本身就不一致。
+    //
+    // 注意：这不是修复已观测到的缺陷。Linux 端实测（WebKitGTK 2.52.6）单用 select()
+    // 也能隐式聚焦，选区与覆盖行为均正常；此处只是跨平台加固，不是 Bug 修复。
+    inputRef.value?.focus()
+    // 全选而非仅聚焦：想改词直接打字覆盖，想看结果直接按 ↓。
+    // 光标停在末尾时用户要重输还得先手动清空，多一步。
+    inputRef.value?.select()
+    // 撤掉残留防抖：上一轮可能"敲了几个字就 Esc"，定时器还挂着。
+    // watch 那次触发已被 suppressKeywordWatch 屏蔽，它的 clearTimeout 不会跑，
+    // 若不在这儿补，这个陈旧的 runSearch 会在 150ms 后把本次结果顶掉。
+    if (debounceTimer) {
+      clearTimeout(debounceTimer)
+      debounceTimer = undefined
+    }
+    // 直调 runSearch 而不等 watch(keyword) 的 150ms 防抖——否则每次唤起都有可感知的迟滞
+    void runSearch(q)
+  } else {
+    inputRef.value?.focus()
+  }
 }
 
 /** 关闭命令面板 */
@@ -246,6 +349,18 @@ async function runSearch(q: string) {
     return
   }
   const seq = ++reqSeq
+  // 每一轮检索都从这里"重新开始"：先作废上一轮、再把 loading 复位。
+  //
+  // # 为什么复位必须放在入口，而不是每条分支各自记得清
+  // 下面有三条出口（标题早退 / 全文 try / 全文 catch），原先只有走完整 invoke 的
+  // 那条能被 `finally` 兜住。标题命中是**同步早退**——早于本轮把 loading 置 true 的
+  // 任何一次 await，于是"沿用上次关键词唤起"（show() 先置 loading=true 再调本函数）
+  // 碰上标题命中时，loading 永久为 true，模板 `v-if="loading"` 会把骨架屏
+  // 永久留在结果列表上——恰好废掉本次需求的核心承诺。
+  //
+  // 收口到入口后不变式变得可读：**loading 为 true 当且仅当本轮有 invoke 在途**。
+  // 入口清零保证任何"不发请求就返回"的出口都自动收尾；真正要发请求前再置回 true。
+  loading.value = false
   const lower = q.toLowerCase()
 
   // 第一段：标题命中。直接在已加载的列表里找——不 invoke 后端，输入零延迟
@@ -256,10 +371,12 @@ async function runSearch(q: string) {
     results.value = titleHits.slice(0, LIMIT)
     mode.value = 'title'
     index.value = 0
+    // 此处无需复位 loading：入口已清零，且本分支不发请求，全文段的 finally 也够不着。
     return
   }
 
-  // 第二段：标题无命中才搜全文（FTS5，含正文与摘要）
+  // 第二段：标题无命中才搜全文（FTS5，含正文与摘要）。
+  // 全函数唯一把 loading 置 true 的地方——与入口的复位严格配对。
   loading.value = true
   try {
     const hits = await invoke<Article[]>('articles_search', { query: q, limit: LIMIT })
@@ -281,6 +398,12 @@ async function runSearch(q: string) {
 
 /** 关键词变化 → 防抖后检索。150ms 足够消掉连续击键，又不会有明显迟滞 */
 watch(keyword, (v) => {
+  // show() 程序化回填引发的那次触发：检索已由 show() 直调 runSearch 跑过，此处跳过。
+  // 标记无条件消费——它必定由那一次回填置位，不会残留到用户输入上。
+  if (suppressKeywordWatch) {
+    suppressKeywordWatch = false
+    return
+  }
   if (debounceTimer) clearTimeout(debounceTimer)
   const q = v.trim()
   if (!q) {
@@ -513,11 +636,16 @@ async function waitForItem(attr: string, itemClass: string, timeoutMs = 1200): P
  * 让两栏的胶囊各自播一次定位脉冲。派发而非直接调 ref，是因为两栏可能
  * 尚未渲染出目标条目（首次展开某分组等），由它们在 nextTick 后自行处理更稳。
  *
- * @returns 无返回值；副作用为写 store、关闭面板、派发定位事件
+ * @returns 无返回值；副作用为记下本次检索词、写 store、关闭面板、派发定位事件
  */
 async function jump() {
   const a = results.value[index.value]
   if (!a) return
+  // 记住本次用的检索词，供下次唤起沿用。必须落在 close() 之前：
+  // close() 只是 open=false，但它代表"这次交互结束了"——语义上先记账再收摊。
+  // 空词不记：无关键词的跳转（理论上进不到这里）不该污染下次唤起的起点。
+  const used = keyword.value.trim()
+  if (used) lastKeyword = used
   close()
 
   // ① 先切到该文所属的订阅源 —— 不切的话，两栏都停在当前范围，

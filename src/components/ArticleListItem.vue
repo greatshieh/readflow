@@ -13,7 +13,10 @@
       <div class="feed-item-dot"></div>
       <div class="feed-item-title">{{ article.title }}</div>
       <div class="feed-item-meta">
-        <span class="feed-item-source">
+        <!-- 来源名：仅在聚合视图（全部/未读/标签等跨源列表）下显示。
+             单源视图下左栏已高亮选中源，每张卡片再念一遍是冗余，
+             且它正是窄栏时挤压时间戳的空间元凶。 -->
+        <span class="feed-item-source" v-if="!feedsStore.selectedFeed">
           <span class="source-logo" v-if="feedIcon">
             <img class="source-logo-img" :src="feedIcon" @error="hideBrokenIcon" alt="" />
           </span>
@@ -227,6 +230,17 @@ function onPreferenceClick(preference: 'like' | 'skip') {
   font-size: var(--fs-xs);
   color: var(--text-tertiary);
   margin-top: var(--sp-1);
+  /* min-width: 0：作为 flex 子项允许被压缩到内容以下，
+     否则本行会反过来撑爆 .feed-item-info 的省略号布局 */
+  min-width: 0;
+}
+/* 时间戳：flex 行末位的保底元素，永不许被压缩。
+   它原先是个"死类"——模板里有 class，本文件却无定义，
+   于是窄栏时源名靠省略号缩到 0，而时间戳缩不动却必须缩，
+   表现为"源名截断了，时间反被挤压"。 */
+.article-time {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .feed-item-source {
   color: var(--primary);

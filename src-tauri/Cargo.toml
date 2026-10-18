@@ -52,6 +52,10 @@ reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
 chrono = { version = "0.4", features = ["serde"] }
 url = "2.5"
 rss = "2.0"
+# atom_syndication：解析 Atom 1.0（`<feed>` 根标签）。`rss` crate 只认 `<rss>`，
+# 遇到 Atom 源会直接报 "the input did not begin with an rss tag"。
+# 版本已在 Cargo.lock（0.12.10，`rss` 的传递依赖），本机 registry 已解包，零下载。
+atom_syndication = "0.12"
 tokio-cron-scheduler = "0.10"
 uuid = "1"
 dirs = "5.0"
