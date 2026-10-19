@@ -30,6 +30,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { Feed, Folder, FeedAiConfig } from '@/types'
+import { useToastStore } from '@/stores/toast'
 
 /** 刷新进度事件载荷（与 Rust 端 `RefreshProgress` 对应，Tauri 事件键为 camelCase） */
 interface RefreshProgressPayload {
@@ -96,6 +97,35 @@ export interface AutoGroupResult {
  * 该标记守护本 store 的全部后端事件监听（刷新进度 + 订阅源回填）。
  */
 let feedEventListenersRegistered = false
+
+/**
+ * 撤销窗口内的待删订阅源
+ *
+ * 「取消订阅」不再直接落库：先从列表移除让界面立刻响应，等到撤销窗口结束才真正删除。
+ * 窗口内用户点「撤销」就把条目按原位置插回，DB 完全没被碰过——代价是这几秒里
+ * 「已删除」在库里还是假的（详见 `unsubscribeFeed` 的边界说明）。
+ *
+ * 用模块级 `Map` 而非 `ref`：它是过程状态、不该驱动渲染，也必须在
+ * `loadFeeds()` 里被同步读取以过滤掉"复活"的条目。
+ */
+interface PendingDelete {
+  /** 被移除的订阅源快照（原对象引用，撤销时原样插回） */
+  feed: Feed
+  /** 移除前的数组下标，撤销时据此回到原位而非追加到末尾 */
+  index: number
+  /** 移除前是否处于选中态，撤销时一并恢复，避免"撤回了但列表是空的" */
+  wasSelected: boolean
+  /** 撤销窗口的定时器句柄，撤销或提前提交时清掉 */
+  timer: ReturnType<typeof setTimeout>
+}
+
+const pendingDeletes = new Map<number, PendingDelete>()
+
+/** 撤销窗口时长（毫秒）：够反悔，又不至于让"已删除"长期是假的 */
+const UNDO_WINDOW_MS = 6000
+
+/** 同时允许挂起的待删数量；超出时最旧的一条立即落库，避免状态无限堆积 */
+const MAX_PENDING_DELETES = 3
 
 export const useFeedsStore = defineStore('feeds', () => {
   /** 订阅源列表（侧边栏渲染源，含后端重算的 unread_count） */
@@ -194,7 +224,10 @@ export const useFeedsStore = defineStore('feeds', () => {
     try {
       // 动态 import：Tauri 运行时模块按需加载，避免阻塞首屏
       const { invoke } = await import('@tauri-apps/api/core')
-      feeds.value = await invoke<Array<Feed>>('feeds_list')
+      const list = await invoke<Array<Feed>>('feeds_list')
+      // 撤销窗口内的源已从界面移除但尚未落库，重载时必须继续过滤掉，
+      // 否则刷新一次订阅就会让它"复活"，撤销窗口形同虚设
+      feeds.value = list.filter((f) => !pendingDeletes.has(f.id))
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e)
       console.error('加载订阅源失败:', e)
@@ -299,29 +332,103 @@ export const useFeedsStore = defineStore('feeds', () => {
   }
 
   /**
-   * 删除订阅源
+   * 取消订阅（可撤销）
    *
-   * 删除后若该源正处于选中态，需清空 `selectedFeed`，否则界面会继续筛选一个
-   * 已不存在的源，展示出空白列表。
+   * # 为什么不直接删
+   * 后端 `feeds_delete` 依赖外键 ON DELETE CASCADE，会把该源下**全部文章、书签、
+   * 已读状态**一起抹掉，且历史文章重抓不回来。这是应用里少数真正不可恢复的操作，
+   * 所以给它一个反悔窗口：界面立即移除（不让操作显得没反应），6 秒后才真正落库。
    *
-   * @param id - 订阅源 ID（后端级联删除其下文章）
-   * @returns 无返回值；副作用为后端删除 + 重载列表 + 必要时清空选中态
-   * @throws 后端失败时原样抛出
+   * # 与确认框的分工
+   * 确认框管"手滑"，撤销管"反悔"——点完确认三秒后想起「等等我还要」时，只有撤销能救。
+   * 两者叠加等于每次删除都被打断一次，故这里**不再弹确认框**。
+   *
+   * # 边界（已知且接受）
+   * - 撤销窗口内退出应用 = 删除未生效（定时器随之消失，源还在）。覆盖绝大多数用法。
+   * - 窗口内若有 `loadFeeds()`（刷新、事件回填），结果会过滤掉待删项，防止"复活"。
+   * - 待删超过 3 个时，最旧的一条立即落库——屏幕上不会同时挂着四条撤销机会。
+   *
+   * @param id - 订阅源 ID；不在列表中时静默返回（重复调用是合法场景）
    */
-  async function deleteFeed(id: number) {
+  async function unsubscribeFeed(id: number): Promise<void> {
+    const idx = feeds.value.findIndex((f) => f.id === id)
+    if (idx === -1) return
+
+    const feed = feeds.value[idx]
+    const wasSelected = selectedFeed.value?.id === id
+
+    // 先让界面立刻响应：移除条目并解除选中（选着已不存在的源只会筛出空白列表）
+    feeds.value.splice(idx, 1)
+    if (wasSelected) selectedFeed.value = null
+
+    // 队列已满：最旧的一条先落库，保证"可达的撤销"始终只有固定几条
+    if (pendingDeletes.size >= MAX_PENDING_DELETES) {
+      const oldestId = pendingDeletes.keys().next().value
+      if (oldestId !== undefined) await commitDelete(oldestId)
+    }
+
+    const timer = setTimeout(() => {
+      void commitDelete(id)
+    }, UNDO_WINDOW_MS)
+    pendingDeletes.set(id, { feed, index: idx, wasSelected, timer })
+
+    useToastStore().show(`已取消订阅「${feed.name}」`, {
+      duration: UNDO_WINDOW_MS,
+      action: { label: '撤销', onClick: () => undoUnsubscribe(id) },
+    })
+  }
+
+  /**
+   * 撤销一次取消订阅：按原位置插回并恢复选中
+   *
+   * 只改前端状态——撤销窗口内 DB 从未被删过，无需任何后端调用。
+   *
+   * @param id - 订阅源 ID；不在待删表里时静默返回（已被提交删除或重复点撤销）
+   */
+  function undoUnsubscribe(id: number): void {
+    const pending = pendingDeletes.get(id)
+    if (!pending) return
+
+    clearTimeout(pending.timer)
+    pendingDeletes.delete(id)
+
+    // 原下标可能因期间新增/删除别的源而越界，夹到当前长度内
+    const at = Math.min(pending.index, feeds.value.length)
+    feeds.value.splice(at, 0, pending.feed)
+    // 只在用户还没另选过源时恢复选中：否则撤销会把正在读的文章硬切走
+    if (pending.wasSelected && selectedFeed.value === null) selectedFeed.value = pending.feed
+  }
+
+  /**
+   * 真正执行删除（撤销窗口到期 / 队列溢出时调用）
+   *
+   * 失败必须把源原样插回并提示：否则界面停在"已删除"，用户重启应用后发现源又冒出来，
+   * 比直接报错更令人困惑。
+   *
+   * @param id - 订阅源 ID；不在待删表里时静默返回
+   */
+  async function commitDelete(id: number): Promise<void> {
+    const pending = pendingDeletes.get(id)
+    if (!pending) return
+
+    clearTimeout(pending.timer)
+    pendingDeletes.delete(id)
+
     try {
       const { invoke } = await import('@tauri-apps/api/core')
       await invoke<void>('feeds_delete', { id })
-      // 避免选中已删除的源导致界面筛选不到数据
-      if (selectedFeed.value?.id === id) {
-        selectedFeed.value = null
-      }
       // 节流表里的时间戳一并清掉：源删除后 ID 不会复用，但留着属于泄漏
       lastAutoRefreshAt.delete(id)
-      await loadFeeds()
+      // 刻意不调 loadFeeds()：条目已从本地数组移除，其他源的未读数由事件监听器维护，
+      // 整体重载反而可能把窗口内刚插回的源冲掉。
     } catch (e) {
-      console.error('删除订阅源失败:', e)
-      throw e
+      const at = Math.min(pending.index, feeds.value.length)
+      feeds.value.splice(at, 0, pending.feed)
+      if (pending.wasSelected && selectedFeed.value === null) selectedFeed.value = pending.feed
+      useToastStore().show(
+        `删除「${pending.feed.name}」失败：${e instanceof Error ? e.message : String(e)}`,
+        { duration: 6000 }
+      )
     }
   }
 
@@ -623,7 +730,8 @@ export const useFeedsStore = defineStore('feeds', () => {
     refreshFeeds,
     refreshOneFeed,
     addFeed,
-    deleteFeed,
+    unsubscribeFeed,
+    undoUnsubscribe,
     updateFeed,
     importOpml,
     exportOpml,

@@ -949,11 +949,8 @@ async function onCtxSelect(key: string) {
     } else if (key === 'copyUrl') {
       await navigator.clipboard.writeText(feed.url)
     } else if (key === 'unsubscribe') {
-      const ok = await modalStore.showConfirm({
-        title: '取消订阅',
-        message: `确定取消订阅「${feed.name}」吗？\n该源下的所有文章也会一并删除，且不可恢复。`,
-      })
-      if (ok) await feedsStore.deleteFeed(feed.id)
+      // 刻意不弹确认框：删除改成「立即生效 + 6 秒内撤销」，用撤销兜底而不是打断每一次操作
+      await feedsStore.unsubscribeFeed(feed.id)
     } else if (key.startsWith('move:')) {
       await feedsStore.moveFeedToFolder(feed.id, Number(key.slice(5)))
     }

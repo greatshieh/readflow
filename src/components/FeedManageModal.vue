@@ -111,7 +111,6 @@ import { ref, computed, watch } from 'vue'
 import BaseModal from './BaseModal.vue'
 import AppSelect from './AppSelect.vue'
 import { useFeedsStore } from '@/stores/feeds'
-import { useModalStore } from '@/stores/modal'
 import type { Feed, FeedAiConfig } from '@/types'
 
 const props = defineProps<{
@@ -125,7 +124,6 @@ const emit = defineEmits<{
 }>()
 
 const feedsStore = useFeedsStore()
-const modalStore = useModalStore()
 
 // ─── Tab 控制 ───────────────────────────────────────────────────────────────
 const tabs = [
@@ -213,20 +211,18 @@ async function handleSave() {
   }
 }
 
+/**
+ * 删除当前订阅源
+ *
+ * 与订阅栏右键菜单的「取消订阅」走同一条路径：不弹确认框，改为「立即移除 + 6 秒撤销」。
+ * 失败由 store 内部弹 toast 并自动还原条目，故这里不再回填 `manageMsg`；
+ * 先关弹窗再删——弹窗留在屏幕上等一个已经可撤销的删除，只会挡住后面要看的界面。
+ */
 async function handleDelete() {
   if (!props.feed) return
   const feed = props.feed
-  const ok = await modalStore.showConfirm({
-    title: '删除订阅源',
-    message: `确定删除订阅源「${feed.name}」吗？\n该源下的所有文章也会一并删除，且不可恢复。`
-  })
-  if (!ok) return
-  try {
-    await feedsStore.deleteFeed(feed.id)
-    emit('close')
-  } catch (e) {
-    manageMsg.value = e instanceof Error ? e.message : String(e)
-  }
+  emit('close')
+  await feedsStore.unsubscribeFeed(feed.id)
 }
 
 // ─── AI 配置操作 ────────────────────────────────────────────────────────────

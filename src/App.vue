@@ -50,6 +50,8 @@
     />
     <!-- 首启引导：首次启动（无 onboarded 标记）时弹出，完成 / 跳过后标记并关闭 -->
     <OnboardingModal :open="showOnboarding" @finish="onOnboardingFinish" />
+    <!-- 全局轻提示：可撤销操作（取消订阅）的反悔入口，Teleport 到 body 以盖过弹窗 -->
+    <ToastHost />
   </div>
 </template>
 
@@ -91,6 +93,7 @@ import ShortcutsModal from './components/ShortcutsModal.vue'
 import EntityDashboardModal from './components/EntityDashboardModal.vue'
 import OnboardingModal from './components/OnboardingModal.vue'
 import GlobalModal from './components/GlobalModal.vue'
+import ToastHost from './components/ToastHost.vue'
 import CommandPalette from './components/CommandPalette.vue'
 
 /** 订阅源 store 实例：供 mounted 触发首次加载 */
