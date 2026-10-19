@@ -7,27 +7,6 @@
       <p class="form-hint">保存后立即生效；"跟随系统"会随系统明暗切换自动变化</p>
     </div>
 
-    <!-- 主题色：写入 settings.accent，切换强调色预设（详见 appearance.ts 的 ACCENT_PRESETS） -->
-    <div class="form-group">
-      <label class="form-label">主题色</label>
-      <div class="accent-picker">
-        <button
-          v-for="preset in accentPresets"
-          :key="preset.key"
-          type="button"
-          class="accent-swatch"
-          :class="{ active: accent === preset.key }"
-          :style="{ '--swatch': preset.color }"
-          :title="preset.label"
-          @click="setAccent(preset.key)"
-        >
-          <span class="accent-dot"></span>
-          <span class="accent-name">{{ preset.label }}</span>
-        </button>
-      </div>
-      <p class="form-hint">点击色块即时生效并写入设置；深色主题下会自动提亮一档保证对比度</p>
-    </div>
-
     <!-- 界面字体大小：写入 settings.ui_font_size，以应用级 zoom 缩放整个 UI -->
     <div class="form-group">
       <label class="form-label">界面字体大小</label>
@@ -248,7 +227,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useFeedsStore } from '@/stores/feeds'
 import { useModalStore } from '@/stores/modal'
 import { useEventTypesStore } from '@/stores/eventTypes'
-import { applyAppearance, ACCENT_PRESETS } from '@/utils/appearance'
+import { applyAppearance } from '@/utils/appearance'
 import { PRESET_DOMAIN_LABELS, PRESET_EVENT_TYPES } from '@/utils/eventTypeLabels'
 import AppSelect, { type SelectOption } from './AppSelect.vue'
 import AppSwitch from './AppSwitch.vue'
@@ -380,14 +359,6 @@ async function loadFonts() {
   if (systemFonts.value.length > 0) return
   systemFonts.value = await loadSystemFonts()
 }
-/**
- * 主题色（强调色）预设清单与当前选中值
- *
- * 清单直接取自 appearance.ts 导出的 ACCENT_PRESETS——同一份数据源保证
- * "可选项"与 "applyAppearance 认可的合法值"永不分叉。
- */
-const accentPresets = ACCENT_PRESETS
-const accent = ref(accentPresets[0].key)
 /** RSSHub 实例地址（添加订阅时路由自动拼接此前缀） */
 const rsshubUrl = ref('')
 /** 金融数据源凭据（仅存本机；新浪免 token 默认，Tushare/东财可选配置） */
@@ -549,9 +520,8 @@ watch(
     // 常规设置：刷新频率（缺省 60 分钟）与字体档位（缺省 medium）
     refreshInterval.value = settingsStore.getSetting('refresh_interval_minutes') || '60'
     fontSize.value = settingsStore.getSetting('font_size') || 'medium'
-    // 外观设置：主题 / 主题色 / 界面字体 / 内容字体
+    // 外观设置：主题 / 界面字体 / 内容字体（主题色已固定为紫罗兰，无需回填）
     theme.value = settingsStore.getSetting('theme') || 'light'
-    accent.value = settingsStore.getSetting('accent') || accentPresets[0].key
     uiFontSize.value = settingsStore.getSetting('ui_font_size') || 'medium'
     uiFont.value = settingsStore.getSetting('ui_font') || 'system'
     contentFont.value = settingsStore.getSetting('content_font') || 'system'
@@ -580,27 +550,6 @@ watch(
   },
   { immediate: true }
 )
-
-/**
- * 选择主题色并即时预览
- *
- * 之所以直接落库而非等"保存"按钮：颜色是强视觉反馈的选择，
- * 点击后必须立刻看到全界面主色变化才有意义；
- * 这里写入 settings 表后调用 applyAppearance 刷新 html[data-accent]，
- * saveGeneral 也会再写一次同一 key（幂等，无副作用）。
- *
- * @param key - 强调色预设 key（必须存在于 ACCENT_PRESETS）
- * @returns 无返回值；失败仅打印日志（保留界面上的选中态，下次保存会重试）
- */
-async function setAccent(key: string) {
-  accent.value = key
-  try {
-    await settingsStore.setSetting('accent', key)
-    applyAppearance(settingsStore)
-  } catch (e) {
-    console.error('保存主题色失败:', e)
-  }
-}
 
 /**
  * 立即整理存量订阅源（按来源自动分组）
@@ -647,7 +596,6 @@ async function saveGeneral() {
       settingsStore.setSetting('refresh_interval_minutes', refreshInterval.value),
       settingsStore.setSetting('font_size', fontSize.value),
       settingsStore.setSetting('theme', theme.value),
-      settingsStore.setSetting('accent', accent.value),
       settingsStore.setSetting('ui_font_size', uiFontSize.value),
       settingsStore.setSetting('ui_font', uiFont.value),
       settingsStore.setSetting('content_font', contentFont.value),
@@ -707,43 +655,7 @@ defineExpose({ save: saveGeneral })
 /* 表单原语（.form-group / .form-label / .form-input / .form-hint / .save-hint /
    .setting / .divider / .tab-pane / .opml-actions）已提升为全局类（styles.css）：
    它们被本弹窗的多个 tab 共用，而各 tab 拆分后是独立组件，scoped 样式跨不过组件边界。
-   这里只保留「常规」tab 独有的主题色选择器与「未安装字体」兜底样式。 */
-
-/* 主题色选择器：色块网格，选中项主色边框 + 浅色底 */
-.accent-picker {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-  gap: var(--sp-2);
-  margin-top: var(--sp-025);
-}
-.accent-swatch {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-15);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface);
-  color: var(--text-secondary);
-  font-size: var(--fs-sm);
-  cursor: pointer;
-  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease),
-    box-shadow var(--dur) var(--ease), transform var(--dur) var(--ease);
-}
-.accent-swatch:hover { border-color: var(--border); background: var(--fill); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
-.accent-swatch:active { transform: scale(0.98); }
-.accent-swatch.active {
-  border-color: var(--swatch);
-  background: var(--surface);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--swatch) 22%, transparent);
-  color: var(--text-primary);
-}
-.accent-dot {
-  width: 16px; height: 16px; border-radius: 50%;
-  background: var(--swatch); flex-shrink: 0;
-  box-shadow: var(--ring-inset);
-}
-.accent-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+   这里只保留「未安装字体」兜底与金融 / 事件类型等常规 tab 独有样式。 */
 
 /* 金融数据源：Tushare / 东财 凭据输入区（仅在设置页出现，scoped 即可） */
 .ds-fields { display: flex; flex-direction: column; gap: var(--sp-2); margin-top: var(--sp-2); }
@@ -761,11 +673,11 @@ defineExpose({ save: saveGeneral })
   transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease),
     color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
-.domain-chip:hover { border-color: var(--accent); color: var(--text-primary); }
+.domain-chip:hover { border-color: var(--primary); color: var(--text-primary); }
 .domain-chip.active {
-  border-color: var(--accent); color: var(--text-primary);
-  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+  border-color: var(--primary); color: var(--text-primary);
+  background: color-mix(in srgb, var(--primary) 12%, var(--surface));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 22%, transparent);
 }
 .domain-count {
   font-size: var(--fs-xs); color: var(--text-tertiary);
@@ -773,8 +685,8 @@ defineExpose({ save: saveGeneral })
   padding: 0 var(--sp-1); min-width: 18px; text-align: center;
 }
 .domain-chip.active .domain-count {
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 16%, transparent);
 }
 
 /* 事件类型分类：自定义类型增删 */

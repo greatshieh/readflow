@@ -15,6 +15,21 @@
         <input type="text" placeholder="搜索订阅源..." v-model="searchQuery" />
       </div>
     </div>
+    <!-- 视图 / 编辑模式切换（防误改）：默认视图态，结构性编辑入口禁用 -->
+    <div class="mode-bar">
+      <button
+        class="mode-btn"
+        :class="{ on: !uiStore.editMode }"
+        type="button"
+        @click="uiStore.setEditMode(false)"
+      >视图</button>
+      <button
+        class="mode-btn"
+        :class="{ on: uiStore.editMode }"
+        type="button"
+        @click="uiStore.setEditMode(true)"
+      >编辑</button>
+    </div>
     <!-- 订阅源列表：错误 / 加载中 / 空 三种状态互斥展示，正常时渲染过滤后的列表。
          加载中用骨架屏而非纯文字：占位块按真实 .feed-item 几何（28px 头像 + 标题行）铺排，
          加载完成切换时列表不跳版；空态与错误态复用全局 .state-block。
@@ -846,15 +861,28 @@ const ctxItems = computed<ContextMenuItem[]>(() => {
       disabled: f.id === currentFolder,
     })),
   ]
+  // 视图模式：结构性编辑入口禁用，并给出一条不可点的说明。
+  // refresh / markAllRead / copyUrl 属阅读动作，不受影响；
+  // 「移动到文件夹」在视图态不挂 children，避免子菜单仍可展开操作。
+  const locked = !uiStore.editMode
   return [
+    ...(locked
+      ? ([{ key: 'view-hint', label: '视图模式：切换到编辑以修改', disabled: true }] as ContextMenuItem[])
+      : []),
     { key: 'refresh', label: '刷新', icon: CTX_ICONS.refresh },
     { key: 'markAllRead', label: '全部标记为已读', icon: CTX_ICONS.check },
     { key: 'sep-1', separator: true },
-    { key: 'edit', label: '编辑订阅…', icon: CTX_ICONS.edit },
-    { key: 'move', label: '移动到文件夹', icon: CTX_ICONS.folder, children: folderChildren },
+    { key: 'edit', label: '编辑订阅…', icon: CTX_ICONS.edit, disabled: locked },
+    {
+      key: 'move',
+      label: '移动到文件夹',
+      icon: CTX_ICONS.folder,
+      disabled: locked,
+      children: locked ? undefined : folderChildren,
+    },
     { key: 'copyUrl', label: '复制订阅链接', icon: CTX_ICONS.link },
     { key: 'sep-2', separator: true },
-    { key: 'unsubscribe', label: '取消订阅', icon: CTX_ICONS.trash, danger: true },
+    { key: 'unsubscribe', label: '取消订阅', icon: CTX_ICONS.trash, danger: true, disabled: locked },
   ]
 })
 
@@ -1183,6 +1211,33 @@ onUnmounted(() => {
 
 .feed-search-wrap {
   padding: var(--sp-3) var(--sp-3) var(--sp-2);
+}
+/* 视图 / 编辑模式切换（防误改）：分段控件，选中项实底 + 主题色文字 */
+.mode-bar {
+  display: flex;
+  gap: 2px;
+  margin: 0 var(--sp-3) var(--sp-2);
+  padding: 2px;
+  border-radius: var(--r-md);
+  background: var(--fill-secondary);
+  flex-shrink: 0;
+}
+.mode-btn {
+  flex: 1;
+  height: 24px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.mode-btn:hover:not(.on) { color: var(--text-primary); }
+.mode-btn.on {
+  background: var(--surface);
+  color: var(--primary);
+  font-weight: 600;
+  box-shadow: var(--shadow-xs);
 }
 .feed-search { position: relative; }
 .feed-search input {

@@ -32,6 +32,27 @@ export const useUiStore = defineStore('ui', () => {
    */
   const focusMode = ref(false)
 
+  /**
+   * 视图 / 编辑模式开关（防误改）
+   *
+   * false = 视图模式（默认）：订阅源的重命名 / 移动 / 取消订阅等结构性编辑入口
+   *   被禁用，避免阅读过程中误触改坏数据；
+   * true = 编辑模式：这些入口恢复可用（取消订阅仍走二次确认）。
+   *
+   * 这是 UX 防错而非权限控制——不涉及任何鉴权，只为降低误操作概率。
+   */
+  const editMode = ref(false)
+
+  /** 翻转视图 / 编辑模式（供单键切换入口使用） */
+  function toggleEditMode() {
+    editMode.value = !editMode.value
+  }
+
+  /** 显式设置模式（供分段控件的两个按钮使用） */
+  function setEditMode(value: boolean) {
+    editMode.value = value
+  }
+
   /** 主屏内容类型：articles = 文章列表 + 正文（默认三栏）；graph = 实体关系图（全屏）；recommend = 智能推荐卡片流（保留订阅栏）。实体仪表盘为弹窗，不在此枚举内 */
   const mainView = ref<'articles' | 'graph' | 'recommend'>('articles')
 
@@ -146,5 +167,5 @@ export const useUiStore = defineStore('ui', () => {
     localStorage.setItem(ARTICLE_W_KEY, String(w))
   }
 
-  return { focusMode, toggleFocusMode, setFocusMode, mainView, setMainView, toggleGraphView, toggleRecommendView, entityDashboardOpen, entityDashboardId, openEntityDashboard, closeEntityDashboard, feedColWidth, articleColWidth, setFeedColWidth, setArticleColWidth }
+  return { focusMode, toggleFocusMode, setFocusMode, editMode, toggleEditMode, setEditMode, mainView, setMainView, toggleGraphView, toggleRecommendView, entityDashboardOpen, entityDashboardId, openEntityDashboard, closeEntityDashboard, feedColWidth, articleColWidth, setFeedColWidth, setArticleColWidth }
 })

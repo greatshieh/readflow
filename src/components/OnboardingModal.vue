@@ -142,11 +142,11 @@ function jump(event: string): void {
   transition: background var(--dur) var(--ease);
 }
 .dot.active {
-  background: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  background: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 22%, transparent);
 }
 .dot.done {
-  background: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--primary) 55%, transparent);
 }
 
 .onb-title {

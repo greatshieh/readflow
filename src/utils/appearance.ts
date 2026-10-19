@@ -2,13 +2,12 @@
  * 外观应用工具：把设置表中的外观偏好落到 DOM
  *
  * # 职责
- * 集中维护五件"设置值 → 视觉效果"的映射，避免 App.vue（启动时）与
+ * 集中维护四件"设置值 → 视觉效果"的映射，避免 App.vue（启动时）与
  * SettingsModal.vue（保存后）各自实现一份导致不一致：
  * 1. 主题（theme）：light / dark / system → html 的 data-theme 属性；
- * 2. 主题色（accent）：强调色预设 → html 的 data-accent 属性；
- * 3. 界面字体大小（ui_font_size）：档位 → 根节点 --ui-zoom 缩放变量；
- * 4. 界面字体族（ui_font）：字体族 → 根节点 --ui-font 变量（全局 UI）；
- * 5. 内容字体（content_font）：字体族 → 根节点 --reading-font 变量（仅阅读区）
+ * 2. 界面字体大小（ui_font_size）：档位 → 根节点 --ui-zoom 缩放变量；
+ * 3. 界面字体族（ui_font）：字体族 → 根节点 --ui-font 变量（全局 UI）；
+ * 4. 内容字体（content_font）：字体族 → 根节点 --reading-font 变量（仅阅读区）
  *   （阅读字号另有 font_size → --reading-scale，映射保持在此处一并处理，
  *   使"应用外观"成为一次调用生效全部的单一入口）。
  *
@@ -25,27 +24,8 @@ export interface AppearanceSettings {
   getSetting(key: string): string | undefined
 }
 
-/**
- * 主题色（强调色）预设清单
- *
- * 取自主流产品的蓝灰系 + 暖色系色值，key 必须与 styles.css 中 `[data-accent="..."]` 的取值一致，
- * color 仅用于设置界面的色块预览（展示的是浅色主题下的主色）。
- * 新增一套只需：① 在此追加一项；② 在 styles.css 补对应的浅色 / 暗色变量组。
- */
-export const ACCENT_PRESETS: ReadonlyArray<{ key: string; label: string; color: string }> = [
-  { key: 'graphite', label: '石墨蓝灰', color: '#5a6b82' },
-  { key: 'indigo', label: '靛青', color: '#5e6ad2' },
-  { key: 'azure', label: '海蓝', color: '#1f6feb' },
-  { key: 'sky', label: '天青', color: '#1d9bf0' },
-  { key: 'teal', label: '青碧', color: '#128a86' },
-  { key: 'amber', label: '琥珀', color: '#d97706' },
-  { key: 'violet', label: '紫罗兰', color: '#7c3aed' },
-  { key: 'rose', label: '玫红', color: '#db2777' },
-  { key: 'emerald', label: '翠绿', color: '#059669' },
-]
-
-/** 默认强调色（设置缺失或取值非法时回落到此预设） */
-const DEFAULT_ACCENT = 'graphite'
+/* 主题色已收敛为全局唯一紫罗兰：明暗两套取值直接由 styles.css 定义，
+   appearance.ts 不再维护预设表，也不再写 data-accent 属性。 */
 
 /** 界面字体档位 → 应用级 zoom 系数（作用于 .app 根容器的 CSS zoom） */
 const UI_ZOOM: Record<string, string> = {
@@ -144,7 +124,7 @@ function resolveTheme(theme: string): 'light' | 'dark' {
 /**
  * 把当前外观设置应用到 DOM
  *
- * 一次调用同时处理：data-theme、data-accent、--ui-zoom、--ui-font、
+ * 一次调用同时处理：data-theme、--ui-zoom、--ui-font、
  * --reading-scale、--reading-font。
  * 启动时（App.vue onMounted）与设置保存后（SettingsModal）都调用它，
  * 保证两处行为完全一致。
@@ -158,14 +138,6 @@ export function applyAppearance(settings: AppearanceSettings): void {
   document.documentElement.dataset.theme = resolveTheme(theme)
   // 记录"设置意图"（light/dark/system）：系统配色回调据此判断是否需要跟随变化
   document.documentElement.dataset.themeIntent = theme
-  // ── 主题色（强调色预设）──
-  // 只写一个 data-accent 属性，具体色值由 styles.css 中的 [data-accent] 变量组提供；
-  // 非法取值回落到默认预设，避免脏数据导致整站主色失效
-  const accent = settings.getSetting('accent') || DEFAULT_ACCENT
-  document.documentElement.dataset.accent = ACCENT_PRESETS.some((p) => p.key === accent)
-    ? accent
-    : DEFAULT_ACCENT
-
   // theme=system 时跟随系统配色实时切换；其他主题则移除旧监听
   if (theme === 'system') {
     // 避免重复挂载：先摘掉旧监听再挂新的
@@ -228,15 +200,14 @@ function onSystemThemeChange(): void {
  *
  * # 为什么报告需要它
  * 研究报告是**离线单文件 HTML**，脱离 App 独立打开，读不到运行时的
- * `data-theme` / `data-accent` 属性。报告侧只能靠 `@media (prefers-color-scheme)`
+ * `data-theme` 属性。报告侧只能靠 `@media (prefers-color-scheme)`
  * 猜系统主题，于是「应用里选了亮色、系统是暗色」这类组合会渲出另一套配色，
  * 与用户导出时看到的界面对不上。把此刻的主题与主色一并交给报告写进 `:root`，
  * 两处就严格同源；取不到时报告自动回退媒体查询，定时任务等无前端上下文的路径行为不变。
  *
- * # 为什么强调色要从计算值取而不是从 `ACCENT_PRESETS` 查表
- * 预设表里存的是"卡片上显示的色块"，真正上屏的主色由 styles.css 的
- * `[data-accent]` 变量组按主题分别给出（暗色下会提亮一档以保证对比度）。
- * 报告要跟随的是后者，故读 `getComputedStyle` 的实际取值，而非预设表里的字面值。
+ * # 为什么主色要读计算值
+ * 明暗两套主题的主色不同（暗色提亮一档保证对比度），报告要跟随的是**当前主题**
+ * 的实际取值，故读 `getComputedStyle` 的 --primary，而非写死的字面量。
  *
  * @returns `{ mode, accent }`：`mode` 为已解析的 'light' / 'dark'（system 已被 resolveTheme 解析），
  *          `accent` 为主色的十六进制值；读取失败时返回 null（调用方回退系统主题）

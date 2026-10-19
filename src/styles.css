@@ -7,14 +7,13 @@
 
 :root {
   /* ── 强调色 ────────────────────────────────────────────────
-     默认预设为「石墨蓝灰」。其余 4 套蓝灰系预设见下方 [data-accent] 变量组，
-     由 src/utils/appearance.ts 读取 settings.accent 写入 html[data-accent] 生效。
+     全局唯一紫罗兰，不提供预设选择；明暗两套取值直接在此定义。
      four 件套语义：primary=主色；primary-hover=深一档；
      primary-soft=极浅底色（选中态 / 徽标底）；primary-fg=半透明叠色（选区 / 悬浮高亮） */
-  --primary: #5a6b82;
-  --primary-hover: #4a5a70;
-  --primary-soft: #eef1f5;
-  --primary-fg: rgba(90, 107, 130, 0.1);
+  --primary: #7c6ff0;
+  --primary-hover: #5b4fe0;
+  --primary-soft: #f0eeff;
+  --primary-fg: rgba(124, 111, 240, 0.1);
 
   /* ── 色调板（彩色标记的唯一色值来源）──
      徽章、类型标签、状态点这些"传达状态而非品牌"的元素此前各自写死 hex，
@@ -44,13 +43,11 @@
   --win-close: #e81123;
 
   /* ── 品牌色（应用标志的唯一色值来源）──
-     刻意不随强调色预设变化：应用图标是品牌锚点，用户在设置里换主题色时
-     标志不应跟着变（Linear / Notion 等产品同样把 logo 与主题色解耦）。
-     但深色主题下需提亮一档——原来的亮琥珀落在 #121212 标题栏上会与底色
-     产生同频闪烁，提亮后既保持品牌识别又稳住对比。
+     与主题色同源，统一为紫罗兰：全局单色体系下 logo 不另立色相。
+     深色主题下提亮一档，保证在近黑标题栏上的对比度。
      组件一律通过 AppLogo.vue 消费这两个变量，禁止再写字面色值。 */
-  --brand-from: #f59e0b;
-  --brand-to: #b45309;
+  --brand-from: #7c6ff0;
+  --brand-to: #5b4fe0;
 
   /* ── 状态色（语义别名，指向色调板）── */
   --success: var(--tone-green);
@@ -172,16 +169,16 @@
   /* 悬停：只给淡底。两套主题同值——hover 是"路过"，不需要区分强弱。 */
   --cap-hover-bg: color-mix(in srgb, var(--brand-from) 12%, transparent);
   /* 浅色选中（方案 C）：实色琥珀 + 深色反白 */
-  --cap-solid-bg: var(--brand-from);
-  --cap-active-fg: #241a06;
+  --cap-solid-bg: var(--brand-to);
+  --cap-active-fg: #ffffff;
   --cap-line: transparent;                /* 实色块不需要描边 */
-  --cap-shadow: rgba(180, 83, 9, 0.22);
+  --cap-shadow: rgba(91, 79, 224, 0.28);
   /* 输入框聚焦态底色：比常态更实的一层白玻璃（控件自身的聚焦反馈，与胶囊体系无关） */
   --cap-feed: rgba(255, 255, 255, 0.82);
   /* 文章列表的选中胶囊：与订阅栏同一套琥珀，只是弱一档（见下方暗色档） */
   --cap-accent-bg: color-mix(in srgb, var(--brand-from) 12%, transparent);
   --cap-accent-line: color-mix(in srgb, var(--brand-from) 42%, transparent);
-  --cap-accent-shadow: rgba(180, 83, 9, 0.1);
+  --cap-accent-shadow: rgba(91, 79, 224, 0.18);
   /* 命令面板结果行的悬停底：比选中（12% + 描边）更淡一档，
      因为面板底是浅色玻璃，悬停若与选中同强度会分不出主次。 */
   /* 浮层内的行悬停/选中要比列表内**更强**：面板底更白（约 #f6f7f7），
@@ -325,12 +322,12 @@
 /* ─── 暗黑主题（html[data-theme="dark"]）─────────────────────────────────────
    仅覆盖颜色类变量：圆角 / 字号 / 布局尺寸与主题无关，无需重复声明。
    由 src/utils/appearance.ts 依据 settings.theme（light/dark/system）切换。
-   强调色在此给出"石墨蓝灰（默认预设）"的暗色取值；其余预设见下方 [data-accent]。 */
+   强调色在此给出紫罗兰的暗色取值（提亮一档保证深底对比度）。 */
 html[data-theme="dark"] {
-  --primary: #93a6c0;
-  --primary-hover: #a6b6cc;
-  --primary-soft: #23262d;
-  --primary-fg: rgba(147, 166, 192, 0.16);
+  --primary: #8e83f5;
+  --primary-hover: #7c6ff0;
+  --primary-soft: #241f3a;
+  --primary-fg: rgba(142, 131, 245, 0.16);
   /* 危险色：暗底上需要更高明度才够对比，底色相应提高透明度 */
   --danger: #ff6369;
   --danger-fg: rgba(255, 99, 105, 0.16);
@@ -339,8 +336,8 @@ html[data-theme="dark"] {
   --scrim-heavy: rgba(0, 0, 0, 0.88);
   --ring-inset: inset 0 0 0 1px rgba(255, 255, 255, 0.09);
   /* 品牌色的暗色取值：整体提亮一档，避免在近黑标题栏上与底色同频闪烁 */
-  --brand-from: #fbbf24;
-  --brand-to: #d97706;
+  --brand-from: #8e83f5;
+  --brand-to: #7c6ff0;
   /* 正文高亮色：暗底上改用低透明度叠色（纯浅底会刺眼），文字色交回主题文本色 */
   --hl-yellow: rgba(253, 230, 138, 0.26);
   --hl-green: rgba(187, 247, 208, 0.24);
@@ -383,7 +380,7 @@ html[data-theme="dark"] {
   /* 文章列表的琥珀胶囊：深色下描边再亮一档，否则在暗底上立不住 */
   --cap-accent-bg: color-mix(in srgb, var(--brand-from) 14%, transparent);
   --cap-accent-line: color-mix(in srgb, var(--brand-from) 55%, transparent);
-  --cap-accent-shadow: rgba(245, 158, 11, 0.12);
+  --cap-accent-shadow: rgba(124, 111, 240, 0.2);
   --pal-row-hover: color-mix(in srgb, var(--brand-from) 8%, transparent);
   /* 暗色下光斑仍用白光——暗底上加光才有"发光感"，加深只会让暗底更暗（反直觉且看不见）。
      这与亮色必须加深正好相反，两套主题的取值逻辑不可互相套用。
@@ -420,137 +417,6 @@ html[data-theme="dark"] {
   --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 16px rgba(0, 0, 0, 0.28);
   --shadow-hover: 0 2px 4px rgba(0, 0, 0, 0.34), 0 10px 24px rgba(0, 0, 0, 0.4);
   --shadow-pop: 0 12px 40px rgba(0, 0, 0, 0.5);
-}
-
-/* ─── 强调色预设（html[data-accent]）────────────────────────────────────────
-   9 套取自主流产品的蓝灰系 + 暖色系，用户在「设置 → 常规 → 主题色」切换。
-   每套都声明浅色与暗色两组取值：暗色下主色需提亮一档，
-   否则在深色面板上的对比度不足、按钮与图标会"糊"成一团。 */
-
-/* 石墨蓝灰（默认）— Notion 的冷静中性 */
-html[data-accent="graphite"] {
-  --primary: #5a6b82;
-  --primary-hover: #4a5a70;
-  --primary-soft: #eef1f5;
-  --primary-fg: rgba(90, 107, 130, 0.1);
-}
-html[data-theme="dark"][data-accent="graphite"] {
-  --primary: #93a6c0;
-  --primary-hover: #a6b6cc;
-  --primary-soft: #23262d;
-  --primary-fg: rgba(147, 166, 192, 0.16);
-}
-
-/* 靛青（Linear 的招牌蓝紫） */
-html[data-accent="indigo"] {
-  --primary: #5e6ad2;
-  --primary-hover: #4f5abf;
-  --primary-soft: #efeffe;
-  --primary-fg: rgba(94, 106, 210, 0.1);
-}
-html[data-theme="dark"][data-accent="indigo"] {
-  --primary: #8c96ec;
-  --primary-hover: #a0a9f2;
-  --primary-soft: #23243a;
-  --primary-fg: rgba(140, 150, 236, 0.16);
-}
-
-/* 海蓝（GitHub / Microsoft 的稳重蓝） */
-html[data-accent="azure"] {
-  --primary: #1f6feb;
-  --primary-hover: #1b62d4;
-  --primary-soft: #e8f0fe;
-  --primary-fg: rgba(31, 111, 235, 0.1);
-}
-html[data-theme="dark"][data-accent="azure"] {
-  --primary: #5b96f5;
-  --primary-hover: #7daaf7;
-  --primary-soft: #1b2536;
-  --primary-fg: rgba(91, 150, 245, 0.16);
-}
-
-/* 天青（X / Twitter 明亮通透的蓝） */
-html[data-accent="sky"] {
-  --primary: #1d9bf0;
-  --primary-hover: #1a8cd8;
-  --primary-soft: #e6f4fe;
-  --primary-fg: rgba(29, 155, 240, 0.1);
-}
-html[data-theme="dark"][data-accent="sky"] {
-  --primary: #59bdf5;
-  --primary-hover: #7ccbf7;
-  --primary-soft: #14293a;
-  --primary-fg: rgba(89, 189, 245, 0.16);
-}
-
-/* 青碧（Notion / Slack 的冷静青） */
-html[data-accent="teal"] {
-  --primary: #128a86;
-  --primary-hover: #0e736f;
-  --primary-soft: #e4f4f3;
-  --primary-fg: rgba(18, 138, 134, 0.1);
-}
-html[data-theme="dark"][data-accent="teal"] {
-  --primary: #35b3ae;
-  --primary-hover: #55c4c0;
-  --primary-soft: #12302f;
-  --primary-fg: rgba(53, 179, 174, 0.16);
-}
-
-/* 琥珀（温暖有活力，适合资讯类） */
-html[data-accent="amber"] {
-  --primary: #d97706;
-  --primary-hover: #b45309;
-  --primary-soft: #fef3c7;
-  --primary-fg: rgba(217, 119, 6, 0.1);
-}
-html[data-theme="dark"][data-accent="amber"] {
-  --primary: #fbbf24;
-  --primary-hover: #fcd34d;
-  --primary-soft: #3d2c0a;
-  --primary-fg: rgba(251, 191, 36, 0.16);
-}
-
-/* 紫罗兰（现代科技感） */
-html[data-accent="violet"] {
-  --primary: #7c3aed;
-  --primary-hover: #6d28d9;
-  --primary-soft: #ede9fe;
-  --primary-fg: rgba(124, 58, 237, 0.1);
-}
-html[data-theme="dark"][data-accent="violet"] {
-  --primary: #a78bfa;
-  --primary-hover: #c4b5fd;
-  --primary-soft: #1e1540;
-  --primary-fg: rgba(167, 139, 250, 0.16);
-}
-
-/* 玫红（个性鲜明） */
-html[data-accent="rose"] {
-  --primary: #db2777;
-  --primary-hover: #be185d;
-  --primary-soft: #ffe4f6;
-  --primary-fg: rgba(219, 39, 119, 0.1);
-}
-html[data-theme="dark"][data-accent="rose"] {
-  --primary: #f472b6;
-  --primary-hover: #f9a8d4;
-  --primary-soft: #3d0a28;
-  --primary-fg: rgba(244, 114, 182, 0.16);
-}
-
-/* 翠绿（自然清新） */
-html[data-accent="emerald"] {
-  --primary: #059669;
-  --primary-hover: #047857;
-  --primary-soft: #d1fae5;
-  --primary-fg: rgba(5, 150, 105, 0.1);
-}
-html[data-theme="dark"][data-accent="emerald"] {
-  --primary: #34d399;
-  --primary-hover: #6ee7b7;
-  --primary-soft: #064e3b;
-  --primary-fg: rgba(52, 211, 153, 0.16);
 }
 
 /* 暗黑主题下的滚动条：thumb 底色 --border 已是暗色取值，无需覆盖；

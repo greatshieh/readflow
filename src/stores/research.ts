@@ -276,8 +276,8 @@ export const useResearchStore = defineStore('research', () => {
       kind,
       days,
       channel,
-      // 导出瞬间的界面主题（亮/暗 + 强调色主色）。报告是离线单文件 HTML，
-      // 读不到运行时的 data-theme/data-accent，故必须由前端把快照传下去，
+      // 导出瞬间的界面主题（亮/暗 + 主色）。报告是离线单文件 HTML，
+      // 读不到运行时的 data-theme 与 CSS 变量，故必须由前端把快照传下去，
       // 否则只能靠系统配色猜测，与用户看到的界面不一致。取不到时传 null，
       // 后端回退 prefers-color-scheme（定时任务等无前端上下文的路径同样走回退）。
       theme: readThemeSnapshot()

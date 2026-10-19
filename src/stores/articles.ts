@@ -359,12 +359,36 @@ export const useArticlesStore = defineStore('articles', () => {
    * @throws 不向外抛出：失败仅打印日志（已读失败不应阻塞阅读）
    */
   async function markAsRead(id: number) {
+    // 先取旧态与所属源：用于判断是否真的发生「未读 → 已读」，
+    // 避免重复调用（重复打开同一篇）把侧边栏未读数多减一次。
+    const listIdx = articles.value.findIndex((a) => a.id === id)
+    const target =
+      listIdx !== -1
+        ? articles.value[listIdx]
+        : selectedArticle.value?.id === id
+          ? selectedArticle.value
+          : null
+    const wasRead = target?.is_read ?? true
+    const feedId = target?.feed_id
     try {
       const { invoke } = await import('@tauri-apps/api/core')
       await invoke<void>('article_read', { id })
       // 后端返回后同步内存，避免界面还要再发一次详情请求
       if (selectedArticle.value?.id === id) {
         selectedArticle.value.is_read = true
+      }
+      // 列表项也必须同步：此前只改 selectedArticle，列表里的未读圆点要等整表刷新才消，
+      // 同时它也是「是否已读」差量判断的数据来源。
+      if (listIdx !== -1) {
+        articles.value[listIdx].is_read = true
+      }
+      // 侧边栏未读数即时递减（后端已落库，这里只修前端副本）。
+      // 仅当本次确实由未读变已读、且该源仍在本地列表时才调整；
+      // 文件夹分组头未读是 feeds.reduce 派生的，会随之自动更新。
+      if (!wasRead && feedId !== undefined) {
+        const feedsStore = useFeedsStore()
+        const feed = feedsStore.feeds.find((f) => f.id === feedId)
+        if (feed && feed.unread_count > 0) feed.unread_count -= 1
       }
     } catch (e) {
       console.error('标记已读失败:', e)
@@ -434,6 +458,17 @@ export const useArticlesStore = defineStore('articles', () => {
    * @throws 不向外抛出：异常被捕获后打印日志
    */
   async function setRead(id: number, isRead: boolean): Promise<void> {
+    // 取旧态与所属源（在 invoke 之前）：未读数按「旧态 → 新态」的差量调整，
+    // 这样重复把已读设为已读、或把未读设为未读都不会误加减。
+    const idx = articles.value.findIndex((a) => a.id === id)
+    const target =
+      idx !== -1
+        ? articles.value[idx]
+        : selectedArticle.value?.id === id
+          ? selectedArticle.value
+          : null
+    const wasRead = target?.is_read
+    const feedId = target?.feed_id
     try {
       const { invoke } = await import('@tauri-apps/api/core')
       await invoke<void>('article_set_read', { id, isRead })
@@ -441,9 +476,16 @@ export const useArticlesStore = defineStore('articles', () => {
       if (selectedArticle.value?.id === id) {
         selectedArticle.value.is_read = isRead
       }
-      const idx = articles.value.findIndex(a => a.id === id)
       if (idx !== -1) {
         articles.value[idx].is_read = isRead
+      }
+      // 侧边栏未读数按差量 +1 / -1；仅在状态真的翻转时调整。
+      if (wasRead !== undefined && wasRead !== isRead && feedId !== undefined) {
+        const feedsStore = useFeedsStore()
+        const feed = feedsStore.feeds.find((f) => f.id === feedId)
+        if (feed) {
+          feed.unread_count = Math.max(0, feed.unread_count + (isRead ? -1 : 1))
+        }
       }
     } catch (e) {
       console.error('设置已读状态失败:', e)
