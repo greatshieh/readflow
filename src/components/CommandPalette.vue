@@ -768,7 +768,7 @@ onUnmounted(() => {
   color: var(--text-primary);
 }
 .pal-head input::placeholder { color: var(--text-secondary); opacity: 0.75; }
-/* 检索模式标签：标题段用中性色，全文段用琥珀（与文章列表的胶囊描边同源） */
+/* 检索模式标签：标题段用中性色，全文段用品牌紫罗兰（与文章列表的胶囊描边同源） */
 .pal-mode {
   flex-shrink: 0;
   font-size: var(--fs-xs);
@@ -827,10 +827,10 @@ onUnmounted(() => {
    高亮行反而比周围更亮、显得脏，且下方文字对比度骤降。 */
 .pal-row:hover { background: var(--pal-row-hover); }
 .pal-row.on {
-  /* 用--cap-accent-bg 而非 --cap-solid-bg：后者在浅色主题下是**实色琥珀**
-     （--brand-from），面板里的深色标题压上去会读不清。命令面板是浮层、
+  /* 用 --cap-accent-bg 而非 --cap-solid-bg：后者在浅色主题下是**实色紫罗兰**
+     （--brand-to），面板里的深色标题压上去会读不清。命令面板是浮层、
      不需要"实体色块"那种强锚定，描边 + 淡底已足够表达选中。 */
-  /* 20% 琥珀底 + 58% 描边：面板底已是近白，用列表里的 12%/42% 会弱到看不见。 */
+  /* 20% 品牌色底 + 58% 描边：面板底已是近白，用列表里的 12%/42% 会弱到看不见。 */
   background: color-mix(in srgb, var(--brand-from) 20%, transparent);
   box-shadow:
     inset 0 0 0 1px color-mix(in srgb, var(--brand-from) 58%, transparent),
@@ -867,10 +867,11 @@ onUnmounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* 命中高亮：与品牌琥珀同源，是画面里仅有的两处饱和色之一 */
+/* 命中高亮：与品牌紫罗兰同源，是画面里仅有的两处饱和色之一 */
 .pal-snippet :deep(mark), .pal-title :deep(mark) {
-  /* 实色琥珀底+ 反白字，而不是 --cap-accent-bg（淡底）：
-     面板已是近白色，12% 琥珀落在上面几乎看不出"命中"，
+  /* 实色品牌紫罗兰底 + --cap-active-fg 文字（浅色为纯白、深色为主题文字色），
+     而不是 --cap-accent-bg（淡底）：
+     面板已是近白色，12% 品牌色落在上面几乎看不出"命中"，
      搜索结果里最该被一眼看到的位置反而最弱。 */
   background: var(--brand-from);
   color: var(--cap-active-fg);

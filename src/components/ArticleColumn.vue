@@ -33,7 +33,7 @@
     />
 
     <!-- 文章条目列表：按当前排序方式渲染（时间序按日期分组，其它排序平铺）。
-         SelectCapsule 是选中态的唯一视觉载体（琥珀描边变体），必须与条目同处
+         SelectCapsule 是选中态的唯一视觉载体（accent 描边变体），必须与条目同处
          .article-body 这个定位基准内，且渲染在条目之前。 -->
     <div class="article-body" v-if="articles.length > 0" ref="articleBodyRef"
          @mouseover="onListMouseOver"
@@ -425,7 +425,7 @@ const paneRef = ref<HTMLElement | null>(null)
 const frameRef = ref<HTMLElement | null>(null)
 /** 启用面板光斑跟随 + 靠近侧边框亮起 */
 useCursorGlow(paneRef, frameRef)
-/** 选中胶囊组件实例：把琥珀胶囊滑到当前正在读的那一篇 */
+/** 选中胶囊组件实例：把胶囊滑到当前正在读的那一篇 */
 const articleCapsule = ref<InstanceType<typeof SelectCapsule> | null>(null)
 
 /**
@@ -593,7 +593,7 @@ watch(baseScope, () => {
 })
 
 /**
- * 响应命令面板的跳转：把琥珀胶囊滑到目标文章并播一次定位脉冲
+ * 响应命令面板的跳转：把选中胶囊滑到目标文章并播一次定位脉冲
  *
  * 目标文章可能不在**当前已加载的分页**里（命令面板搜的是全库）。此时条目不存在，
  * 只能把胶囊隐藏——正文区照样会渲染该文章，定位反馈由订阅栏那一侧承担。

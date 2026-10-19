@@ -59,7 +59,7 @@ const props = withDefaults(
     /**
      * 视觉变体
      * - `solid`：实玻璃底（订阅栏用）——承载"当前在看哪个"这条强信息，需要更实；
-     * - `accent`：琥珀描边 + 淡琥珀底（文章列表用）——弱信息，品牌琥珀只此一处。
+     * - `accent`：紫罗兰描边 + 淡紫罗兰底（文章列表用）——弱信息，品牌色在列表里只此一处。
      */
     variant?: 'solid' | 'accent'
     /** 宿主容器的 ref，用于观察尺寸变化（折叠 / 缩放后重算位置） */
@@ -614,7 +614,7 @@ defineExpose({ hover, sync, pulse, reposition })
 }
 
 /* ── 选中胶囊：必须明显强于 hover，否则"当前在哪"读不出来 ──
-   浅色走实色琥珀（--cap-solid-bg = --brand-from）、深色走淡底 + 描边，
+   浅色走实色紫罗兰（--cap-solid-bg = --brand-to）、深色走淡底 + 描边，
    两套取值都在 styles.css 里，这里不感知主题。 */
 .capsule.active.solid,
 .capsule.active.accent {
@@ -624,7 +624,7 @@ defineExpose({ hover, sync, pulse, reposition })
     0 1px 3px var(--cap-shadow),
     0 6px 16px var(--cap-shadow);
 }
-/* 文章列表的选中胶囊用独立的琥珀档位（描边更亮一档），与订阅栏拉开一点差异 */
+/* 文章列表的选中胶囊用独立的紫罗兰档位（描边更亮一档），与订阅栏拉开一点差异 */
 .capsule.active.accent {
   background: var(--cap-accent-bg);
   box-shadow:
@@ -633,7 +633,7 @@ defineExpose({ hover, sync, pulse, reposition })
     0 4px 12px var(--cap-accent-shadow);
 }
 
-/* 定位脉冲：一次性，播完即止。用琥珀描边扩散，表达"就是这一项" */
+/* 定位脉冲：一次性，播完即止。用品牌紫罗兰描边扩散，表达"就是这一项" */
 .capsule.pulse { animation: capsule-pulse 1.05s var(--ease-slide); }
 @keyframes capsule-pulse {
   0% {

@@ -183,7 +183,7 @@ function onPreferenceClick(preference: 'like' | 'skip') {
 /* hover 底色已移除：改由 ArticleColumn 里的 hover 胶囊表达（与选中胶囊同几何）。
    连带移除原先的 translateY(-1px) 抬升：条目一旦位移，就与静止的胶囊错开，
    抬升表达的那点"质感"不值得换来 hover 与 active 不对齐。
-   选中态的浮起卡面与左侧竖条也已移除，统一由琥珀胶囊表达。 */
+   选中态的浮起卡面与左侧竖条也已移除，统一由紫罗兰胶囊表达。 */
 .article-item:active { transform: scale(0.985); }
 .article-item.unread .feed-item-title { font-weight: 600; }
 .article-item:not(.unread) .feed-item-title { color: var(--text-secondary); }

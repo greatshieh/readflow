@@ -173,8 +173,9 @@ function hideBrokenIcon(e: Event) {
    左侧竖条与胶囊会重叠成两道标记，且竖条只对源有效、对标签行无效；
    胶囊则是同一个视觉语言，能在两类条目间连续滑动。 */
 .feed-item.unread .feed-item-title { font-weight: 600; color: var(--text-primary); }
-/* 选中态文字取琥珀（--cap-active-fg）：与胶囊底同色系。
-   浅色主题下胶囊是实色琥珀、文字是深色；深色主题下胶囊是淡底、文字保持主题主色。 */
+/* 选中态文字取 --cap-active-fg：与胶囊底配套。
+   浅色主题下胶囊是实色紫罗兰（--cap-solid-bg = --brand-to）、文字为纯白；
+   深色主题下胶囊是淡底、文字保持 --text-primary。 */
 .feed-item.active .feed-item-title { color: var(--cap-active-fg); font-weight: 600; }
 
 .feed-item-dot {

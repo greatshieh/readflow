@@ -1365,7 +1365,7 @@ onUnmounted(() => {
   text-overflow: ellipsis;
 }
 .tag-row.active .tag-row-name { color: var(--cap-active-fg); font-weight: 600; }
-/* 选中态未读点取琥珀，与订阅源条目的选中文字同源 */
+/* 选中态未读点取品牌紫罗兰，与订阅源条目的选中文字同源 */
 .tag-row.active .tag-row-dot { box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand-from) 28%, transparent); }
 
 /* ─── 底部工具条（单行图标） ─────────────────────────────────────────────────

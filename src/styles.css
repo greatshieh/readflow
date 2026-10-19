@@ -6,9 +6,9 @@
 }
 
 :root {
-  /* ── 强调色 ────────────────────────────────────────────────
+  /* ── 主色 ────────────────────────────────────────────────
      全局唯一紫罗兰，不提供预设选择；明暗两套取值直接在此定义。
-     four 件套语义：primary=主色；primary-hover=深一档；
+     四件套语义：primary=主色；primary-hover=深一档；
      primary-soft=极浅底色（选中态 / 徽标底）；primary-fg=半透明叠色（选区 / 悬浮高亮） */
   --primary: #7c6ff0;
   --primary-hover: #5b4fe0;
@@ -39,7 +39,7 @@
   /* 小元素的内描边环（头像底 / 缩略图 / 色板圆点）：用 inset box-shadow 而非
      border，避免改变盒模型尺寸导致相邻元素错位。 */
   --ring-inset: inset 0 0 0 1px rgba(16, 24, 40, 0.06);
-  /* 窗口关闭按钮的悬浮红：Windows 原生语义色，不随主题与强调色变化 */
+  /* 窗口关闭按钮的悬浮红：Windows 原生语义色，不随主题与主色变化 */
   --win-close: #e81123;
 
   /* ── 品牌色（应用标志的唯一色值来源）──
@@ -87,14 +87,14 @@
   --entity-dragon_tiger: var(--tone-violet);
 
 
-  /* ── 危险色（语义色，不随强调色预设变化）──
+  /* ── 危险色（语义色，不随主题主色变化）──
      此前项目里从未定义过 --danger / --danger-fg，各组件只能写
      `var(--danger, #ef4444)` 各自兜底，同一个"删除"语义在不同弹窗里取到不同色值。
      这里补上正式定义：--danger 用于描边与文字，--danger-fg 用于悬浮底色。 */
   --danger: var(--tone-red);
   --danger-fg: rgba(229, 72, 77, 0.1);
 
-  /* ── 正文高亮色（语义色，不随强调色预设变化）──
+  /* ── 正文高亮色（语义色，不随主题主色变化）──
      4 档柔光底色，供「选中正文 → 高亮」使用。高亮块内的文字统一用 --hl-fg：
      浅色底上恒用深色文字，避免暗色主题下白字压在浅色高亮块上看不见。 */
   --hl-yellow: #fde68a;
@@ -156,26 +156,27 @@
   --glass-body-bg: rgba(96, 128, 168, 0.032);
   --glass-hi: rgba(255, 255, 255, 0.88);      /* 上边缘高光 = 玻璃厚度的来源 */
   --glass-lo: rgba(255, 255, 255, 0.42);      /* 下边缘，弱一半，避免"双线" */
-  /* ── hover / 选中胶囊（锚点色 = 品牌琥珀）────────────────────────
+  /* ── hover / 选中胶囊（锚点色 = 品牌紫罗兰）────────────────────────
      两态**不同色**，且点击后高亮才移动（见 SelectCapsule.vue 的双胶囊）。
-     锚点用品牌琥珀（--brand-from，与标题栏 logo 同源）而非强调色主色：
-     主色是石墨蓝灰这类低饱和蓝，铺在暖调玻璃上显脏；琥珀是全应用唯一高饱和色，
-     天然适合当"当前在哪儿"的锚点。
+     锚点用品牌色（--brand-*，与标题栏 logo 同源）而非 --primary：品牌色是
+     应用身份的锚，主色是界面装饰色，两者语义不同——当前虽同属紫罗兰色族，
+     但改动其一不应连带另一处。
 
-     浅色 / 深色取**不同策略**（方案 C / B），这不是审美偏好而是对比度约束：
-     - 浅色面上琥珀 22% 配深字有 9.1:1，故选中可以走**实色琥珀 + 反白**，锚点最强；
-     - 深色面上琥珀混白字只有 2.5:1（13% 时2.2:1），底色越琥珀字越难读，
+     浅色 / 深色取**不同策略**，这不是审美偏好而是对比度约束：
+     - 浅色面上可以走**实色块 + 反白字**：--brand-to 比 --brand-from 深一档，
+       配纯白文字的对比度充足，锚点最强；
+     - 深色面上实色块配浅字对比度不足，底色越实字越难读，
        故深色只能走**淡底 + 描边**，靠形状而非底色表达"选中"。 */
   /* 悬停：只给淡底。两套主题同值——hover 是"路过"，不需要区分强弱。 */
   --cap-hover-bg: color-mix(in srgb, var(--brand-from) 12%, transparent);
-  /* 浅色选中（方案 C）：实色琥珀 + 深色反白 */
+  /* 浅色选中：实色块 + 反白字 */
   --cap-solid-bg: var(--brand-to);
   --cap-active-fg: #ffffff;
   --cap-line: transparent;                /* 实色块不需要描边 */
   --cap-shadow: rgba(91, 79, 224, 0.28);
   /* 输入框聚焦态底色：比常态更实的一层白玻璃（控件自身的聚焦反馈，与胶囊体系无关） */
   --cap-feed: rgba(255, 255, 255, 0.82);
-  /* 文章列表的选中胶囊：与订阅栏同一套琥珀，只是弱一档（见下方暗色档） */
+  /* 文章列表的选中胶囊：与订阅栏同一套品牌色，只是弱一档（见下方暗色档） */
   --cap-accent-bg: color-mix(in srgb, var(--brand-from) 12%, transparent);
   --cap-accent-line: color-mix(in srgb, var(--brand-from) 42%, transparent);
   --cap-accent-shadow: rgba(91, 79, 224, 0.18);
@@ -322,7 +323,7 @@
 /* ─── 暗黑主题（html[data-theme="dark"]）─────────────────────────────────────
    仅覆盖颜色类变量：圆角 / 字号 / 布局尺寸与主题无关，无需重复声明。
    由 src/utils/appearance.ts 依据 settings.theme（light/dark/system）切换。
-   强调色在此给出紫罗兰的暗色取值（提亮一档保证深底对比度）。 */
+   主色在此给出紫罗兰的暗色取值（提亮一档保证深底对比度）。 */
 html[data-theme="dark"] {
   --primary: #8e83f5;
   --primary-hover: #7c6ff0;
@@ -346,7 +347,7 @@ html[data-theme="dark"] {
   /* 高亮块内的文字色：比 --text-primary 偏暖一点。用主题灰会在黄底上显脏。 */
   --hl-fg: #f0e6cd;
 
-  /* ── 暗色玻璃令牌（方案 B：冷调深蓝板岩）──────────────────────────
+  /* ── 暗色玻璃令牌（冷调深蓝板岩）──────────────────────────
      底色从原先的近黑 #121212 抬到 #1b2129：不是"变浅"，而是给玻璃提供可被折射的内容。
      深色下玻璃的难点不是"够不够亮"，而是面板与底色几乎同色；本组靠三条「加光」
      （--glass-hi 上边缘内高光 / --glass-hair 1px 描边 / --glass 半透明白）撑厚度，
@@ -369,7 +370,7 @@ html[data-theme="dark"] {
   --glass-hi: rgba(255, 255, 255, 0.14);
   --glass-lo: rgba(255, 255, 255, 0.05);
   --cap-feed: rgba(255, 255, 255, 0.115);
-  /* 深色改走方案 B（淡底 + 描边）：琥珀混在深色底上时，白字对比只有 2.2~2.5:1，
+  /* 深色改走淡底 + 描边：品牌紫罗兰实底压在深色面上时，浅字对比不足，
      底色越实字越难读，故**不能**沿用浅色的实色块。淡底保住文字对比，
      选中态改由一道描边承担识别。 */
   --cap-hover-bg: color-mix(in srgb, var(--brand-from) 9%, transparent);
@@ -377,7 +378,7 @@ html[data-theme="dark"] {
   --cap-active-fg: var(--text-primary);
   --cap-line: color-mix(in srgb, var(--brand-from) 58%, transparent);
   --cap-shadow: rgba(0, 0, 0, 0.28);
-  /* 文章列表的琥珀胶囊：深色下描边再亮一档，否则在暗底上立不住 */
+  /* 文章列表的紫罗兰胶囊：深色下描边再亮一档，否则在暗底上立不住 */
   --cap-accent-bg: color-mix(in srgb, var(--brand-from) 14%, transparent);
   --cap-accent-line: color-mix(in srgb, var(--brand-from) 55%, transparent);
   --cap-accent-shadow: rgba(124, 111, 240, 0.2);
@@ -641,7 +642,7 @@ select {
 }
 
 /* 主操作按钮：实心主色。悬浮统一用 --primary-hover 而非 filter 提亮，
-   这样 5 套强调色预设各自的暗色取值都能自动生效。 */
+   这样明暗主题各自的取值都能自动生效（filter 会在两种主题下给出同一结果）。 */
 .btn-primary {
   background: var(--primary);
   border-color: var(--primary);
@@ -1086,12 +1087,12 @@ select:focus-visible {
    分组序号 chip / 计数徽标 / 左侧强调竖条卡片 / 竖向时间线 / 双列网格。
 
    **配色纪律**：本组不定义任何色值，全部引用既有令牌
-   （--primary / --accent / --glass-* / --cap-* / --tone-* / --entity-*）。
-   因此亮暗主题与 9 套强调色预设自动生效——换主题即换配色，无需改这里。
+   （--primary / --glass-* / --cap-* / --tone-* / --entity-*）。
+   因此亮暗主题自动生效——换主题即换配色，无需改这里。
    新增令牌时必须用 var(--x) 引用已定义变量，否则整条声明会静默作废
    （CSS 规范：未定义的自定义属性让声明失效，而非回退到无样式）。 */
 :root {
-  /* 强调色描边：从 --primary 派生，亮暗各自动适配。
+  /* 主色描边：从 --primary 派生，亮暗各自动适配。
      用于卡片发丝描边与序号 chip 边框，是"发光轮廓"语汇的唯一来源。 */
   --tech-line: color-mix(in srgb, var(--primary) 26%, transparent);
   --tech-line-strong: color-mix(in srgb, var(--primary) 46%, transparent);
