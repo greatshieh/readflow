@@ -5,7 +5,7 @@
        删除为破坏性操作，先经全局弹窗二次确认。 -->
   <BaseModal :open="!!feed" title="管理订阅源" size="sm" @close="emit('close')">
     <div class="manage-head">
-      <span>管理订阅源</span>
+      <span class="m-title">管理订阅源</span>
       <button class="manage-close" @click="emit('close')" aria-label="关闭">×</button>
     </div>
 
@@ -259,18 +259,30 @@ async function handleSaveAi() {
   justify-content: space-between;
   padding: var(--sp-35) var(--sp-4);
   border-bottom: 1px solid var(--border);
-  font-size: var(--fs-md);
+  /* 字号不再挂在容器上：原先标题 span 靠继承取容器的 14/600，于是改标题必然
+     牵连同容器里的关闭钮。现在字号只属于标题这个角色。 */
+  flex: 0 0 auto;
+}
+.m-title {
+  font-size: var(--fs-modal-title);
   font-weight: 600;
+  line-height: var(--lh-modal-title);
   color: var(--text-primary);
 }
 .manage-close {
   border: none;
   background: none;
   cursor: pointer;
-  font-size: 22px;
+  /* × 是图形不是文字：18px 字形 + 32×32 命中区（WCAG 2.5.8 下限 24×24）。
+     负 margin 抵掉命中区多占的空间，头部高度不变。 */
+  font-size: var(--fs-xl);
   line-height: 1;
+  min-width: 32px;
+  min-height: 32px;
+  display: grid;
+  place-items: center;
+  margin: -8px -8px -8px 0;
   color: var(--text-tertiary);
-  padding: 0 var(--sp-1);
 }
 .manage-close:hover { color: var(--text-primary); }
 
@@ -278,28 +290,38 @@ async function handleSaveAi() {
 .manage-msg {
   color: var(--primary);
   background: var(--primary-fg);
-  font-size: var(--fs-xs);
+  /* 这是失败原因，用户要读懂才知道怎么改 —— 属于正文，不是元信息 */
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
   padding: var(--sp-2) var(--sp-4);
   border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
 }
 
 /* Tab 导航 */
 .manage-tabs {
   display: flex;
   border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
 }
 .manage-tab {
   flex: 1;
   /* 原为 var(--sp-25)：该令牌从未定义（间距阶梯里只有 --sp-025 / --sp-05），
      CSS 里 var(--未定义) 会让整条 padding 声明静默作废，表现为「内间距为 0」。 */
   padding: var(--sp-05) var(--sp-3);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-label);
+  font-weight: 500;
   color: var(--text-secondary);
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
+  /* 原先只声明了 color 与 border-color 两个属性（时长 150ms）：漏了 background，
+     将来给选中态加底色就会硬跳。三属性显式列出，并用 T1 档（操作反馈比面板进出快）。 */
+  transition:
+    color var(--m-tap) var(--m-ease-out),
+    background var(--m-tap) var(--m-ease-out),
+    border-color var(--m-tap) var(--m-ease-out);
 }
 .manage-tab:hover { color: var(--text-primary); }
 .manage-tab.active {
@@ -313,6 +335,13 @@ async function handleSaveAi() {
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);
+  /* 面板是 max-height:86vh + overflow:hidden，自己并不滚。两个 tab 各有一个
+     .manage-body，共用这条规则一起变成滚动容器。
+     min-height:0 是关键：缺了它 flex 子项不会收缩，overflow 永远不生效。 */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .ai-config-body {
   gap: var(--sp-4);
@@ -320,17 +349,22 @@ async function handleSaveAi() {
 
 /* 表单字段 */
 .field { display: flex; flex-direction: column; gap: var(--sp-05); }
-.field label { font-size: var(--fs-xs); color: var(--text-tertiary); }
+.field label {
+  font-size: var(--fs-modal-label);
+  font-weight: 500;
+  line-height: var(--lh-modal-label);
+  color: var(--text-secondary);
+}
 .field input[type="text"] {
   height: 32px;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   padding: 0 var(--sp-15);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-label);
   background: var(--fill);
   color: var(--text-primary);
   outline: none;
-  transition: box-shadow 0.15s;
+  transition: box-shadow var(--m-tap) var(--m-ease-out);
 }
 .field input[type="text"]:focus { box-shadow: 0 0 0 1px var(--primary); }
 .field input[readonly] { color: var(--text-tertiary); cursor: default; }
@@ -342,7 +376,7 @@ async function handleSaveAi() {
   background: var(--surface);
   border-radius: var(--r-md);
   padding: 0 var(--sp-3);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-label);
   color: var(--text-secondary);
   cursor: pointer;
   font-family: inherit;
@@ -352,9 +386,10 @@ async function handleSaveAi() {
 
 .field-hint {
   margin: var(--sp-05) 0 0;
-  font-size: var(--fs-xs);
-  color: var(--text-tertiary);
-  line-height: 1.5;
+  /* 用户必须读懂才能正确填写 —— 属于正文 */
+  font-size: var(--fs-modal-body);
+  color: var(--text-secondary);
+  line-height: var(--lh-modal-body);
 }
 
 /* 指令文本框 */
@@ -364,14 +399,14 @@ async function handleSaveAi() {
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   padding: var(--sp-15);
-  font-size: var(--fs-sm);
-  line-height: 1.6;
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
   background: var(--fill);
   color: var(--text-primary);
   outline: none;
   resize: vertical;
   font-family: inherit;
-  transition: box-shadow 0.15s;
+  transition: box-shadow var(--m-tap) var(--m-ease-out);
 }
 .prompt-textarea:focus { box-shadow: 0 0 0 1px var(--primary); }
 .prompt-textarea::placeholder { color: var(--text-tertiary); }
@@ -383,6 +418,8 @@ async function handleSaveAi() {
   justify-content: space-between;
   padding: var(--sp-35) var(--sp-4);
   border-top: 1px solid var(--border);
+  /* 主操作区不参与收缩，滚动时始终可见 */
+  flex: 0 0 auto;
 }
 .foot-right { display: flex; gap: var(--sp-2); }
 </style>

@@ -178,11 +178,24 @@ function close() {
   padding: var(--sp-4);
   display: flex; align-items: center;
 }
-.side-head h3 { font-size: var(--fs-base); font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+.side-head h3 {
+  margin: 0;
+  font-size: var(--fs-modal-title);
+  font-weight: 600;
+  line-height: var(--lh-modal-title);
+  color: var(--text-primary);
+  /* 原先还有一处负字距（-0.01em）—— 负字距是给拉丁字母排紧的手法，
+     汉字字面本身满格，压字距只会让笔画粘连，已删。 */
+}
 
-/* 纵排 tab：左对齐文字 + 圆角悬浮态；激活态用主题色描一层浅底 */
+/* 纵排 tab：左对齐文字 + 圆角悬浮态；激活态用主题色描一层浅底。
+   flex: 1 + min-height: 0 让页签列自己成为可滚区：放大界面字号后
+   五个页签 + 内边距可能超过 720px 面板高度，缺 min-height 则 flex 子项不收缩、
+   overflow 不触发，最后一个页签会被裁掉且滚不到。 */
 .side-tabs {
   display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
   flex-direction: column;
   gap: var(--sp-05);
   padding: 0 var(--sp-2) var(--sp-3);
@@ -190,15 +203,21 @@ function close() {
 }
 .side-tab {
   text-align: left;
-  padding: var(--sp-15) var(--sp-3);
-  font-size: var(--fs-sm);
-  color: var(--text-secondary);
   border: none;
   background: none;
-  border-radius: var(--r-md);
+  padding: var(--sp-15) var(--sp-3);
+  font-size: var(--fs-modal-label);
+  font-weight: 500;
+  color: var(--text-secondary);
   cursor: pointer;
+  border-radius: var(--r-md);
   font-family: inherit;
-  transition: all 0.15s;
+  /* 原先用 all 过渡 —— 会连带过渡布局属性（padding 一变就演一遍重排），
+     且整条覆盖了全局 button 基线的六属性过渡，于是同一屏里关闭钮 220ms、页签 150ms。
+     只列真正会变的两个属性，并用 T1 档。 */
+  transition:
+    background var(--m-tap) var(--m-ease-out),
+    color var(--m-tap) var(--m-ease-out);
 }
 .side-tab:hover { background: var(--fill); color: var(--text-primary); }
 .side-tab.active { background: var(--primary-fg); color: var(--primary); font-weight: 500; }
@@ -221,13 +240,18 @@ function close() {
   border-bottom: 1px solid var(--border);
 }
 .m-titlebar-title {
-  font-size: var(--fs-md);
+  /* 右列栏头是"区块标题"级别：原为 14/600，与正文 14/400 同号，
+     靠字重撑层级在中文里读不出来（500/600 常回落 400）。 */
+  font-size: var(--fs-modal-section);
   font-weight: 600;
+  line-height: var(--lh-modal-section);
   color: var(--text-primary);
 }
 .btn-icon {
-  width: 28px;
-  height: 28px;
+  /* 命中区补到 32×32（原 28×28，低于 WCAG 2.5.8 的 24×24 下限的舒适区，
+     也与其余关闭钮统一）。两份副本（Settings / Research）现在同值。 */
+  width: 32px;
+  height: 32px;
   border: none;
   background: none;
   border-radius: var(--r-md);
@@ -236,17 +260,24 @@ function close() {
   justify-content: center;
   cursor: pointer;
   color: var(--text-tertiary);
-  transition: all 0.15s;
+  /* 显式列出：补 transform 让全局 button 基线的 :active 回弹有过渡 */
+  transition:
+    background var(--m-tap) var(--m-ease-out),
+    color var(--m-tap) var(--m-ease-out),
+    transform var(--m-tap) var(--m-ease-out);
 }
 .btn-icon:hover {
   background: var(--fill);
   color: var(--text-primary);
 }
-/* 主体：占满剩余高度并内部滚动，顶部预留标题栏高度 */
+/* 主体：占满剩余高度并内部滚动，顶部预留标题栏高度。
+   overscroll-behavior: contain 与其他五个弹窗的滚动区一致：滚到底不把滚动链
+   传给背后的页面（弹窗背后是 overflow:hidden 的 .app，本来也不该动）。 */
 .m-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding-top: var(--sp-2);
 }
 

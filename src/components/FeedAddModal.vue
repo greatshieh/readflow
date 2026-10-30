@@ -4,7 +4,7 @@
        滚动锁由 BaseModal 统一提供。表单为编辑副本，取消直接丢弃。 -->
   <BaseModal :open="open" title="添加订阅源" size="sm" @close="emit('close')">
     <div class="add-head">
-      <span>添加订阅源</span>
+      <span class="m-title">添加订阅源</span>
       <button class="add-close" @click="emit('close')" aria-label="关闭">×</button>
     </div>
     <!-- 操作反馈：后端失败（如 URL 重复）时内联提示，不弹全局弹窗 -->
@@ -140,31 +140,49 @@ async function handleAdd() {
 
 <style scoped>
 /* 分段样式与 FeedManageModal 同构（头部 / 消息条 / 主体 / 底部）；
-   面板外壳（遮罩 / 圆角 / 投影 / 宽度）由 BaseModal 提供，不再自绘。 */
+   面板外壳（遮罩 / 圆角 / 投影 / 宽度）由 BaseModal 提供，不再自绘。
+
+   字号一律消费 `BaseModal` 定义的弹窗角色 token（--fs-modal-* / --lh-modal-*）。
+   自定义属性沿 DOM 继承，穿透 scoped 边界，所以这里能直接用；而
+   `.base-modal .add-head` 这类后代选择器写在这里不会生效（属性的 data-v 是宿主的）。 */
 .add-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: var(--sp-35) var(--sp-4);
   border-bottom: 1px solid var(--border);
-  font-size: var(--fs-md);
+}
+/* 标题是"角色"，不是"容器的字号"：原先字号写在 .add-head 上、标题 span 靠继承取值，
+   于是改标题必然牵连同容器里的关闭钮。现在字号只挂在标题自己身上。 */
+.m-title {
+  font-size: var(--fs-modal-title);
   font-weight: 600;
+  line-height: var(--lh-modal-title);
   color: var(--text-primary);
 }
 .add-close {
   border: none;
   background: none;
   cursor: pointer;
-  font-size: 22px;
+  /* × 是图形不是文字：18px 与标题同档但不占"文字角色"位。
+     命中区补到 32×32（WCAG 2.5.8 下限是 24×24），负 margin 抵掉多占的空间，
+     所以头部高度不因命中区变大而变化。 */
+  font-size: var(--fs-xl);
   line-height: 1;
+  min-width: 32px;
+  min-height: 32px;
+  display: grid;
+  place-items: center;
+  margin: -8px -8px -8px 0;
   color: var(--text-tertiary);
-  padding: 0 var(--sp-1);
 }
 .add-close:hover { color: var(--text-primary); }
 .add-msg {
   color: var(--primary);
   background: var(--primary-fg);
-  font-size: var(--fs-xs);
+  /* 这是给用户看的失败原因，必须能读——按元信息 11px 处理是错的 */
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
   padding: var(--sp-2) var(--sp-4);
   border-bottom: 1px solid var(--border);
 }
@@ -173,27 +191,40 @@ async function handleAdd() {
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);
+  /* 面板是 max-height:86vh + overflow:hidden，自己并不滚。本区必须成为滚动容器，
+     否则字号放大后超出部分直接消失、且滚不到，底部按钮一起不见。
+     min-height:0 是关键：缺了它 flex 子项不会收缩，overflow 永远不生效。 */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .field { display: flex; flex-direction: column; gap: var(--sp-05); }
-.field label { font-size: var(--fs-xs); color: var(--text-tertiary); }
+.field label {
+  font-size: var(--fs-modal-label);
+  font-weight: 500;
+  line-height: var(--lh-modal-label);
+  color: var(--text-secondary);
+}
 .field input {
   height: 32px;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   padding: 0 var(--sp-15);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-label);
   background: var(--fill);
   color: var(--text-primary);
   outline: none;
-  transition: box-shadow 0.15s;
+  transition: box-shadow var(--m-tap) var(--m-ease-out);
 }
 .field input:focus { box-shadow: 0 0 0 1px var(--primary); }
-/* 字段说明：只在"地址该填什么"这类需要举例的字段下出现 */
+/* 字段说明：只在"地址该填什么"这类需要举例的字段下出现。
+   用户必须读懂它才能正确填写，属于正文而不是元信息。 */
 .field-hint {
   margin: var(--sp-05) 0 0;
-  font-size: var(--fs-xs);
-  color: var(--text-tertiary);
-  line-height: 1.5;
+  font-size: var(--fs-modal-body);
+  color: var(--text-secondary);
+  line-height: var(--lh-modal-body);
 }
 .add-foot {
   display: flex;
@@ -202,6 +233,8 @@ async function handleAdd() {
   gap: var(--sp-2);
   padding: var(--sp-35) var(--sp-4);
   border-top: 1px solid var(--border);
+  /* 主操作区不参与收缩，滚动发生时始终留在视野里 */
+  flex: 0 0 auto;
 }
 /* 底部按钮样式统一由全局按钮体系提供（styles.css 的 .btn / .btn-primary）。 */
 </style>

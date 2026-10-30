@@ -210,9 +210,10 @@ defineExpose({ save: saveAi, saving })
   justify-content: space-between;
   gap: var(--sp-1);
 }
-/* 密钥的「已配置 / 未配置」状态标记：弱化字重，已配置时用成功色提示 */
+/* 密钥的「已配置 / 未配置」状态标记：弱化字重，已配置时用成功色提示。
+   属标签档 13（与同一行的 .form-label 同档对齐），不降到 meta 11 —— 它是状态词，要读。 */
 .key-status {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-modal-label);
   font-weight: 400;
   color: var(--text-tertiary);
 }

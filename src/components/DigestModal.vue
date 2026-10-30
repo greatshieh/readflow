@@ -233,18 +233,25 @@ watch(() => props.open, async (val) => {
 }
 .m-head h3 {
   margin: 0;
-  font-size: var(--fs-lg);
+  font-size: var(--fs-modal-title);
   font-weight: 600;
+  line-height: var(--lh-modal-title);
   color: var(--text-primary);
 }
 .m-close {
   border: none;
   background: none;
   cursor: pointer;
-  font-size: 22px;
+  /* × 是图形不是文字：18px 字形 + 32×32 命中区。原先写死 22px，是弹窗里
+     视觉最大的单个字符、比标题还大，天然抢注意力。负 margin 抵掉多占的空间。 */
+  font-size: var(--fs-xl);
   line-height: 1;
+  min-width: 32px;
+  min-height: 32px;
+  display: grid;
+  place-items: center;
+  margin: -8px -8px -8px 0;
   color: var(--text-tertiary);
-  padding: 0 var(--sp-1);
 }
 .m-close:hover { color: var(--text-primary); }
 
@@ -255,7 +262,10 @@ watch(() => props.open, async (val) => {
   flex-direction: column;
   gap: var(--sp-4);
   overflow-y: auto;
-  flex: 1;
+  flex: 1 1 auto;
+  /* min-height:0 是关键：缺了它 flex 子项不会收缩，overflow 永远不生效 */
+  min-height: 0;
+  overscroll-behavior: contain;
 }
 
 /* 加载/空状态 */
@@ -268,10 +278,12 @@ watch(() => props.open, async (val) => {
 .loading-state p,
 .empty-state p {
   margin: 0 0 var(--sp-2);
-  font-size: var(--fs-base);
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
 }
 .empty-state .hint {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
 }
 
 /* 文章列表 */
@@ -303,7 +315,8 @@ watch(() => props.open, async (val) => {
   border-radius: var(--r-sm);
 }
 .entity-count {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-meta);
+  line-height: var(--lh-modal-meta);
   color: var(--text-tertiary);
 }
 
@@ -318,7 +331,7 @@ watch(() => props.open, async (val) => {
   background: var(--fill);
   border-radius: var(--r-md);
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background var(--m-tap) var(--m-ease-out);
 }
 .digest-article:hover {
   background: var(--hover-bg);
@@ -330,7 +343,7 @@ watch(() => props.open, async (val) => {
   margin-bottom: var(--sp-05);
 }
 .article-score {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-meta);
   font-weight: 600;
   padding: var(--sp-025) var(--sp-2);
   border-radius: var(--r-sm);
@@ -348,14 +361,16 @@ watch(() => props.open, async (val) => {
   background: var(--border);
 }
 .article-source {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-modal-meta);
+  line-height: var(--lh-modal-meta);
   color: var(--text-tertiary);
 }
 .article-title {
-  font-size: var(--fs-base);
+  /* 取 13/500：与正文 14 拉开一档，才能在"标题—摘要"之间读出层级 */
+  font-size: var(--fs-modal-label);
   font-weight: 500;
   color: var(--text-primary);
-  line-height: 1.4;
+  line-height: var(--lh-modal-label);
   margin-bottom: var(--sp-1);
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -363,9 +378,9 @@ watch(() => props.open, async (val) => {
   overflow: hidden;
 }
 .article-summary {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-body);
   color: var(--text-secondary);
-  line-height: 1.5;
+  line-height: var(--lh-modal-body);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -373,7 +388,8 @@ watch(() => props.open, async (val) => {
   margin-bottom: var(--sp-05);
 }
 .article-time {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-modal-meta);
+  line-height: var(--lh-modal-meta);
   color: var(--text-tertiary);
 }
 
@@ -392,9 +408,13 @@ watch(() => props.open, async (val) => {
   border-radius: var(--r-md);
   background: var(--surface);
   color: var(--text-secondary);
-  font-size: var(--fs-md);
+  font-size: var(--fs-modal-label);
   cursor: pointer;
-  transition: all 0.15s;
+  /* 原先用 all 过渡 —— 会连带过渡布局属性，且整条覆盖全局 button 基线 */
+  transition:
+    background var(--m-tap) var(--m-ease-out),
+    color var(--m-tap) var(--m-ease-out),
+    border-color var(--m-tap) var(--m-ease-out);
 }
 .refresh-btn:hover:not(:disabled),
 .score-all-btn:hover:not(:disabled) {

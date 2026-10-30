@@ -127,6 +127,15 @@ function jump(event: string): void {
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);
+  /* 面板是 max-height:86vh + overflow:hidden，自己并不滚。引导文案在 1366×768 或
+     系统缩放 150% 下会超出，超出部分直接消失且滚不到。整块成为滚动容器即可滚到底
+     （导航按钮随之滚入视野、可见可点）。
+     没有做成"只滚动中间、导航吸底"：那需要 position:sticky + 玻璃底色覆盖，
+     在这个短内容场景里收益不抵风险。 */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /* 步骤指示：三个圆点，当前高亮、已完成填充 */
@@ -139,7 +148,8 @@ function jump(event: string): void {
   height: 8px;
   border-radius: 50%;
   background: var(--glass-hair);
-  transition: background var(--dur) var(--ease);
+  /* 步骤切换属于 T2「状态」档，不是 T1 悬停档 */
+  transition: background var(--m-state) var(--m-ease-out);
 }
 .dot.active {
   background: var(--primary);
@@ -151,14 +161,17 @@ function jump(event: string): void {
 
 .onb-title {
   margin: 0;
-  font-size: var(--fs-xl);
-  font-weight: 650;
+  font-size: var(--fs-modal-title);
+  /* 原为 650：中文字体普遍只有 400/700 两档，650 会被浏览器合成或直接取 700，
+     跨平台渲染不一致、且中英混排时同一行出现两种粗细。层级由字号承担，字重只做补强。 */
+  font-weight: 600;
+  line-height: var(--lh-modal-title);
   color: var(--text-primary);
 }
 .onb-desc {
   margin: 0;
-  font-size: var(--fs-base);
-  line-height: 1.6;
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
   color: var(--text-secondary);
   min-height: 3.2em;
 }

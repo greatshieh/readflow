@@ -308,7 +308,7 @@ watch(genKind, kind => {
   background: var(--fill);
   border-radius: var(--r-md);
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background var(--m-tap) var(--m-ease-out);
 }
 .report-item:hover {
   background: var(--hover-bg);
@@ -317,38 +317,42 @@ watch(genKind, kind => {
   outline: 1px solid var(--primary);
 }
 .report-icon { width: 17px; height: 17px; flex-shrink: 0; color: var(--text-secondary); }
+/* 列表行主字段 13/500（与 .entity-name / .article-title 同角色）。
+   原先还有一处负字距（-0.01em）：负字距是给拉丁字母排紧的，中文压字距会让笔画粘连 → 删除。 */
 .report-name {
   flex: 1;
-  font-size: var(--fs-md);
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font-size: var(--fs-modal-label);
+  font-weight: 500;
+  line-height: var(--lh-modal-label);
   color: var(--text-primary);
 }
 .report-meta {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-modal-meta);
   color: var(--text-tertiary);
 }
 
-/* 报告正文：Markdown 渲染后的流式排版（替代第一版的等宽 <pre>） */
+/* 报告正文：Markdown 渲染后的流式排版（替代第一版的等宽 <pre>）。
+   它是 .md 内所有 em 字号的基准（h1 1.35em 等按此等比缩放），所以只改这一处字号，
+   子级 em 会一起跟着变 —— 不要把下面的 em 改成 px。1.65 取正文档行高。 */
 .report-content {
   margin: 0;
   padding: var(--sp-4);
   background: var(--fill);
   border-radius: var(--r-md);
-  font-size: var(--fs-sm);
-  line-height: 1.7;
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
   color: var(--text-primary);
   overflow-x: auto;
   word-break: break-word;
 }
 
-/* —— Markdown 渲染产物样式（v-html 内容须用 :deep 穿透 scoped）—— */
+/* —— Markdown 渲染产物样式（v-html 内容须用 :deep 穿透 scoped）。
+      标题用 em 是刻意的：报告正文随弹窗字号等比缩放，固定 px 会让大字号下标题失去比例。 —— */
 .md :deep(h1),
 .md :deep(h2),
 .md :deep(h3) {
   line-height: 1.3;
   margin: 1.1em 0 0.5em;
-  letter-spacing: -0.01em;
   color: var(--text-primary);
 }
 .md :deep(h1) { font-size: 1.35em; font-weight: 700; }
@@ -403,10 +407,11 @@ watch(genKind, kind => {
   background: var(--fill);
 }
 .md :deep(.md-callout-head) { margin-bottom: 0.25em; }
+/* callout 类型徽标：元信息档 11，色块反白小字保留 500 补强 */
 .md :deep(.md-callout-badge) {
   display: inline-block;
-  font-size: var(--fs-xs);
-  font-weight: 700;
+  font-size: var(--fs-modal-meta);
+  font-weight: 500;
   padding: 0.12em 0.55em;
   border-radius: 999px;
   background: var(--primary);

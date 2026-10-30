@@ -51,8 +51,10 @@
  * * `layout` - 布局档位：`default`（默认）高度随内容自适应；
  *   `side` 固定高度（min(80vh, 720px)）+ 宽面板，供 tab 较多的弹窗
  *   （设置 / 研究工作台）把 tab 竖排在左侧——弹窗高度不再随切 tab 跳变。
- *   side 布局下宽度由本变体定（min(880px, 92vw)），size 档位不再参与；
- *   且自带面板右上角关闭钮（双列布局没有贯通头部，关闭钮由外壳统一提供）。
+ *   side 布局下宽度由本变体定（min(880px, 92vw)），size 档位不再参与。
+ *   **本组件不渲染关闭钮**：模板只有 `<slot />`，关闭钮在各宿主的标题栏里
+ *   （`SettingsModal` / `ResearchModal` 的 `.btn-icon`）；`--side-close-reserve`
+ *   只是给宿主对齐用的占位高度参考。要"收进外壳"属功能改动，须单独排期。
  *
  * # 事件
  * * `close` - 用户按下 Esc 或点击遮罩空白处；是否真的关闭由父组件决定
@@ -236,39 +238,99 @@ onBeforeUnmount(deactivate)
 <style scoped>
 /* ─── 遮罩 ─────────────────────────────────────────────── */
 .overlay {
+  /* ── 运动尺度：4 档，按用途定义 ──
+     挂在 .overlay 上：自定义属性沿 DOM 继承，面板与插槽内容都能直接消费。
+     刻意**不重定义** --dur / --ease —— 它们被弹窗外 30 余处使用，改值会波及整个界面。 */
+  --m-tap: 90ms;                                 /* T1 即时：悬停、按下、焦点环 */
+  --m-state: 160ms;                              /* T2 状态：页签切换、选中、开关 */
+  --m-in: 200ms;                                 /* T3 面板进 */
+  --m-out: 120ms;                                /* T4 面板出：0.6× 于进场，退出永远比进入快 */
+  --m-ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);  /* 进 / 悬停 / 状态：快起慢停 */
+  --m-ease-in: cubic-bezier(0.4, 0, 1, 1);       /* 退场：末段加速离开，不留尾巴 */
+
   position: fixed;
-  inset: 0;
+  /* 不用 inset:0 —— 叠了 zoom 之后 inset 会按缩放后的单位解析，遮罩比视口大、
+     把面板推出中心。改成 calc 反算，缩放之后恰好铺满视口。 */
+  top: 0;
+  left: 0;
+  width: calc(100vw / var(--ui-zoom, 1));
+  height: calc(100vh / var(--ui-zoom, 1));
+  /* 弹窗跟随「界面字体大小」：zoom 只挂在 .app 上，而本组件 Teleport 到 body，
+     落在 zoom 容器之外。不补这行，用户把界面字号调到「大」时弹窗会小 9%。 */
+  zoom: var(--ui-zoom, 1);
   z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: center;
   background: var(--overlay-scrim);
-  /* 遮罩也要压暗+ 模糊，才能让弹窗"浮起来"；4px 太浅、玻璃感出不来 */
+  /* 遮罩也要压暗 + 模糊，才能让弹窗"浮起来"；4px 太浅、玻璃感出不来 */
   backdrop-filter: blur(10px) saturate(0.92);
   -webkit-backdrop-filter: blur(10px) saturate(0.92);
-  /* visibility 一起参与过渡：淡出期间就不会再挡住底层的点击 */
   opacity: 0;
   visibility: hidden;
-  transition: opacity var(--dur) var(--ease), visibility var(--dur) var(--ease);
+  /* pointer-events 基础态为 none：关闭瞬间即让出点击，**不依赖 visibility 的过渡时序**。
+     visibility 是离散属性，渐隐时要到整个过渡结束才跳到 hidden —— 那 120ms 里遮罩
+     仍是铺满全屏的可点击层，用户关掉弹窗后立刻点别处会"第一下点空"。
+     这行不能当冗余删掉；缩短时长也不等于修好（症状变轻 ≠ 病因消除）。 */
+  pointer-events: none;
+  transition:
+    opacity var(--m-out) var(--m-ease-in),
+    /* duration 0s + delay = 退场时长：淡出结束才 hidden，否则面板会在第一帧就消失。
+       delay 必须与面板退场时长严格相等，两者都读同一个 --m-out，天然同步不会漂移。 */
+    visibility 0s linear var(--m-out);
 }
 .overlay.show {
   opacity: 1;
   visibility: visible;
+  pointer-events: auto;
+  /* 开门方向 delay 必须是 0s：否则打开时先空白一个 --m-out 才出现 */
+  transition:
+    opacity var(--m-in) var(--m-ease-out),
+    visibility 0s;
 }
 /* 全局确认框变体：必须压在普通弹窗之上（弹窗内点删除会再弹确认框）。
-   原 GlobalModal 自绘外壳时的 z-index 就是 9999，迁移后语义不变。 */
+   原 GlobalModal 自绘外壳时的 z-index 就是 9999，迁移后语义不变。
+   注意不要为了"更浮"抬高普通弹窗的 z-index：AppSelect 下拉面板同值 1000、
+   靠 DOM 顺序取胜，抬到 1001 以上会让弹窗内所有下拉掉到遮罩后面。 */
 .overlay.global {
   z-index: 9999;
 }
 
 /* ─── 面板 ─────────────────────────────────────────────── */
 .base-modal {
+  /* ── 弹窗排版尺度：六个角色，全部是既有字号阶梯的别名 ──
+     用别名而不是直接写 var(--fs-xl)，是为了把「这一处是标题」留在代码里；
+     阶梯变则弹窗自动跟随，而 --fs-* 的值一个字没改 ⇒ 全应用其余部分零影响。
+     作用域说明：自定义属性靠 DOM 继承传到插槽内容；而 `.base-modal .m-title`
+     这类后代选择器写在本文件里**选不中插槽节点**（那些元素带的是宿主的 data-v），
+     所以变量只能定义在这一层，消费写在各宿主自己的 scoped 样式里。 */
+  --fs-modal-title: var(--fs-xl);    /* 18  弹窗标题（每个弹窗恰好一个） */
+  --fs-modal-section: var(--fs-lg);  /* 16  区块标题 */
+  --fs-modal-body: var(--fs-md);     /* 14  正文：说明段落、消息、摘要 */
+  --fs-modal-label: var(--fs-sm);    /* 13  标签 / 列表主字段 / 页签 */
+  --fs-modal-meta: var(--fs-xs);     /* 11  元信息：时间 / 来源 / 计数 / 徽标 */
+  --fs-modal-num: var(--fs-2xl);     /* 22  单值大数字 */
+
+  --lh-modal-title: 1.35;
+  --lh-modal-section: 1.5;
+  --lh-modal-body: 1.65;
+  --lh-modal-label: 1.4;
+  --lh-modal-meta: 1.5;
+  --lh-modal-num: 1.1;
+
+  /* 排版基线：未单独设字号的文字按「正文」渲染，而不是继承 body 的 14px
+     再叠上字体自带的 normal 行高（中文 ≈1.15，行与行几乎贴着）。
+     行高只给这一层，各角色在自己的规则里覆盖，不要在几十个选择器里重复数字。 */
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
+
   /* relative：side 布局的右上角关闭钮以面板为定位基准 */
   position: relative;
   display: flex;
   flex-direction: column;
-  max-width: 92vw;
-  max-height: 86vh;
+  /* 除 zoom：面板的宽高上限是相对视口的，缩放后要按同一比例反算才不会越界 */
+  max-width: calc(92vw / var(--ui-zoom, 1));
+  max-height: calc(86vh / var(--ui-zoom, 1));
   /* 玻璃化：比面板玻璃更实（--glass-strong），因为弹窗是**浮在最上层**的聚焦层，
      需要比下层玻璃更明确边界；模糊半径也更大（28 vs 20px），视觉上"更靠近眼睛"。 */
   background: var(--glass-strong);
@@ -284,21 +346,32 @@ onBeforeUnmount(deactivate)
     var(--shadow-pop);
   overflow: hidden;
   outline: none;
+  /* 进出场两个方向都走 transition：基础态即「退场终点」，撤掉 .show 是一次有前值的
+     属性变化，所以退场不需要任何 JS，也不存在"忘记写退出"这种失败模式
+     （原先 animation 挂在 .show 上，关闭时声明整条消失 ⇒ 面板原地消失，没有形体）。
+     位移取 6px 而不是 8px：它同时是进场起点与退场终点，一次开关只付一次
+     28px 模糊重算的代价。
+     ⚠ 新增 transform 必须与下面这行合并写在同一处声明里：将来若有人把居中改成
+     translate(-50%,-50%)，分散两条会让退场直接跳到左上角。 */
+  opacity: 0;
+  transform: translateY(6px);
+  transition:
+    opacity var(--m-out) var(--m-ease-in),
+    transform var(--m-out) var(--m-ease-in);
 }
-/* 动画挂在 .show 上而不是面板本身：面板常驻于 DOM，创建时就播放的话
-   等用户真正打开时动画早已结束；跟随 class 变化才能每次打开都播一遍。 */
 .overlay.show .base-modal {
-  animation: base-modal-in var(--dur) var(--ease);
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity var(--m-in) var(--m-ease-out),
+    transform var(--m-in) var(--m-ease-out);
 }
-@keyframes base-modal-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+/* 面板本身也可能拿到焦点：面板内没有任何可聚焦元素时 moveFocusIn 会落到面板上，
+   此时默认 outline:none 会让键盘用户看不见焦点在哪。
+   offset 取负值画在面板内侧，否则会被 overflow:hidden 裁掉。 */
+.base-modal:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -4px;
 }
 
 /* 宽度档位：把原先各弹窗写死的 width 收敛成四档梯队 */

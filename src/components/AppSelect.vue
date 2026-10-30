@@ -158,12 +158,34 @@ const currentLabel = computed(
   () => props.options.find((o) => o.value === props.modelValue)?.label ?? '',
 )
 
+/**
+ * 当前界面缩放档位（`--ui-zoom`）
+ *
+ * # 为什么本组件需要它
+ * 弹窗外壳已跟随「界面字体大小」缩放（`BaseModal` 的 `.overlay` 带 `zoom`），
+ * 而本组件的下拉面板 `Teleport to="body"`、落在 zoom 容器之外。
+ * 不补同一个 zoom，触发器会放大、下拉列表不放大 —— 同一个控件出现两档字号。
+ *
+ * @returns 缩放比例；变量缺失或非法时回退 1
+ */
+function currentZoom(): number {
+  const raw = getComputedStyle(document.documentElement).getPropertyValue('--ui-zoom')
+  const z = Number.parseFloat(raw)
+  return Number.isFinite(z) && z > 0 ? z : 1
+}
+
 /** 浮层的内联定位样式 */
-const panelStyle = computed(() => ({
-  top: `${panelPos.value.top}px`,
-  left: `${panelPos.value.left}px`,
-  width: `${panelPos.value.width}px`,
-}))
+const panelStyle = computed(() => {
+  const z = currentZoom()
+  return {
+    /* 面板自身带 zoom 时，top / left / width 会被再乘一次 z。
+       这里先除回去，让它们仍落在「视觉坐标」上 —— rect 给的也是视觉坐标。 */
+    top: `${panelPos.value.top / z}px`,
+    left: `${panelPos.value.left / z}px`,
+    width: `${panelPos.value.width / z}px`,
+    zoom: String(z),
+  }
+})
 
 /**
  * 展开或收起浮层
@@ -203,7 +225,11 @@ async function openPanel() {
 function positionPanel() {
   const rect = rootEl.value?.getBoundingClientRect()
   if (!rect) return
-  const height = panelEl.value?.offsetHeight ?? PANEL_MAX_HEIGHT
+  /* 用 rect 量高度而不是 offsetHeight：rect 与 window.innerWidth / innerHeight
+     都在「已缩放」的视觉像素里，三者同一坐标系才能直接比较。
+     offsetHeight 在 zoom 下返回哪个坐标系依浏览器而异，会算错翻转位置。
+     面板此刻已按 panelStyle 带上 zoom，量到的是缩放后的真实高度。 */
+  const height = panelEl.value?.getBoundingClientRect().height ?? PANEL_MAX_HEIGHT * currentZoom()
   const width = Math.max(rect.width, 120)
 
   let top = rect.bottom + TRIGGER_GAP

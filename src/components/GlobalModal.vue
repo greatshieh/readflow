@@ -211,11 +211,13 @@ function handleClose() {
   justify-content: space-between;
   padding: var(--sp-35) var(--sp-4);
   border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
 }
 
 .modal-title {
-  font-size: var(--fs-md);
+  font-size: var(--fs-modal-title);
   font-weight: 600;
+  line-height: var(--lh-modal-title);
   color: var(--text-primary);
 }
 
@@ -223,13 +225,19 @@ function handleClose() {
   border: none;
   background: none;
   cursor: pointer;
-  /* 22px：与其余弹窗的关闭按钮（RulesModal / ResearchModal / DigestModal /
-     FeedManageModal）对齐。此前此处是 20px，同一语义元素出现两种尺寸。 */
-  font-size: 22px;
+  /* × 是图形不是文字：18px 字形 + 32×32 命中区（WCAG 2.5.8 下限 24×24）。
+     原先写死 22px，是弹窗里视觉最大的单个字符、比标题还抢眼，且命中区只有约 30×22。
+     负 margin 抵掉命中区多占的空间，头部高度不变。
+     （旧注释说"与 ResearchModal 对齐"是不实的：那边是 28px 的 .btn-icon。） */
+  font-size: var(--fs-xl);
   line-height: 1;
+  min-width: 32px;
+  min-height: 32px;
+  display: grid;
+  place-items: center;
+  margin: -8px -8px -8px 0;
   color: var(--text-tertiary);
-  padding: 0 var(--sp-1);
-  transition: color 0.15s;
+  transition: color var(--m-tap) var(--m-ease-out);
 }
 
 .modal-close-btn:hover {
@@ -239,12 +247,19 @@ function handleClose() {
 /* ─── 弹窗内容 ──────────────────────────────────────────── */
 .modal-body {
   padding: var(--sp-4);
+  /* confirm / prompt / alert 三态共用。面板是 max-height:86vh + overflow:hidden，
+     自己并不滚 —— alert 文案长、或 prompt 的提示很长时会超出被裁掉且滚不到。
+     min-height:0 是关键：缺了它 flex 子项不会收缩，overflow 永远不生效。 */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .modal-message {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-body);
   color: var(--text-secondary);
-  line-height: 1.6;
+  line-height: var(--lh-modal-body);
   margin: 0;
   white-space: pre-wrap;
 }
@@ -252,6 +267,7 @@ function handleClose() {
 /* ─── prompt 输入框 ─────────────────────────────────────── */
 .modal-input-wrap {
   padding: 0 var(--sp-4) var(--sp-3);
+  flex: 0 0 auto;
 }
 
 .modal-input-wrap input {
@@ -260,11 +276,11 @@ function handleClose() {
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   padding: 0 var(--sp-15);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-label);
   background: var(--fill);
   color: var(--text-primary);
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color var(--m-tap) var(--m-ease-out);
   font-family: inherit;
   box-sizing: border-box;
 }
@@ -274,7 +290,8 @@ function handleClose() {
 }
 
 .input-hint {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-modal-meta);
+  line-height: var(--lh-modal-meta);
   color: var(--text-tertiary);
   margin: var(--sp-05) 0 0;
 }
@@ -286,6 +303,8 @@ function handleClose() {
   gap: var(--sp-2);
   padding: var(--sp-3) var(--sp-4);
   border-top: 1px solid var(--border);
+  /* 主操作区不参与收缩，滚动时始终可见 */
+  flex: 0 0 auto;
 }
 
 /* 弹窗底部按钮统一由全局按钮体系提供（styles.css 的 .btn / .btn-secondary / .btn-primary），

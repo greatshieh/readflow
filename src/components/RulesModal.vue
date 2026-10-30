@@ -4,7 +4,7 @@
        所有写操作经 invoke 交给 Rust 后端（filters_* 命令），前端只做展示与表单收集。 -->
   <BaseModal :open="open" title="过滤规则" size="sm" @close="close">
     <div class="manage-head">
-      <span>过滤规则</span>
+      <span class="m-title">过滤规则</span>
       <button class="manage-close" @click="close" aria-label="关闭">×</button>
     </div>
 
@@ -423,28 +423,46 @@ function actionText(r: FilterRule): string {
   justify-content: space-between;
   padding: var(--sp-35) var(--sp-4);
   border-bottom: 1px solid var(--border);
-  font-size: var(--fs-md);
+  /* 字号不再挂在容器上：原先标题 span 靠继承取容器的 14/600 */
+  flex: 0 0 auto;
+}
+.m-title {
+  font-size: var(--fs-modal-title);
   font-weight: 600;
+  line-height: var(--lh-modal-title);
   color: var(--text-primary);
 }
 .manage-close {
   border: none;
   background: none;
   cursor: pointer;
-  font-size: 22px;
+  /* × 是图形不是文字：18px 字形 + 32×32 命中区（WCAG 2.5.8 下限 24×24），
+     负 margin 抵掉多占的空间，头部高度不变。 */
+  font-size: var(--fs-xl);
   line-height: 1;
+  min-width: 32px;
+  min-height: 32px;
+  display: grid;
+  place-items: center;
+  margin: -8px -8px -8px 0;
   color: var(--text-tertiary);
-  padding: 0 var(--sp-1);
 }
 .manage-close:hover { color: var(--text-primary); }
 .manage-msg {
   color: var(--primary);
   background: var(--primary-fg);
-  font-size: var(--fs-xs);
+  /* 失败原因，用户要读懂才知道怎么改 —— 属于正文 */
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
   padding: var(--sp-2) var(--sp-4);
   border-bottom: 1px solid var(--border);
 }
-.hint { padding: var(--sp-4); color: var(--text-tertiary); font-size: var(--fs-sm); }
+.hint {
+  padding: var(--sp-4);
+  color: var(--text-tertiary);
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
+}
 
 .rules-list { padding: var(--sp-2) var(--sp-4); }
 .rule-row {
@@ -456,10 +474,17 @@ function actionText(r: FilterRule): string {
 }
 .rule-row.disabled { opacity: 0.5; }
 .rule-info { flex: 1; min-width: 0; }
-.rule-name { font-size: var(--fs-sm); font-weight: 500; color: var(--text-primary); }
+.rule-name {
+  font-size: var(--fs-modal-label);
+  font-weight: 500;
+  line-height: var(--lh-modal-label);
+  color: var(--text-primary);
+}
 .rule-desc {
-  font-size: var(--fs-xs);
-  color: var(--text-tertiary);
+  /* 用户靠这行判断该不该开这条规则 —— 属于正文，不是元信息 */
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
+  color: var(--text-secondary);
   margin-top: var(--sp-025);
   white-space: nowrap;
   overflow: hidden;
@@ -473,16 +498,28 @@ function actionText(r: FilterRule): string {
   padding: var(--sp-3) var(--sp-4) var(--sp-4);
   border-top: 1px solid var(--border);
 }
-.form-title { font-size: var(--fs-sm); font-weight: 600; color: var(--text-primary); margin-bottom: var(--sp-15); }
+.form-title {
+  /* 区块标题：原先 13px 只比弹窗标题（14）小 1px，层级读不出来 */
+  font-size: var(--fs-modal-section);
+  font-weight: 600;
+  line-height: var(--lh-modal-section);
+  color: var(--text-primary);
+  margin-bottom: var(--sp-15);
+}
 .fields { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-15); }
 .field { display: flex; flex-direction: column; gap: var(--sp-1); }
-.field label { font-size: var(--fs-xs); color: var(--text-tertiary); }
+.field label {
+  font-size: var(--fs-modal-label);
+  font-weight: 500;
+  line-height: var(--lh-modal-label);
+  color: var(--text-secondary);
+}
 .field input {
   height: 34px;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   padding: 0 var(--sp-2);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-label);
   background: var(--fill);
   color: var(--text-primary);
   outline: none;

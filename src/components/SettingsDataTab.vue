@@ -220,6 +220,15 @@ async function handleExportOpml() {
   padding: var(--sp-3) var(--sp-2);
   text-align: center;
 }
-.stat-num { font-size: var(--fs-xl); font-weight: 600; color: var(--text-primary); }
-.stat-label { font-size: var(--fs-xs); color: var(--text-tertiary); margin-top: var(--sp-025); }
+/* 统计大数走 num 档（22/700）。右侧内容列宽约 660px、5 等分后每格内宽约 104px，
+   6 位数（22px 约 78px）仍不溢出；tabular-nums 让五格数字位数不同也对齐。 */
+.stat-num {
+  font-size: var(--fs-modal-num); font-weight: 700;
+  line-height: var(--lh-modal-num); font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+.stat-label {
+  font-size: var(--fs-modal-meta); color: var(--text-tertiary);
+  margin-top: var(--sp-025);
+}
 </style>

@@ -6,6 +6,12 @@
     size="lg"
     @close="emit('close')"
   >
+    <!-- 补视觉标题：BaseModal 的 title 只进 aria-label。放在 .arm 之外，
+         这样 .arm 变成滚动容器后标题不跟着滚走。 -->
+    <div class="arm-bar" v-if="entity">
+      <span class="m-title">告警规则</span>
+    </div>
+
     <div class="arm" v-if="entity">
       <!-- 启用总开关 -->
       <div class="arm-row arm-head">
@@ -239,10 +245,32 @@ async function handleSave() {
 </script>
 
 <style scoped>
+.arm-bar {
+  display: flex;
+  align-items: center;
+  padding: var(--sp-35) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.m-title {
+  font-size: var(--fs-modal-title);
+  font-weight: 600;
+  line-height: var(--lh-modal-title);
+  color: var(--text-primary);
+}
 .arm {
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);
+  /* 原来一处内边距都没有，内容直接贴玻璃边；成为滚动容器后右侧滚动条还会压住文字。
+     padding 既是补齐原本缺失的留白，也是滚动容器可用的前提。 */
+  padding: var(--sp-4);
+  /* 面板是 max-height:86vh + overflow:hidden，自己并不滚，超出部分直接消失且滚不到。
+     min-height:0 是关键：缺了它 flex 子项不会收缩，overflow 永远不生效。 */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .arm-row {
   display: flex;
@@ -255,16 +283,19 @@ async function handleSave() {
   border-bottom: 1px solid var(--border);
 }
 .arm-info h4 {
-  font-size: var(--fs-base);
+  /* 降为区块标题：它原本是弹窗里"最像标题"的一行，与真正的标题抢层级。
+     现在弹窗标题独占 18px，这一行是区块（16px）。 */
+  font-size: var(--fs-modal-section);
   font-weight: 600;
+  line-height: var(--lh-modal-section);
   color: var(--text-primary);
   margin: 0 0 var(--sp-05);
 }
 .arm-info p {
-  font-size: var(--fs-sm);
-  color: var(--text-tertiary);
+  font-size: var(--fs-modal-body);
+  color: var(--text-secondary);
   margin: 0;
-  line-height: 1.5;
+  line-height: var(--lh-modal-body);
 }
 .arm-body {
   display: flex;
@@ -277,7 +308,9 @@ async function handleSave() {
   gap: var(--sp-15);
 }
 .arm-label {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-label);
+  font-weight: 500;
+  line-height: var(--lh-modal-label);
   color: var(--text-secondary);
 }
 .arm-chips {
@@ -291,9 +324,14 @@ async function handleSave() {
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text-secondary);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-label);
   cursor: pointer;
-  transition: all 0.15s;
+  /* 原先用 all 过渡 —— 会连带过渡布局属性（每帧重排），且整条覆盖了全局
+     button 基线的六属性过渡。只列真正会变的三个。 */
+  transition:
+    background var(--m-tap) var(--m-ease-out),
+    color var(--m-tap) var(--m-ease-out),
+    border-color var(--m-tap) var(--m-ease-out);
 }
 .arm-chip:hover {
   border-color: var(--primary);
@@ -308,11 +346,11 @@ async function handleSave() {
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   padding: 0 var(--sp-15);
-  font-size: var(--fs-md);
+  font-size: var(--fs-modal-label);
   background: var(--fill);
   color: var(--text-primary);
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color var(--m-tap) var(--m-ease-out);
 }
 .arm-input:focus {
   border-color: var(--primary);
@@ -321,7 +359,8 @@ async function handleSave() {
   color: var(--text-tertiary);
 }
 .arm-error {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
   color: var(--danger);
   margin: 0;
 }
@@ -332,7 +371,8 @@ async function handleSave() {
   gap: var(--sp-2);
 }
 .arm-hint {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-meta);
+  line-height: var(--lh-modal-meta);
   color: var(--text-tertiary);
   margin-right: auto;
 }
@@ -343,9 +383,12 @@ async function handleSave() {
   border-radius: var(--r-md);
   background: var(--surface);
   color: var(--text-secondary);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-label);
   cursor: pointer;
-  transition: all 0.15s;
+  transition:
+    background var(--m-tap) var(--m-ease-out),
+    color var(--m-tap) var(--m-ease-out),
+    border-color var(--m-tap) var(--m-ease-out);
 }
 .arm-cancel:hover {
   border-color: var(--text-tertiary);
@@ -357,9 +400,9 @@ async function handleSave() {
   border-radius: var(--r-md);
   background: var(--primary);
   color: var(--tone-fg);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-label);
   cursor: pointer;
-  transition: opacity 0.15s;
+  transition: opacity var(--m-tap) var(--m-ease-out);
 }
 .arm-save:hover:not(:disabled) {
   opacity: 0.85;
@@ -369,8 +412,9 @@ async function handleSave() {
   cursor: not-allowed;
 }
 .arm-empty {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
   color: var(--text-tertiary);
-  padding: var(--sp-3) 0;
+  padding: var(--sp-4);
 }
 </style>

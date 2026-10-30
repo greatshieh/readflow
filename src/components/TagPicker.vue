@@ -305,7 +305,10 @@ async function removeTag(t: Tag) {
   background: none;
   padding: var(--sp-05) var(--sp-1);
   border-radius: var(--r-sm);
-  font-size: var(--fs-xs);
+  /* 11 → 13：页签名属于「标签」角色，11px 中文在这个尺寸下只能扫到轮廓。
+     注意本组件是**浮层不是弹窗**（不 Teleport、不锁滚动）：--fs-modal-* 与 --m-*
+     在这里未定义，引用它们会让整条声明静默作废，所以只能用全局阶梯 token。 */
+  font-size: var(--fs-sm);
   color: var(--text-tertiary);
   cursor: pointer;
 }
@@ -315,10 +318,17 @@ async function removeTag(t: Tag) {
   border: none;
   background: none;
   color: var(--text-tertiary);
-  font-size: 15px;
+  /* 原为裸写 15px：9 个关闭钮里的第三档尺寸。统一成 18px 字形。
+     命中区补到 32×32（头部行不受密集列表约束，可以与其余弹窗一致）。 */
+  font-size: var(--fs-xl);
   line-height: 1;
+  min-width: 32px;
+  min-height: 32px;
+  display: grid;
+  place-items: center;
   cursor: pointer;
-  padding: 0 var(--sp-05);
+  padding: 0;
+  margin: -6px -6px -6px 0;
 }
 .tp-close:hover { color: var(--text-primary); }
 
@@ -333,7 +343,9 @@ async function removeTag(t: Tag) {
   margin: 0;
   padding: var(--sp-3) var(--sp-1);
   text-align: center;
-  font-size: var(--fs-xs);
+  /* 整句提示语，属于正文 */
+  font-size: var(--fs-md);
+  line-height: 1.65;
   color: var(--text-tertiary);
 }
 .tp-row {
@@ -367,6 +379,7 @@ async function removeTag(t: Tag) {
 .tp-count {
   margin-left: auto;
   font-size: var(--fs-xs);
+  line-height: 1.5;
   color: var(--text-tertiary);
   flex-shrink: 0;
 }
@@ -383,6 +396,9 @@ async function removeTag(t: Tag) {
   padding: 2px var(--sp-05);
   font-size: var(--fs-sm);
   color: var(--text-primary);
+  /* input 不在全局 button 基线里，没有过渡 —— 之前 hover 换边框是瞬时跳变。
+     本组件在弹窗外，所以用全局 --dur / --ease，而不是弹窗的 --m-tap。 */
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
 .tp-name-input:hover { border-color: var(--border); }
 .tp-name-input:focus { outline: none; border-color: var(--primary); background: var(--surface); }
@@ -390,10 +406,17 @@ async function removeTag(t: Tag) {
   border: none;
   background: none;
   color: var(--text-tertiary);
-  font-size: 15px;
+  /* 原为裸写 15px，与 .tp-close 同为第三档尺寸 —— 措辞统一成 18px 字形。
+     命中区取 24×24（WCAG 2.5.8 下限）而不是 32：这一行还含输入框，行高约 24px，
+     撑到 32 会把整个标签列表拉松，与"浮层要保持紧凑"相冲突。 */
+  font-size: var(--fs-xl);
   line-height: 1;
+  min-width: 24px;
+  min-height: 24px;
+  display: grid;
+  place-items: center;
   cursor: pointer;
-  padding: 0 var(--sp-05);
+  padding: 0;
   flex-shrink: 0;
 }
 .tp-del:hover { color: var(--danger); }

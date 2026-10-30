@@ -232,10 +232,13 @@ watch(() => props.entityId, load)
   flex-direction: column;
   gap: var(--sp-3);
 }
+/* 行情面板整体在 EntityDashboardModal 内，--fs-modal-* / --m-* 由 .base-modal 继承下来。
+   说明与加载文案是整句 → 正文档 14 / 1.65。 */
 .mp-loading,
 .mp-sub {
   color: var(--text-tertiary);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
 }
 .mp-link {
   display: flex;
@@ -250,7 +253,7 @@ watch(() => props.entityId, load)
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   padding: 6px var(--sp-2);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-body);
   font-family: inherit;
 }
 .mp-input:focus,
@@ -258,9 +261,10 @@ watch(() => props.entityId, load)
   outline: none;
   border-color: var(--primary);
 }
+/* 关联状态是一行字段 → 标签档 13 */
 .mp-linked {
   color: var(--text-secondary);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-label);
   white-space: nowrap;
 }
 .mp-placeholder {
@@ -268,7 +272,8 @@ watch(() => props.entityId, load)
   border-radius: var(--r-lg);
   padding: var(--sp-35);
   color: var(--text-tertiary);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
@@ -288,9 +293,11 @@ watch(() => props.entityId, load)
   border-radius: var(--r-lg);
   background: linear-gradient(180deg, var(--tech-glow), transparent);
 }
+/* 主价格：大数字角色（22/700/1.1 + 等宽数字） */
 .mp-price {
-  font-size: var(--fs-2xl);
+  font-size: var(--fs-modal-num);
   font-weight: 700;
+  line-height: var(--lh-modal-num);
   font-variant-numeric: tabular-nums;
   color: var(--text-primary);
 }
@@ -308,12 +315,14 @@ watch(() => props.entityId, load)
   flex-direction: column;
   gap: var(--sp-2);
 }
+/* 分区标题 → 弹窗区块标题 16/600 */
 .mp-h {
   display: flex;
   align-items: center;
   gap: var(--sp-1);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-section);
   font-weight: 600;
+  line-height: var(--lh-modal-section);
   color: var(--text-secondary);
 }
 .mp-h::before {
@@ -324,11 +333,12 @@ watch(() => props.entityId, load)
   background: var(--tech-rail);
   flex-shrink: 0;
 }
+/* 数据行属密集列表 → 标签档 13（与 .mp-linked 同档） */
 .mp-fund {
   display: flex;
   gap: var(--sp-3);
   flex-wrap: wrap;
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-label);
   font-variant-numeric: tabular-nums;
 }
 .mp-quotes,
@@ -337,7 +347,7 @@ watch(() => props.entityId, load)
   list-style: none;
   margin: 0;
   padding: 0;
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-label);
   max-height: 160px;
   overflow-y: auto;
 }
@@ -362,12 +372,13 @@ watch(() => props.entityId, load)
 }
 /* .btn 走styles.css 全局族（次级描边），此处只补主操作变体的间距需求，
    不再在组件内重复定义按钮外观，避免与全局令牌漂移。 */
+/* 文字链与所在段落同档（正文档 14），否则与 .mp-placeholder 的行内基线不一致 */
 .btn-link {
   background: none;
   border: none;
   color: var(--primary);
   cursor: pointer;
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-body);
   padding: 0;
 }
 .btn-link:hover {

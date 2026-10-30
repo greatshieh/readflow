@@ -1,6 +1,11 @@
 <template>
   <!-- 阅读洞察看板：纯前端聚合，数据源为 db_stats 与 stats_daily_read 两个既有命令 -->
   <BaseModal :open="open" title="阅读洞察" size="xl" @close="emit('close')">
+    <!-- 补视觉标题：BaseModal 的 title 属性只写进 aria-label，屏幕上原本一个字都没有，
+         于是这个弹窗没有"它是什么"的第一行。标题放在 .ins 之外，滚动时不跟着走。 -->
+    <div class="ins-head">
+      <span class="m-title">阅读洞察</span>
+    </div>
     <div class="ins">
       <div v-if="loading && !stats" class="ins-state">加载中…</div>
       <div v-else-if="!stats" class="ins-state ins-error">数据加载失败，请稍后重试</div>
@@ -222,17 +227,38 @@ const streak = computed(() => {
 </script>
 
 <style scoped>
+.ins-head {
+  display: flex;
+  align-items: center;
+  padding: var(--sp-35) var(--sp-6);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.m-title {
+  font-size: var(--fs-modal-title);
+  font-weight: 600;
+  line-height: var(--lh-modal-title);
+  color: var(--text-primary);
+}
 .ins {
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);
   padding: var(--sp-5) var(--sp-6);
+  /* 面板是 max-height:86vh + overflow:hidden，自己并不滚。图表 + 图例 + 明细在
+     小屏或放大字号后必然超出，超出部分原本直接消失且滚不到。
+     min-height:0 是关键：缺了它 flex 子项不会收缩，overflow 永远不生效。 */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .ins-state {
   padding: var(--sp-5);
   text-align: center;
   color: var(--text-tertiary);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
 }
 .ins-error { color: var(--danger, #e5484d); }
 
@@ -252,14 +278,17 @@ const streak = computed(() => {
   border-radius: var(--r-md);
 }
 .ins-num {
-  font-size: 1.5rem;
+  /* 原为 1.5rem（=24px，阶梯里没有这一档，也无法随界面缩放联动） */
+  font-size: var(--fs-modal-num);
   font-weight: 700;
+  line-height: var(--lh-modal-num);
   color: var(--text-primary);
-  letter-spacing: -0.02em;
+  /* 负字距是给拉丁字母排紧的手法；汉字字面本身满格，压字距会让笔画粘连 —— 删除 */
   font-variant-numeric: tabular-nums;
 }
 .ins-label {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-modal-meta);
+  line-height: var(--lh-modal-meta);
   color: var(--text-tertiary);
 }
 
@@ -276,8 +305,10 @@ const streak = computed(() => {
 }
 .ins-h {
   margin: 0;
-  font-size: var(--fs-md);
-  font-weight: 700;
+  /* 区块标题：与弹窗标题拉开一级（16 vs 18），而不是靠 700 硬顶 */
+  font-size: var(--fs-modal-section);
+  font-weight: 600;
+  line-height: var(--lh-modal-section);
   color: var(--text-primary);
 }
 .ins-range {
@@ -292,7 +323,12 @@ const streak = computed(() => {
   background: var(--fill);
   color: var(--text-secondary);
   cursor: pointer;
-  transition: all 0.15s;
+  /* 原先用 all 过渡 —— 会连带过渡布局属性（每帧重排），且整条覆盖了全局
+     button 基线的六属性过渡。只列真正会变的三个。 */
+  transition:
+    background var(--m-tap) var(--m-ease-out),
+    color var(--m-tap) var(--m-ease-out),
+    border-color var(--m-tap) var(--m-ease-out);
 }
 .ins-range-btn:hover { background: var(--hover-bg); }
 .ins-range-btn.active {
@@ -319,7 +355,8 @@ const streak = computed(() => {
 }
 .ins-axis {
   fill: var(--text-tertiary);
-  font-size: 11px;
+  /* 原为裸写 11px：轴刻度属于元信息，走角色 token 才不会再"多一个 11px" */
+  font-size: var(--fs-modal-meta);
   font-variant-numeric: tabular-nums;
 }
 .ins-area {
@@ -337,7 +374,8 @@ const streak = computed(() => {
   display: flex;
   flex-wrap: wrap;
   gap: var(--sp-4);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
   color: var(--text-secondary);
 }
 .ins-derived b {

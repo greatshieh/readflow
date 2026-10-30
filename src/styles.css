@@ -573,6 +573,21 @@ button {
 button:not(:disabled):active { transform: scale(0.96); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* 键盘焦点环：一处规则覆盖全应用（含弹窗里的每个按钮）。
+   此前只有 input / textarea / select 有 :focus-visible，**按钮从来没有画过焦点环** ——
+   而弹窗是焦点陷阱最严密的地方（Tab 在里面循环），键盘用户看不见自己停在哪。
+   写法与仓内既有的 4 处手写焦点环保持一致（AppSwitch / AppTooltip / FeedListItem / ToastHost）。 */
+button:focus-visible,
+[role='button']:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  /* 焦点环是状态指示，不是装饰：加过渡会让"按 Tab 之后才慢慢出现"，
+     键盘用户会以为没生效而连按两次。所以这里刻意无过渡。 */
+  transition: none;
+}
+/* 输入框等的焦点态沿用下方 input:focus-visible 的 box-shadow 环，
+   与组件内各自的 border-color 焦点态叠加成"边框变色 + 外圈光环"，不要互相覆盖。 */
+
 /* 文本输入类控件默认不继承字体（浏览器按控件自带字体渲染），统一显式继承，
    这样「设置 → 常规 → 界面字体」才能全局生效；组件内更具体的规则仍可覆盖。 */
 input,
@@ -1455,4 +1470,28 @@ select:focus-visible {
   .tech-count { margin-left: 0; }
   .tech-card { grid-template-columns: 1fr; }
   .tech-card-num { font-size: var(--fs-xs); }
+}
+
+/* ── 减弱动效兜底 ────────────────────────────────────────────────────────
+   全应用原有 6 处 @media (prefers-reduced-motion) 组件规则（CommandPalette /
+   FeedPanel / ToastHost / ArticleChatPanel / SelectCapsule / ArticleSummaryCard），
+   一处都没落在弹窗上。这里补一条全局兜底，与那 6 处并存、互不冲突。
+
+   为什么用 0.01ms 而不用 0s：0s 时 transitionend 不触发，任何依赖它收尾的逻辑会卡住。
+   本轮的弹窗动效是零 JS、不依赖任何事件，但下一个人很可能在这里接 transitionend。
+
+   !important 在这里是正确用法：要压过 `transition: all 0.15s` 这类具体规则与内联样式。
+
+   注意它改不到 transition-delay：弹窗关闭时 visibility 的 duration 是 0s、delay 是
+   --m-out(120ms)，所以仍会在 120ms 后跳 hidden —— 那时面板早已全透明，不可见。
+   真正保证"关闭瞬间不挡点击"的是 .overlay 基础态的 pointer-events: none。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

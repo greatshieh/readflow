@@ -660,7 +660,13 @@ defineExpose({ save: saveGeneral })
 /* 金融数据源：Tushare / 东财 凭据输入区（仅在设置页出现，scoped 即可） */
 .ds-fields { display: flex; flex-direction: column; gap: var(--sp-2); margin-top: var(--sp-2); }
 .ds-field { display: flex; flex-direction: column; gap: var(--sp-1); }
-.ds-label { font-size: var(--fs-sm); color: var(--text-secondary); }
+/* 表单字段名：与 FeedAddModal 的 .field label 同角色（13/500/secondary）。
+   全局面板已把 --fs-modal-* 定义在 .base-modal 上，本组件在其 DOM 子树内，
+   自定义属性靠继承生效 —— 不要写 `.base-modal .ds-label` 后代选择器，scoped 选不中且不报错。 */
+.ds-label {
+  font-size: var(--fs-modal-label); font-weight: 500;
+  line-height: var(--lh-modal-label); color: var(--text-secondary);
+}
 
 /* 事件类型分类：预设领域多选 chips（无默认，可多选取并集） */
 .domain-chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); }
@@ -669,9 +675,11 @@ defineExpose({ save: saveGeneral })
   padding: var(--sp-1) var(--sp-2);
   border: 1px solid var(--border); border-radius: 999px;
   background: var(--surface); color: var(--text-secondary);
-  font-size: var(--fs-sm); cursor: pointer;
-  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease),
-    color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+  font-size: var(--fs-modal-label); cursor: pointer;
+  transition: border-color var(--m-state) var(--m-ease-out),
+    background var(--m-state) var(--m-ease-out),
+    color var(--m-state) var(--m-ease-out),
+    box-shadow var(--m-state) var(--m-ease-out);
 }
 .domain-chip:hover { border-color: var(--primary); color: var(--text-primary); }
 .domain-chip.active {
@@ -679,8 +687,9 @@ defineExpose({ save: saveGeneral })
   background: color-mix(in srgb, var(--primary) 12%, var(--surface));
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 22%, transparent);
 }
+/* 计数角标属元信息档（11），不带行高：紧跟 chip 文字，行高由 chip 的 align-items 决定 */
 .domain-count {
-  font-size: var(--fs-xs); color: var(--text-tertiary);
+  font-size: var(--fs-modal-meta); color: var(--text-tertiary);
   background: var(--fill); border-radius: 999px;
   padding: 0 var(--sp-1); min-width: 18px; text-align: center;
 }
@@ -697,20 +706,29 @@ defineExpose({ save: saveGeneral })
   display: inline-flex; align-items: center; gap: var(--sp-1);
   padding: var(--sp-1) var(--sp-2); border-radius: 999px;
   background: var(--fill); color: var(--text-primary);
-  font-size: var(--fs-sm); border: 1px solid var(--border);
+  font-size: var(--fs-modal-label); border: 1px solid var(--border);
 }
+/* 原为裸写 15px。措辞与前缀标签同档，字形提到 18 与各弹窗关闭钮一致；
+   命中区只取 24×24（WCAG 2.5.8 下限）而不是 32 —— 本行还含标签文字，
+   撑到 32 会把 chip 自身拉高。 */
 .tag-remove {
   border: none; background: transparent; cursor: pointer;
-  color: var(--text-tertiary); font-size: 15px; line-height: 1;
-  padding: 0 2px; border-radius: 50%;
-  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
+  color: var(--text-tertiary); font-size: var(--fs-xl); line-height: 1;
+  min-width: 24px; min-height: 24px;
+  display: grid; place-items: center;
+  padding: 0; border-radius: 50%;
+  transition: color var(--m-tap) var(--m-ease-out),
+    background var(--m-tap) var(--m-ease-out);
 }
 .tag-remove:hover {
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
-/* 未启用任何领域且无自定义类型时的提示（warn token 缺失时回退琥珀色，深浅主题通用） */
+/* 未启用任何领域且无自定义类型时的提示（warn token 缺失时回退琥珀色，深浅主题通用）。
+   整句提示走正文档 14，不用 meta 11 —— 这是要读的句子，不是脚注。 */
 .event-type-warn {
-  margin-top: var(--sp-2); font-size: var(--fs-xs); color: var(--warn, #b45309);
+  margin-top: var(--sp-2);
+  font-size: var(--fs-modal-body); line-height: var(--lh-modal-body);
+  color: var(--warn, #b45309);
 }
 </style>

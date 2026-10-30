@@ -654,13 +654,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 .dash-head-title {
   margin: 0;
-  font-size: var(--fs-base);
+  /* 弹窗标题角色。原先它与 .dash-head-name 同为 14/600 —— 层级比 1.000，
+     标题只是"排在上面的一行字"，这是整个弹窗体系最典型的层级缺失。 */
+  font-size: var(--fs-modal-title);
   font-weight: 600;
+  line-height: var(--lh-modal-title);
   color: var(--text-primary);
 }
 .dash-head-name {
-  font-size: var(--fs-md);
+  /* 实体名降为区块标题：与"仪表盘"这级标题分开，而不是靠同为 600 硬撑 */
+  font-size: var(--fs-modal-section);
   font-weight: 600;
+  line-height: var(--lh-modal-section);
   color: var(--text-primary);
 }
 .dash-head-type {
@@ -720,15 +725,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 .dash-h {
   margin: 0;
-  font-size: var(--fs-sm);
+  /* 区块标题：原先 13px 只比正文（13）同号，靠 600 撑不出层级 */
+  font-size: var(--fs-modal-section);
   font-weight: 600;
-  color: var(--text-secondary);
+  line-height: var(--lh-modal-section);
+  color: var(--text-primary);
   padding-bottom: var(--sp-05);
   border-bottom: 1px solid var(--border);
 }
 .dash-empty {
   margin: 0;
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
   color: var(--text-tertiary);
 }
 .dash-sentiment {
@@ -737,7 +745,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   gap: var(--sp-2);
 }
 .badge {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-modal-meta);
+  line-height: var(--lh-modal-meta);
   font-weight: 600;
   padding: var(--sp-025) var(--sp-15);
   border-radius: var(--r-sm);
@@ -747,7 +756,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .badge.negative { background: var(--entity-regulatory); }
 .badge.neutral { background: var(--entity-other); }
 .dash-stat {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
   color: var(--text-secondary);
 }
 
@@ -766,23 +776,26 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   gap: var(--sp-1);
 }
 .fin-k {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-modal-meta);
+  line-height: var(--lh-modal-meta);
   color: var(--text-tertiary);
   min-width: 100px;
   flex-shrink: 0;
 }
 .fin-v {
-  font-size: var(--fs-md);
+  /* 键值对里的"值"：不是强调，不必 500 */
+  font-size: var(--fs-modal-body);
   color: var(--text-primary);
-  font-weight: 500;
+  font-weight: 400;
 }
 .fin-v em {
   font-style: normal;
-  font-size: var(--fs-xs);
+  font-size: var(--fs-modal-meta);
   color: var(--text-tertiary);
 }
 .fin-p {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-modal-meta);
+  line-height: var(--lh-modal-meta);
   color: var(--text-tertiary);
   margin-left: auto;
 }
@@ -816,7 +829,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   border-radius: var(--r-md);
 }
 .dash-reextract-hint {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-modal-meta);
+  line-height: var(--lh-modal-meta);
   color: var(--text-tertiary);
 }
 </style>

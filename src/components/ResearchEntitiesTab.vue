@@ -272,7 +272,7 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
   padding: var(--sp-15) var(--sp-3);
   background: var(--fill);
   border-radius: var(--r-md);
-  transition: background 0.15s;
+  transition: background var(--m-tap) var(--m-ease-out);
 }
 .entity-item:hover {
   background: var(--hover-bg);
@@ -290,16 +290,19 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
 .entity-info.clickable:hover .entity-name {
   color: var(--primary);
 }
+/* 列表行主字段：13/500 —— 与 DigestModal 的 .article-title 同一角色（密集列表用标签档）。
+   卡片式条目（如设置页任务卡）才用 14/600，这里的行只有两行信息，不需要那么重。 */
 .entity-name {
-  font-size: var(--fs-base);
+  font-size: var(--fs-modal-label);
   font-weight: 500;
+  line-height: var(--lh-modal-label);
   color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .entity-type {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-modal-meta);
   color: var(--text-tertiary);
 }
 .entity-actions {
@@ -308,19 +311,24 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
   gap: var(--sp-05);
   flex-shrink: 0;
 }
+/* 行内三个图标钮：命中区 32×32（原先 28），与各弹窗外壳的图标钮统一；
+   .toggle-btn 里是 ✓ / ○ 文字字形，按图形处理取 14 档（不占六角色位）。
+   三处原先都是 all 过渡，会连尺寸一起过渡，改为显式属性。 */
 .toggle-btn {
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   border: 1px solid var(--border);
   background: var(--surface);
   cursor: pointer;
-  font-size: var(--fs-sm);
+  font-size: var(--fs-md);
   color: var(--text-tertiary);
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.15s;
+  transition: border-color var(--m-tap) var(--m-ease-out),
+    color var(--m-tap) var(--m-ease-out),
+    background var(--m-tap) var(--m-ease-out);
 }
 .toggle-btn.active {
   border-color: var(--primary);
@@ -331,8 +339,8 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
   border-color: var(--primary);
 }
 .delete-btn {
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border-radius: var(--r-sm);
   border: none;
   background: none;
@@ -341,15 +349,16 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.15s;
+  transition: background var(--m-tap) var(--m-ease-out),
+    color var(--m-tap) var(--m-ease-out);
 }
 .delete-btn:hover {
   background: var(--danger-fg);
   color: var(--danger);
 }
 .alert-btn {
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border-radius: var(--r-sm);
   border: none;
   background: none;
@@ -358,7 +367,8 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.15s;
+  transition: background var(--m-tap) var(--m-ease-out),
+    color var(--m-tap) var(--m-ease-out);
 }
 .alert-btn:hover {
   background: var(--primary-fg);
@@ -381,11 +391,11 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   padding: 0 var(--sp-15);
-  font-size: var(--fs-md);
+  font-size: var(--fs-modal-body);
   background: var(--fill);
   color: var(--text-primary);
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color var(--m-state) var(--m-ease-out);
 }
 .entity-input:focus {
   border-color: var(--primary);
@@ -403,9 +413,9 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
   border-radius: var(--r-md);
   background: var(--primary);
   color: var(--tone-fg);
-  font-size: var(--fs-md);
+  font-size: var(--fs-modal-body);
   cursor: pointer;
-  transition: opacity 0.15s;
+  transition: opacity var(--m-tap) var(--m-ease-out);
   white-space: nowrap;
 }
 .add-btn:hover:not(:disabled) {
@@ -422,10 +432,10 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
   gap: var(--sp-2);
   padding-top: var(--sp-1);
 }
-/* 评分结果提示：成功/空态走中性色，失败走警告色 */
+/* 评分结果提示：成功/空态走中性色，失败走警告色。整句 → 正文档 14 / 1.65 */
 .score-msg {
-  font-size: var(--fs-sm);
-  line-height: 1.5;
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
   color: var(--text-secondary);
 }
 .score-msg.err {
@@ -438,9 +448,10 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
   border-radius: var(--r-md);
   background: var(--primary-fg);
   color: var(--primary);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-label);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background var(--m-tap) var(--m-ease-out),
+    color var(--m-tap) var(--m-ease-out);
 }
 .score-btn:hover:not(:disabled) {
   background: var(--primary);
@@ -450,8 +461,10 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
   opacity: 0.5;
   cursor: not-allowed;
 }
+/* 错误提示是必读句子，与成功提示同档 14 */
 .error-msg {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
   color: var(--danger);
 }
 </style>

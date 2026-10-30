@@ -462,8 +462,9 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
   border-radius: var(--r-md);
   background: var(--fill);
   color: var(--text-primary);
-  font-size: var(--fs-md);
-  transition: border-color var(--dur) var(--ease), background-color var(--dur) var(--ease);
+  font-size: var(--fs-modal-body);
+  transition: border-color var(--m-state) var(--m-ease-out),
+    background-color var(--m-state) var(--m-ease-out);
 }
 .kw-input::placeholder {
   color: var(--text-tertiary);
@@ -476,11 +477,12 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
    flex-shrink:0 + nowrap 让它永不参与收缩（此前缺这两条，行超宽时被压到最小内容宽度，
    文字折成「7/条/事件」三竖行并被弹窗右缘裁掉，即用户看到的"看不清"）；
    颜色由三级文字提升到二级，白底对比度约 3:1 → 7:1，小字也清晰可读。 */
+/* 计数是元信息档（11），不需要与被计数内容争层级 */
 .event-count {
   margin-left: auto;
   flex-shrink: 0;
   white-space: nowrap;
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-meta);
   color: var(--text-secondary);
 }
 
@@ -492,7 +494,7 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
 }
 .loading-state p {
   margin: 0 0 var(--sp-2);
-  font-size: var(--fs-base);
+  font-size: var(--fs-modal-body);
 }
 
 /* 时间线分组 */
@@ -521,27 +523,31 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
   filter: brightness(0.95);
   text-decoration: underline;
 }
+/* 分组头 = 弹窗内的区块标题（16/600）。原先 14/600，与下面 14 的事件正文同字号，
+   只靠字重分辨（中文只有 400/700 两档，字重形不成层级）→ 提到 16。 */
 .entity-tag {
-  font-size: var(--fs-md);
+  font-size: var(--fs-modal-section);
   font-weight: 600;
+  line-height: var(--lh-modal-section);
   color: var(--primary);
   background: var(--primary-fg);
   padding: var(--sp-1) var(--sp-15);
   border-radius: var(--r-sm);
 }
 .entity-count {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-meta);
   color: var(--text-tertiary);
 }
 
-/* 情感徽标：与 .event-type 同几何，但语义色用 positive/negative/neutral */
+/* 情感徽标：与 .event-type 同几何，但语义色用 positive/negative/neutral。
+   徽标属元信息档 11；角色默认 400，色块反白小字保留 500 补强；行高取标签档 1.4 压住色块高度。 */
 .event-sentiment {
   flex-shrink: 0;
-  font-size: var(--fs-xs);
-  font-weight: 600;
+  font-size: var(--fs-modal-meta);
+  font-weight: 500;
   padding: var(--sp-025) var(--sp-2);
   border-radius: var(--r-sm);
-  line-height: 1.4;
+  line-height: var(--lh-modal-label);
 }
 .sentiment-positive { color: var(--tone-fg); background: var(--entity-product); }
 .sentiment-negative { color: var(--tone-fg); background: var(--entity-regulatory); }
@@ -553,7 +559,7 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
   background: var(--fill);
   border-radius: var(--r-md);
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background var(--m-tap) var(--m-ease-out);
 }
 .event-item:hover {
   background: var(--hover-bg);
@@ -563,10 +569,12 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
   align-items: baseline;
   gap: var(--sp-2);
 }
+/* 类型徽标：与 .event-sentiment 同档（11/500/1.4），几何一致便于并排 */
 .event-type {
   flex-shrink: 0;
-  font-size: var(--fs-xs);
-  font-weight: 600;
+  font-size: var(--fs-modal-meta);
+  font-weight: 500;
+  line-height: var(--lh-modal-label);
   padding: var(--sp-025) var(--sp-2);
   border-radius: var(--r-sm);
   color: var(--text-secondary);
@@ -583,28 +591,34 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
 
 .event-date {
   flex-shrink: 0;
-  font-size: var(--fs-xs);
+  font-size: var(--fs-modal-meta);
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
 }
+/* 事件正文：一次阅读的主体句，用正文档 14 / 1.65（原先 14 + 裸写 1.5，行距偏挤） */
 .event-fact {
   flex: 1;
-  font-size: var(--fs-md);
+  font-size: var(--fs-modal-body);
   color: var(--text-primary);
-  line-height: 1.5;
+  line-height: var(--lh-modal-body);
 }
+/* 展开箭头是图形不是文字，不占角色位；取标签档 13 保证在 11 的日期旁仍看得见 */
 .expand-arrow {
   flex-shrink: 0;
-  font-size: var(--fs-xs);
+  font-size: var(--fs-modal-label);
   color: var(--text-tertiary);
 }
 
 /* 删除按钮：常态隐藏、hover 该条事件时淡入。
-   时间线动辄几十条，若每行常驻一个 × 会让列表显得嘈杂且容易误点。 */
+   时间线动辄几十条，若每行常驻一个 × 会让列表显得嘈杂且容易误点。
+   字形 18（原裸写 15px，与各弹窗关闭钮对齐）；命中区取 24×24 而非 32：
+   本行行盒由 14/1.65 ≈ 23px 决定，撑到 32 会把每条事件拉高近 10px。
+   :focus-visible 必须强制显形 —— 否则键盘 Tab 到这里时按钮仍是 opacity:0，
+   焦点落在看不见的元素上。 */
 .event-del {
   flex-shrink: 0;
-  width: 18px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -613,13 +627,16 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
   background: none;
   border-radius: var(--r-sm);
   color: var(--text-tertiary);
-  font-size: 15px;
+  font-size: var(--fs-xl);
   line-height: 1;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.15s, color 0.15s, background 0.15s;
+  transition: opacity var(--m-tap) var(--m-ease-out),
+    color var(--m-tap) var(--m-ease-out),
+    background var(--m-tap) var(--m-ease-out);
 }
-.event-item:hover .event-del {
+.event-item:hover .event-del,
+.event-del:focus-visible {
   opacity: 1;
 }
 .event-del:hover {
@@ -641,17 +658,20 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
   flex-direction: column;
   gap: var(--sp-05);
 }
+/* 证据引文：整句，走正文档 14 / 1.65（原先 13 + 裸写 1.6） */
 .evidence {
   margin: 0;
   padding: var(--sp-05) var(--sp-15);
   border-left: 3px solid var(--primary);
   background: var(--hover-bg);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-body);
   color: var(--text-secondary);
-  line-height: 1.6;
+  line-height: var(--lh-modal-body);
 }
+/* 来源行内含可点链接（.source-link），不降到 meta 11 —— 11px 的可点目标太小，
+   取标签档 13；纯元信息（.event-meta）仍留在 11。 */
 .event-source {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-label);
   color: var(--text-tertiary);
 }
 .source-link {
@@ -660,7 +680,7 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
 }
 .source-link:hover { text-decoration: underline; }
 .event-meta {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-modal-meta);
   color: var(--text-tertiary);
 }
 

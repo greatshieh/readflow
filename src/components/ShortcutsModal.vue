@@ -3,7 +3,7 @@
        Esc / 遮罩点击 / 焦点陷阱 / 滚动锁由 BaseModal 统一提供。 -->
   <BaseModal :open="open" title="快捷键一览" size="md" @close="emit('close')">
     <div class="sc-head">
-      <span>快捷键一览</span>
+      <span class="m-title">快捷键一览</span>
       <button class="sc-close" @click="emit('close')" aria-label="关闭">×</button>
     </div>
 
@@ -65,18 +65,30 @@ const groups = SHORTCUT_GROUPS
   justify-content: space-between;
   padding: var(--sp-3) var(--sp-4);
   border-bottom: 1px solid var(--glass-divider);
-  font-size: var(--fs-md);
-  font-weight: 500;
+  /* 字号不再挂在容器上：原先标题 span 靠继承取容器的 14/500 —— 500 在中文里
+     常常回落 400，于是它看起来和正文一模一样。 */
+  flex: 0 0 auto;
+}
+.m-title {
+  font-size: var(--fs-modal-title);
+  font-weight: 600;
+  line-height: var(--lh-modal-title);
   color: var(--text-primary);
 }
 .sc-close {
   border: none;
   background: none;
-  font-size: var(--fs-lg);
+  /* 原为 var(--fs-lg)=16px：9 个关闭钮里唯一用 token 的一个，但仍是三档尺寸之一。
+     统一成 18px 字形 + 32×32 命中区，负 margin 抵掉多占的空间。 */
+  font-size: var(--fs-xl);
   line-height: 1;
+  min-width: 32px;
+  min-height: 32px;
+  display: grid;
+  place-items: center;
+  margin: -8px -8px -8px 0;
   color: var(--text-tertiary);
   cursor: pointer;
-  padding: 0 var(--sp-1);
 }
 .sc-close:hover { color: var(--text-primary); }
 
@@ -91,9 +103,11 @@ const groups = SHORTCUT_GROUPS
 
 .sc-gtitle {
   margin: 0 0 var(--sp-1);
-  font-size: var(--fs-xs);
-  font-weight: 500;
-  color: var(--text-tertiary);
+  /* 组名是区块标题，不是元信息：原先 11px/500 与键位说明同级，读不出分组 */
+  font-size: var(--fs-modal-section);
+  font-weight: 600;
+  line-height: var(--lh-modal-section);
+  color: var(--text-primary);
 }
 
 .sc-row {
@@ -102,6 +116,11 @@ const groups = SHORTCUT_GROUPS
   gap: var(--sp-3);
   padding: var(--sp-1) var(--sp-2);
   border-radius: var(--r-sm);
+}
+.sc-row {
+  /* 这一行是 <div>，全局 button 基线管不到它 —— 之前 hover 是瞬时跳变。
+     补上 T1 档过渡，与按钮的手感对齐。 */
+  transition: background var(--m-tap) var(--m-ease-out);
 }
 .sc-row:hover { background: var(--hover-bg); }
 
@@ -116,12 +135,14 @@ const groups = SHORTCUT_GROUPS
   box-shadow: var(--ring-inset);
   /* 项目内没有 --font-mono 令牌，写 var() 会让整条声明静默作废，故继承 */
   font-family: inherit;
-  font-size: var(--fs-xs);
+  /* 键帽里的键名属于元信息 */
+  font-size: var(--fs-modal-meta);
   line-height: 1.6;
 }
 
 .sc-label {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-label);
+  line-height: var(--lh-modal-label);
   color: var(--text-secondary);
 }
 
@@ -131,7 +152,8 @@ const groups = SHORTCUT_GROUPS
   gap: var(--sp-05);
   padding: var(--sp-2) var(--sp-4) var(--sp-3);
   border-top: 1px solid var(--glass-divider);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-modal-meta);
+  line-height: var(--lh-modal-meta);
   color: var(--text-secondary);
 }
 .sc-foot > span { display: flex; align-items: center; gap: var(--sp-2); }

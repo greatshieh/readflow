@@ -490,7 +490,7 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
-  transition: opacity 0.2s;
+  transition: opacity var(--m-state) var(--m-ease-out);
 }
 /* 停用任务整体降不透明度，视觉上与启用任务区分 */
 .task-card.disabled { opacity: 0.6; }
@@ -499,16 +499,21 @@ onMounted(() => {
   align-items: center;
   gap: var(--sp-2);
 }
+/* 卡片主字段：14/600 保留为卡内最大字号，层级靠它压住下面 13 的状态行与 11 的调度行；
+   字重只做补强，不承担层级（中文实际只有 400/700 两档，600 只是补强档）。 */
 .task-name {
   flex: 1;
-  font-size: var(--fs-base);
+  font-size: var(--fs-modal-body);
   font-weight: 600;
   color: var(--text-primary);
 }
+/* 徽标属元信息档 11；角色默认 400，但色块上的反白小字 400 会发虚，保留 500 补强。
+   显式给 1.4 行高：徽标靠 padding 撑盒，继承正文 1.65 会让色块变高。 */
 .task-type-badge {
   flex-shrink: 0;
-  font-size: var(--fs-xs);
-  font-weight: 600;
+  font-size: var(--fs-modal-meta);
+  font-weight: 500;
+  line-height: var(--lh-modal-label);
   padding: var(--sp-025) var(--sp-2);
   border-radius: var(--r-sm);
   color: var(--tone-fg);
@@ -516,17 +521,19 @@ onMounted(() => {
 .badge-batch_extract { background: var(--info); }
 .badge-daily_report { background: var(--success); }
 .badge-weekly_report { background: var(--tone-indigo); }
+/* 调度是一行时间信息 → 元信息档 11 */
 .task-schedule {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-meta);
   color: var(--text-tertiary);
 }
 
-/* 健康度三态徽标：语义色圆点 + 文案 */
+/* 健康度三态徽标：语义色圆点 + 文案。
+   状态行可能带失败原因、允许折行，故用标签档 13 但保留 1.5 行高（标签档默认 1.4 太挤）。 */
 .task-status {
   display: flex;
   align-items: center;
   gap: var(--sp-05);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-label);
   line-height: 1.5;
 }
 .status-dot {
@@ -544,11 +551,12 @@ onMounted(() => {
 .status-never { color: var(--text-tertiary); }
 .status-never .status-dot { background: var(--border); }
 .status-text { flex: 1; word-break: break-all; }
+/* 引导链接与状态行同行，必须同档，否则行内基线会跳 */
 .guide-link {
   flex-shrink: 0;
   color: var(--primary);
   cursor: pointer;
-  font-size: var(--fs-sm);
+  font-size: var(--fs-modal-label);
 }
 .guide-link:hover { text-decoration: underline; }
 
