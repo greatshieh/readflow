@@ -155,7 +155,7 @@ export const useResearchStore = defineStore('research', () => {
    * 新建自动化任务
    *
    * @param name - 任务名称
-   * @param taskType - 任务类型（batch_extract / daily_report / weekly_report）
+   * @param taskType - 任务类型（batch_extract / period_report / daily_report / weekly_report）
    * @param cronExpr - cron 表达式
    * @param config - JSON 配置字符串
    * @param enabled - 是否启用

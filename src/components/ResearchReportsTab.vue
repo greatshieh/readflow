@@ -1,78 +1,121 @@
 <template>
-  <!-- ═══ Tab 2：研究报告 ═══ -->
-  <div class="m-body">
-    <!-- 手动生成工具条：不依赖自动化任务，参数当场可调。
-         置于内容/列表视图之上常驻，生成后仍可继续生成下一份。 -->
-    <div class="report-toolbar">
-      <AppSelect v-model="genKind" :options="reportKindOptions" width="auto" title="报告类型" />
-      <AppSelect v-model="genDays" :options="genDayOptions" width="auto" title="覆盖天数" />
-      <AppSelect
-        v-model="genChannel"
-        :options="genChannelOptions"
-        width="auto"
-        :title="genChannel === 'app' ? '输出通道' : '输出通道（含 Obsidian 的报告不在应用内查看器显示）'"
-        @change="onChannelChange"
-      />
-      <button class="btn btn-primary btn-sm" :disabled="generating" @click="handleGenerate">
-        {{ generating ? '生成中…' : '生成报告' }}
-      </button>
-      <span v-if="genMsg" class="extract-msg" :class="{ error: genError }">{{ genMsg }}</span>
+  <!-- ═══ Tab 2：报告（周期报告 / 研究报告 两段） ═══ -->
+  <!-- 根节点保留 `.m-body`（外壳的 scoped 规则按这个类名给内边距与滚动），
+       再挂 `m-body-locked` 把**滚动交给各段自己**：周期报告是"头部固定 + 双列各自滚动"，
+       若外层也在滚，正文与引用源栏会各滚各的，头部还会被滚走。 -->
+  <div class="m-body m-body-locked">
+    <!-- 段一：周期报告 -->
+    <div v-show="store.segment === 'period'" class="seg-pane">
+      <PeriodReports :open="open" @close="emit('close')" />
     </div>
 
-    <!-- 报告内容视图 -->
-    <template v-if="researchStore.reportContent">
-      <button class="btn btn-secondary btn-back" @click="researchStore.closeReport">← 返回报告列表</button>
-      <div class="report-content md" v-html="renderedReport"></div>
-    </template>
+    <!-- 段二：原来的研究报告（逻辑一行未改，只是被包进分段容器） -->
+    <div v-show="store.segment === 'research'" class="seg-pane seg-pane-scroll">
+      <!-- 手动生成工具条：不依赖自动化任务，参数当场可调。
+           置于内容/列表视图之上常驻，生成后仍可继续生成下一份。 -->
+      <div class="report-toolbar">
+        <AppSelect v-model="genKind" :options="reportKindOptions" width="auto" title="报告类型" />
+        <AppSelect v-model="genDays" :options="genDayOptions" width="auto" title="覆盖天数" />
+        <AppSelect
+          v-model="genChannel"
+          :options="genChannelOptions"
+          width="auto"
+          :title="genChannel === 'app' ? '输出通道' : '输出通道（含 Obsidian 的报告不在应用内查看器显示）'"
+          @change="onChannelChange"
+        />
+        <button class="btn btn-primary btn-sm" :disabled="generating" @click="handleGenerate">
+          {{ generating ? '生成中…' : '生成报告' }}
+        </button>
+        <span v-if="genMsg" class="extract-msg" :class="{ error: genError }">{{ genMsg }}</span>
+      </div>
 
-    <!-- 报告列表视图 -->
-    <template v-else>
-      <div v-if="researchStore.reports.length === 0 && !reportsLoading" class="empty-state">
-        <p>暂无报告</p>
-        <p class="hint">
-          点上方「生成报告」即刻生成一份；也可在「设置 → 自动化」中建定时任务自动产出
-        </p>
-      </div>
-      <div v-else class="report-list">
-        <div
-          v-for="r in researchStore.reports"
-          :key="r.name"
-          class="report-item"
-          :class="{ active: r.name === researchStore.activeReportName }"
-          @click="handleReadReport(r.name)"
-        >
-          <svg class="report-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M14 3v4a1 1 0 0 0 1 1h4" />
-            <path d="M5 3h9l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
-          </svg>
-          <span class="report-name">{{ r.name }}</span>
-          <span class="report-meta">{{ r.modified }} · {{ formatSize(r.size) }}</span>
+      <!-- 报告内容视图 -->
+      <template v-if="researchStore.reportContent">
+        <button class="btn btn-secondary btn-back" @click="researchStore.closeReport">← 返回报告列表</button>
+        <div class="report-content rc" v-html="renderedReport"></div>
+      </template>
+
+      <!-- 报告列表视图 -->
+      <template v-else>
+        <div v-if="researchStore.reports.length === 0 && !reportsLoading" class="empty-state">
+          <p>暂无报告</p>
+          <p class="hint">
+            上方「周期报告」按时间自动汇总全部文章；这里的「研究报告」按研究实体聚合事件生成
+          </p>
         </div>
-      </div>
-      <span v-if="reportError" class="extract-msg error">{{ reportError }}</span>
-    </template>
+        <div v-else class="report-list">
+          <div
+            v-for="r in researchStore.reports"
+            :key="r.name"
+            class="report-item"
+            :class="{ active: r.name === researchStore.activeReportName }"
+            role="button"
+            tabindex="0"
+            :aria-label="`打开 ${r.name}`"
+            @click="handleReadReport(r.name)"
+            @keydown="onRowKey($event, r.name)"
+          >
+            <svg class="report-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M14 3v4a1 1 0 0 0 1 1h4" />
+              <path d="M5 3h9l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
+            </svg>
+            <span class="report-name">{{ r.name }}</span>
+            <span class="report-meta">{{ r.modified }} · {{ formatSize(r.size) }}</span>
+            <button
+              class="report-export"
+              type="button"
+              title="导出"
+              aria-label="导出这份报告"
+              @click.stop="openExport(r, $event)"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <span v-if="reportError" class="extract-msg error">{{ reportError }}</span>
+      </template>
+
+      <!-- 导出菜单：与周期报告共用同一个组件（两类报告一条导出管线） -->
+      <ReportExportMenu
+        v-if="exportTarget && exportAnchor"
+        :anchor="exportAnchor"
+        :target="exportTarget"
+        @close="closeExport"
+      />
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 /**
- * 研究工作台 · 研究报告页签
+ * 研究工作台 · 报告页签
  *
- * 手动生成日报/周报（类型、覆盖天数、输出通道当场可调，不依赖自动化任务），
- * 并列出已生成的报告、支持读入应用内查看器。
+ * # 职责
+ * 一个页签装**两段**：周期报告（默认）与研究报告。
+ * - 周期报告段：`components/report/PeriodReports.vue`（时间驱动，汇总全部文章）；
+ * - 研究报告段：本文件里的原实现（事件驱动，按实体分节），逻辑一行未改，
+ *   只是被包进分段容器里，并补了两处：导出按钮、列表项的键盘可达。
+ *
+ * # 分段状态为什么在 store
+ * 分段控件由外壳 `ResearchModal` 渲染（必须位于 `.m-body` 之外），而两段内容在这里，
+ * 两者要共享同一份真源 —— 见 `stores/reportPeriod.ts` 的 `segment`。
  *
  * # 挂载语义（与外壳的契约）
  * 本页签经 `v-show` 常驻挂载，**不能用 `onMounted` 当"进入页签"信号**：
- * - 每次切入本页签（`active` 翻真）→ 清空读取错误并重拉报告列表——
- *   对应拆分前 `switchToReports` 的"每次进入都加载"；
- * - 弹窗每次打开（`open` 翻真）→ 通道偏好重新取值（可能在「设置 → 自动化」
- *   或上次使用中被改过），并清掉上一次的生成提示。
- * 生成与定时任务共用后端实现，因此无需先创建任务。
+ * - 每次切入本页签（`active` 翻真）→ 清空读取错误并重拉报告列表；
+ * - 弹窗每次打开（`open` 翻真）→ 通道偏好重新取值，并清掉上一次的生成提示。
  */
 import { ref, computed, watch } from 'vue'
 import AppSelect, { type SelectOption } from './AppSelect.vue'
+import PeriodReports from './report/PeriodReports.vue'
+import ReportExportMenu from './report/ReportExportMenu.vue'
 import { useResearchStore } from '@/stores/research'
 import { useSettingsStore } from '@/stores/settings'
+import { useReportPeriodStore } from '@/stores/reportPeriod'
 import {
   REPORT_CHANNEL_KEY,
   VAULT_PATH_KEY,
@@ -82,6 +125,7 @@ import {
 } from '@/utils/reportChannel'
 import { stripFrontmatter } from '@/utils/reportMarkdown'
 import { renderMarkdown } from '@/utils/markdown'
+import type { ExportTarget } from '@/utils/reportExport'
 
 const props = defineProps<{
   /** 是否为当前显示的页签：切入时重拉报告列表 */
@@ -90,8 +134,14 @@ const props = defineProps<{
   open: boolean
 }>()
 
+const emit = defineEmits<{
+  /** 请求关闭弹窗（周期报告跳文章时用） */
+  (e: 'close'): void
+}>()
+
 const researchStore = useResearchStore()
 const settingsStore = useSettingsStore()
+const store = useReportPeriodStore()
 
 /** 报告列表加载中 */
 const reportsLoading = ref(false)
@@ -103,7 +153,7 @@ const reportError = ref('')
  * 应用内展示的报告正文
  *
  * 磁盘上的报告带 YAML frontmatter（供 Obsidian 的 dataview 与标签系统消费），
- * 而这里是等宽纯文本展示，直接显示会让一整段元数据挡在正文前面，故只在展示时裁掉，
+ * 而应用内是渲染展示，直接显示会让一整段元数据挡在正文前面，故只在展示时裁掉，
  * 文件本身保持完整格式。
  */
 const reportBody = computed(() => stripFrontmatter(researchStore.reportContent))
@@ -111,10 +161,54 @@ const reportBody = computed(() => stripFrontmatter(researchStore.reportContent))
 /**
  * 应用内展示的报告正文（Markdown 渲染后的安全 HTML）
  *
- * `reportBody` 已裁掉 YAML frontmatter；`renderMarkdown` 进一步把标题 / 列表 /
- * callout / 加粗等渲染为 HTML，并对所有文本转义、仅放行安全标签，可直接 `v-html`。
+ * `renderMarkdown` 把标题 / 列表 / callout / 加粗等渲染为 HTML，并对所有文本转义、
+ * 仅放行安全标签，可直接 `v-html`。与周期报告**同一个渲染器**，版式因此一致。
  */
 const renderedReport = computed(() => renderMarkdown(reportBody.value))
+
+// ========== 导出（两类报告共用管线的入口之一） ==========
+/** 导出目标 */
+const exportTarget = ref<ExportTarget | null>(null)
+/** 菜单锚点 */
+const exportAnchor = ref<{ x: number; y: number } | null>(null)
+
+/**
+ * 打开导出菜单
+ *
+ * @param r - 报告文件元信息
+ * @param e - 点击事件（取按钮位置做锚点）
+ */
+function openExport(r: { name: string }, e: MouseEvent) {
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  exportTarget.value = {
+    kind: 'research',
+    name: r.name,
+    label: r.name.replace(/\.md$/i, ''),
+  }
+  exportAnchor.value = { x: rect.right - 224, y: rect.bottom + 6 }
+}
+
+/** 关闭导出菜单 */
+function closeExport() {
+  exportTarget.value = null
+  exportAnchor.value = null
+}
+
+/**
+ * 列表行的键盘激活
+ *
+ * `e.target !== e.currentTarget` 早退：行内嵌着导出按钮，
+ * 在按钮上按 Enter 会冒泡到行上，不拦就变成"导出的同时把报告也打开"。
+ *
+ * @param e - 键盘事件
+ * @param name - 报告文件名
+ */
+function onRowKey(e: KeyboardEvent, name: string) {
+  if (e.target !== e.currentTarget) return
+  if (e.key !== 'Enter' && e.key !== ' ') return
+  e.preventDefault()
+  void handleReadReport(name)
+}
 
 // ========== 手动生成报告 ==========
 /** 手动生成的报告类型 */
@@ -185,7 +279,7 @@ function onChannelChange(value: string | number) {
 }
 
 /**
- * 手动生成一份报告
+ * 手动生成一份研究报告
  *
  * 与定时任务共用后端实现，因此无需先创建任务。成功后 store 会刷新报告列表，
  * 并在报告落入应用目录时直接把内容读进查看器，这里只负责展示结果描述与错误
@@ -261,6 +355,7 @@ watch(
 )
 
 // 弹窗每次打开：通道偏好重新取值；生成提示是"上一次操作"的残留，一并清掉
+// immediate：弹窗可能一开始就是打开态（外壳用 v-show 常驻），此时 watch 不会自己触发
 watch(
   () => props.open,
   val => {
@@ -268,7 +363,8 @@ watch(
     genChannel.value = preferredChannel()
     genMsg.value = ''
     genError.value = false
-  }
+  },
+  { immediate: true }
 )
 
 /**
@@ -283,6 +379,27 @@ watch(genKind, kind => {
 </script>
 
 <style scoped>
+/* 根节点锁定外层滚动，把滚动权交给各段（见模板注释）。
+   选择器写两个类是为了压过外壳 `.m-body` 的 `overflow-y:auto`（同层 scoped 规则
+   谁后注入不确定，靠特异性取胜才是稳的）。 */
+.m-body.m-body-locked {
+  overflow: hidden;
+}
+/* 两段共用的容器：撑满剩余高度，自身不滚动 */
+.seg-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: var(--sp-3);
+}
+/* 研究报告段保持"整段一起滚"——它的列表与正文是一个整体，
+   拆成双列反而多一层滚动。 */
+.seg-pane-scroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 /* 手动生成工具条：三个参数下拉 + 生成按钮 + 结果提示。
    窄宽度下允许换行，避免选项被挤出可视区。 */
 .report-toolbar {
@@ -313,6 +430,10 @@ watch(genKind, kind => {
 .report-item:hover {
   background: var(--hover-bg);
 }
+.report-item:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
 .report-item.active {
   outline: 1px solid var(--primary);
 }
@@ -321,116 +442,57 @@ watch(genKind, kind => {
    原先还有一处负字距（-0.01em）：负字距是给拉丁字母排紧的，中文压字距会让笔画粘连 → 删除。 */
 .report-name {
   flex: 1;
+  min-width: 0;
   font-size: var(--fs-modal-label);
   font-weight: 500;
   line-height: var(--lh-modal-label);
   color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .report-meta {
+  flex-shrink: 0;
   font-size: var(--fs-modal-meta);
   color: var(--text-tertiary);
+  white-space: nowrap;
+}
+/* 导出钮：常驻但低对比，hover/focus 才显形——旧列表行高 34px，
+   加个常驻高对比按钮会让整列噪声变大。 */
+.report-export {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: none;
+  border-radius: var(--r-sm);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--m-tap) var(--m-ease-out), background var(--m-tap) var(--m-ease-out);
+}
+.report-export svg { width: 13px; height: 13px; }
+.report-item:hover .report-export,
+.report-item:focus-within .report-export { opacity: 1; }
+.report-export:hover { background: var(--surface); color: var(--text-primary); }
+.report-export:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+  opacity: 1;
 }
 
-/* 报告正文：Markdown 渲染后的流式排版（替代第一版的等宽 <pre>）。
-   它是 .md 内所有 em 字号的基准（h1 1.35em 等按此等比缩放），所以只改这一处字号，
-   子级 em 会一起跟着变 —— 不要把下面的 em 改成 px。1.65 取正文档行高。 */
+/* 报告正文：排版在 `src/styles/report-content.css`（`.rc`），
+   与周期报告阅读区、导出 HTML **共用同一份**，这里只管外框。
+   字号与行高也由 `.rc` 提供（全局阶梯 `--fs-md` + 行高 1.65）。 */
 .report-content {
   margin: 0;
   padding: var(--sp-4);
   background: var(--fill);
   border-radius: var(--r-md);
-  font-size: var(--fs-modal-body);
-  line-height: var(--lh-modal-body);
-  color: var(--text-primary);
   overflow-x: auto;
-  word-break: break-word;
 }
-
-/* —— Markdown 渲染产物样式（v-html 内容须用 :deep 穿透 scoped）。
-      标题用 em 是刻意的：报告正文随弹窗字号等比缩放，固定 px 会让大字号下标题失去比例。 —— */
-.md :deep(h1),
-.md :deep(h2),
-.md :deep(h3) {
-  line-height: 1.3;
-  margin: 1.1em 0 0.5em;
-  color: var(--text-primary);
-}
-.md :deep(h1) { font-size: 1.35em; font-weight: 700; }
-.md :deep(h2) {
-  font-size: 1.15em;
-  font-weight: 700;
-  padding-bottom: 0.25em;
-  border-bottom: 1px solid var(--border);
-}
-.md :deep(h3) { font-size: 1.02em; font-weight: 600; }
-.md :deep(p) { margin: 0.5em 0; color: var(--text-secondary); }
-.md :deep(strong) { font-weight: 700; color: var(--text-primary); }
-.md :deep(em) { font-style: italic; }
-.md :deep(del) { opacity: 0.6; }
-.md :deep(a) {
-  color: var(--primary);
-  text-decoration: none;
-  border-bottom: 1px solid var(--primary);
-}
-.md :deep(a:hover) { opacity: 0.8; }
-.md :deep(code) {
-  background: var(--hover-bg);
-  padding: 0.1em 0.36em;
-  border-radius: var(--r-sm);
-  font-family: ui-monospace, 'SF Mono', Consolas, monospace;
-  font-size: 0.9em;
-}
-.md :deep(ul.md-ul) {
-  margin: 0.4em 0;
-  padding-left: 1.3em;
-  list-style: disc;
-}
-.md :deep(ul.md-ul ul.md-ul) { list-style: circle; }
-.md :deep(li) { margin: 0.25em 0; color: var(--text-secondary); }
-.md :deep(.md-li-children) { margin-top: 0.2em; }
-.md :deep(blockquote.md-quote) {
-  margin: 0.6em 0;
-  padding: 0.4em 0.9em;
-  border-left: 3px solid var(--border);
-  background: var(--hover-bg);
-  border-radius: 0 var(--r-sm) var(--r-sm) 0;
-  color: var(--text-secondary);
-}
-
-/* Obsidian callout：带类型徽标的卡片 */
-.md :deep(.md-callout) {
-  margin: 0.7em 0;
-  padding: 0.6em 0.95em;
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--primary);
-  border-radius: var(--r-md);
-  background: var(--fill);
-}
-.md :deep(.md-callout-head) { margin-bottom: 0.25em; }
-/* callout 类型徽标：元信息档 11，色块反白小字保留 500 补强 */
-.md :deep(.md-callout-badge) {
-  display: inline-block;
-  font-size: var(--fs-modal-meta);
-  font-weight: 500;
-  padding: 0.12em 0.55em;
-  border-radius: 999px;
-  background: var(--primary);
-  color: #fff;
-}
-.md :deep(.md-callout-quote),
-.md :deep(.md-callout-info) { border-left-color: var(--text-tertiary); }
-.md :deep(.md-callout-quote) .md-callout-badge,
-.md :deep(.md-callout-info) .md-callout-badge { background: var(--text-tertiary); }
-.md :deep(.md-callout-warning),
-.md :deep(.md-callout-danger) { border-left-color: #d97706; }
-.md :deep(.md-callout-warning) .md-callout-badge,
-.md :deep(.md-callout-danger) .md-callout-badge { background: #d97706; }
-.md :deep(.md-callout-title) {
-  font-weight: 600;
-  margin: 0.15em 0;
-  color: var(--text-primary);
-}
-.md :deep(.md-callout-p) { margin: 0.15em 0; color: var(--text-secondary); }
 
 /* 返回列表按钮：不应被 flex 拉伸居中 */
 .btn-back {

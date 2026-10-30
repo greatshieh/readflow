@@ -30,6 +30,10 @@
 //!   [`event_sentiment_get`] / [`financial_data_list`] / [`financial_data_list_by_entity`] /
 //!   [`entity_sentiment`] / [`entity_articles`] / [`research_cross_reference`]（多源交叉验证）
 //! - 研究报告命令（3）：[`research_report_generate`] / [`research_reports_list`] / [`research_report_read`]
+//! - 周期报告命令（8）：[`report_period_list`] / [`report_period_coverage`] /
+//!   [`report_period_generate`] / [`report_period_get`] / [`report_period_set_read`] /
+//!   [`report_period_delete`] / [`report_period_cancel`] / 两类报告共用的导出
+//!   [`report_export_prepare`] / [`report_export_write`]
 //! - 自动化任务命令（6）：[`automation_tasks_list`] / [`automation_tasks_create`] /
 //!   [`automation_tasks_update`] / [`automation_tasks_delete`] / [`automation_tasks_set_enabled`] /
 //!   [`automation_run_now`]
@@ -239,6 +243,13 @@ pub fn run() {
                             *global_pool = Some(pool.clone());
                         }
 
+                        // 收尾上次运行残留的「生成中」周期报告。
+                        // 强杀应用会留下 status='generating' 的行，进程内的兜底拿不到，
+                        // 只能在启动阶段统一标成失败，否则列表里会挂一个永不完成的条目。
+                        if let Err(e) = research::period::recover_orphans(&pool).await {
+                            eprintln!("收尾未完成的周期报告失败: {}", e);
+                        }
+
                         // 一次性数据修复：补齐历史上"名称为 URL"的订阅源标题。
                         // 早期版本的"添加订阅源"在用户未填名称时直接把 URL 存为 name，
                         // 这里在后台静默抓取真实 channel 标题并回写；失败则保持原样。
@@ -442,6 +453,16 @@ pub fn run() {
             research_report_generate,
             research_reports_list,
             research_report_read,
+            // 周期报告命令（日报/周报/月报）+ 两类报告共用的导出
+            report_period_list,
+            report_period_coverage,
+            report_period_generate,
+            report_period_get,
+            report_period_set_read,
+            report_period_delete,
+            report_period_cancel,
+            report_export_prepare,
+            report_export_write,
             // 行情/财务数据层（金融升级 Phase 1）
             market_set_token,
             market_set_em_key,
@@ -3272,6 +3293,237 @@ async fn research_report_read(name: String) -> Result<String, String> {
     let dir = research::report::reports_dir().ok_or("报告目录未初始化，请重启应用")?;
     let path = dir.join(&name);
     std::fs::read_to_string(&path).map_err(|e| format!("读取报告失败: {}", e))
+}
+
+// ─── 周期报告命令（日报 / 周报 / 月报；正文只入库，导出时才写文件）─────────────
+//
+// 与上面三个 `research_report_*` 命令完全独立：那一组是事件驱动、按实体分节、
+// 生成期落盘的研究报告，本组是时间驱动、汇总全部文章的周期报告。
+// 唯一被两类报告共用的是导出管线（[`report_export_prepare`] / [`report_export_write`]）。
+
+/// 生成进度事件的名称（前端 `listen` 同名事件）
+const PERIOD_PROGRESS_EVENT: &str = "report:progress";
+
+/// 列出某一粒度的周期报告
+///
+/// # 参数
+/// * `kind` - 周期粒度：`daily` / `weekly` / `monthly`
+/// * `limit` - 最多返回条数（缺省 50）
+///
+/// # 错误
+/// 粒度非法或查询失败时返回错误信息
+#[tauri::command]
+async fn report_period_list(
+    kind: String,
+    limit: Option<i64>,
+) -> Result<Vec<research::period::PeriodSummary>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    let kind = research::period::PeriodKind::parse(&kind)
+        .ok_or_else(|| format!("未知周期粒度: {}（支持 daily / weekly / monthly）", kind))?;
+    research::period::list(&pool, kind, limit.unwrap_or(50)).await
+}
+
+/// 查询某周期的素材量（空态用：先告诉用户"这一天有多少文章"）
+///
+/// # 参数
+/// * `kind` - 周期粒度（决定自然窗口跨度，仅在没有起止时使用）
+/// * `start` / `end` - 起止（RFC3339，`end` 排他）；都为空时按自然周期推算
+/// * `windowMode` - `natural` / `custom`
+///
+/// # 错误
+/// 窗口非法或查询失败时返回错误信息
+#[tauri::command]
+async fn report_period_coverage(
+    kind: String,
+    window_mode: Option<String>,
+    start: Option<String>,
+    end: Option<String>,
+) -> Result<research::period::Coverage, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    let kind = research::period::PeriodKind::parse(&kind)
+        .ok_or_else(|| format!("未知周期粒度: {}", kind))?;
+    let mode = research::period::WindowMode::parse(window_mode.as_deref().unwrap_or("natural"))
+        .ok_or_else(|| "未知窗口口径（支持 natural / custom）".to_string())?;
+    let window = research::period::resolve_window(
+        kind,
+        mode,
+        start.as_deref(),
+        end.as_deref(),
+        chrono::Local::now(),
+    )?;
+    research::period::coverage(&pool, window).await
+}
+
+/// 生成一份周期报告（同步等待模型，约 30–60 秒）
+///
+/// 生成期间按阶段 emit `report:progress`，前端只渲染真实进度、不做假进度条。
+/// 同一期重复生成会**覆盖**上一份（`UNIQUE` 约束），UI 必须先确认。
+///
+/// # 参数
+/// * `kind` - 周期粒度
+/// * `windowMode` - 窗口口径
+/// * `start` / `end` - 起止（RFC3339，`end` 排他）
+/// * `providerId` - AI 提供商标识；空串用默认值
+/// * `requestId` - 本次生成的取消键（前端生成，用于「取消生成」）
+///
+/// # 返回值
+/// 新报告的 ID
+///
+/// # 错误
+/// 窗口非法、周期内没有文章、AI 未配置、模型调用失败或被取消时返回错误信息
+#[tauri::command]
+async fn report_period_generate(
+    app: AppHandle,
+    kind: String,
+    window_mode: Option<String>,
+    start: Option<String>,
+    end: Option<String>,
+    provider_id: Option<String>,
+    request_id: Option<String>,
+) -> Result<i64, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    let kind = research::period::PeriodKind::parse(&kind)
+        .ok_or_else(|| format!("未知周期粒度: {}", kind))?;
+    let mode = research::period::WindowMode::parse(window_mode.as_deref().unwrap_or("natural"))
+        .ok_or_else(|| "未知窗口口径（支持 natural / custom）".to_string())?;
+
+    // 进度回调把三元素直接发给前端；emit 失败不影响生成（窗口可能已关）
+    let sink = move |stage: &str, done: usize, total: usize| {
+        let payload = serde_json::json!({ "stage": stage, "done": done, "total": total });
+        let _ = app.emit(PERIOD_PROGRESS_EVENT, payload);
+    };
+
+    research::period::generate(
+        &pool,
+        kind,
+        mode,
+        start.as_deref(),
+        end.as_deref(),
+        provider_id.as_deref().unwrap_or(""),
+        request_id.as_deref().filter(|s| !s.is_empty()),
+        &sink,
+    )
+    .await
+}
+
+/// 读取一份周期报告（正文 + 引用源一次取全）
+///
+/// # 参数
+/// * `id` - 报告 ID
+#[tauri::command]
+async fn report_period_get(id: i64) -> Result<research::period::PeriodDetail, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::period::get(&pool, id).await
+}
+
+/// 设置周期报告的已读状态
+#[tauri::command]
+async fn report_period_set_read(id: i64, read: bool) -> Result<(), String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::period::set_read(&pool, id, read).await
+}
+
+/// 删除一份周期报告（只删库行，正文从不落盘）
+#[tauri::command]
+async fn report_period_delete(id: i64) -> Result<(), String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::period::delete(&pool, id).await
+}
+
+/// 取消一次进行中的生成
+///
+/// 取消键由前端生成（`newRequestId()`）并随 generate 一起传入：报告 ID 要等
+/// 后端落占位行才存在，而用户点「取消」时那次调用还在飞，只有请求 ID 能提前对上。
+#[tauri::command]
+async fn report_period_cancel(request_id: String) -> Result<(), String> {
+    ai::cancel_request(&request_id);
+    Ok(())
+}
+
+/// 导出载荷（两类报告共用）：只取源正文 + 默认文件名，不做任何渲染
+///
+/// # 参数
+/// * `kind` - `period`（周期报告，走库）或 `research`（研究报告，走文件）
+/// * `id` - 周期报告 ID（`kind=period` 时必填）
+/// * `name` - 研究报告文件名（`kind=research` 时必填）
+///
+/// # 返回值
+/// `{ markdown, defaultName }`；`defaultName` 不含扩展名
+///
+/// # 错误
+/// 参数不匹配、报告不存在或文件读取失败时返回错误信息
+#[tauri::command]
+async fn report_export_prepare(
+    kind: String,
+    id: Option<i64>,
+    name: Option<String>,
+) -> Result<serde_json::Value, String> {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "period" => {
+            let id = id.ok_or("导出周期报告需要报告 ID")?;
+            let pool = db_pool().await.map_err(|e| e.to_string())?;
+            let payload = research::period::export_payload(&pool, id).await?;
+            Ok(serde_json::json!({
+                "markdown": payload.markdown,
+                "defaultName": payload.default_name,
+            }))
+        }
+        "research" => {
+            let name = name.ok_or("导出研究报告需要文件名")?;
+            let markdown = research_report_read(name.clone()).await?;
+            // 文件名本身就是人读标题（如「研究日报-2026-10-30.md」），去掉扩展名即默认名
+            let default_name = name
+                .rsplit_once('.')
+                .map(|(stem, _)| stem.to_string())
+                .unwrap_or(name);
+            Ok(serde_json::json!({
+                "markdown": markdown,
+                "defaultName": default_name,
+            }))
+        }
+        other => Err(format!("未知的报告来源: {}（支持 period / research）", other)),
+    }
+}
+
+/// 落盘导出内容（两类报告共用：md 与 html 都走这里）
+///
+/// 由后端弹系统「另存为」对话框而不是前端传路径：文件类型过滤器、默认文件名与
+/// 扩展名补全都在这里统一处理，避免前端各写一遍。
+///
+/// # 参数
+/// * `default_name` - 对话框预填名（不含扩展名）
+/// * `content` - 文件内容（md 原文或已渲染好的 html）
+/// * `format` - `md` / `html`
+///
+/// # 返回值
+/// * `Ok(Some(path))` - 已写入的绝对路径
+/// * `Ok(None)` - 用户取消
+///
+/// # 错误
+/// 格式非法或写入失败时返回错误信息
+#[tauri::command]
+async fn report_export_write(
+    app: AppHandle,
+    default_name: String,
+    content: String,
+    format: String,
+) -> Result<Option<String>, String> {
+    let (filter_name, ext) = match format.trim().to_ascii_lowercase().as_str() {
+        "md" | "markdown" => ("Markdown 文件", "md"),
+        "html" | "htm" => ("HTML 文件", "html"),
+        other => return Err(format!("未知的导出格式: {}（支持 md / html）", other)),
+    };
+    let suggested = format!("{}.{}", default_name.trim(), ext);
+    let Some(mut path) = pick_save_path(&app, &suggested, filter_name, &[ext]).await? else {
+        return Ok(None);
+    };
+    // 用户可能把扩展名删掉：补回去，否则双击打不开
+    if !path.to_ascii_lowercase().ends_with(&format!(".{}", ext)) {
+        path.push('.');
+        path.push_str(ext);
+    }
+    std::fs::write(&path, content).map_err(|e| format!("写入导出文件失败: {}", e))?;
+    Ok(Some(path))
 }
 
 // ─── 行情/财务数据层（金融升级 Phase 1；铁律 #2：HTTP 全在 Rust 后端 market 模块）───

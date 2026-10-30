@@ -99,6 +99,23 @@
           </div>
         </div>
       </template>
+      <!-- 周期报告配置项：只有粒度。它按时间汇总全部文章、只入库不落盘，
+           所以既没有「输出通道」也没有「覆盖天数」（决策⑭） -->
+      <template v-else-if="formType === 'period_report'">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">汇总粒度</label>
+            <AppSelect v-model="formKind" :options="periodKindOptions" />
+            <p class="form-hint">
+              汇总窗口内<strong>全部文章</strong>（不区分研究实体），生成后到「研究工作台 → 报告 → 周期报告」阅读与导出
+            </p>
+          </div>
+          <div class="form-group">
+            <label class="form-label">AI 提供商</label>
+            <input class="form-input" v-model="formProvider" placeholder="agnes" />
+          </div>
+        </div>
+      </template>
       <!-- 报告类配置项 -->
       <template v-else>
         <div class="form-row">
@@ -185,7 +202,9 @@ const taskFormError = ref('')
 
 /** 表单字段：任务名称与类型 */
 const formName = ref('')
-const formType = ref<'batch_extract' | 'daily_report' | 'weekly_report'>('batch_extract')
+const formType = ref<'batch_extract' | 'period_report' | 'daily_report' | 'weekly_report'>(
+  'batch_extract'
+)
 /** 表单字段：cron 表达式 */
 const formCron = ref('0 30 2 * * *')
 /** 提取类配置：AI 提供商 / 评分阈值 / 单次上限 */
@@ -195,12 +214,21 @@ const formBatchLimit = ref(50)
 /** 报告类配置：输出通道（both = 应用内 + Obsidian 双写）/ 覆盖天数 */
 const formChannel = ref<ReportChannel>('app')
 const formDays = ref(1)
+/** 周期报告类配置：汇总粒度（日 / 周 / 月） */
+const formKind = ref<'daily' | 'weekly' | 'monthly'>('daily')
 
 /** 任务类型选项 */
 const taskTypeOptions: SelectOption[] = [
   { value: 'batch_extract', label: '智能提取（批量）' },
+  { value: 'period_report', label: '周期报告（按时间汇总）' },
   { value: 'daily_report', label: '每日报告' },
   { value: 'weekly_report', label: '每周报告' },
+]
+/** 周期报告的汇总粒度选项 */
+const periodKindOptions: SelectOption[] = [
+  { value: 'daily', label: '日报' },
+  { value: 'weekly', label: '周报' },
+  { value: 'monthly', label: '月报' },
 ]
 /** 报告输出通道选项 */
 const channelOptions: SelectOption[] = [
@@ -233,6 +261,7 @@ function preferredChannel(): ReportChannel {
 function taskTypeLabel(type: string): string {
   const labels: Record<string, string> = {
     batch_extract: '提取',
+    period_report: '周期报告',
     daily_report: '日报',
     weekly_report: '周报'
   }
@@ -292,7 +321,8 @@ function statusText(t: AutomationTask): string {
  * @returns 目标 tab；无引导目标时为 null
  */
 function guideTab(t: AutomationTask): 'ai' | 'obsidian' | null {
-  if (t.task_type === 'batch_extract') return 'ai'
+  // 周期报告只入库、不落盘（决策⑭），缺的一定是 AI 提供商，不是 Vault
+  if (t.task_type === 'batch_extract' || t.task_type === 'period_report') return 'ai'
   if (t.task_type === 'daily_report' || t.task_type === 'weekly_report') {
     return 'obsidian'
   }
@@ -370,7 +400,12 @@ async function handleDeleteTask(t: AutomationTask) {
 function startEdit(t: AutomationTask) {
   editingTaskId.value = t.id
   formName.value = t.name
-  if (t.task_type === 'batch_extract' || t.task_type === 'daily_report' || t.task_type === 'weekly_report') {
+  if (
+    t.task_type === 'batch_extract' ||
+    t.task_type === 'period_report' ||
+    t.task_type === 'daily_report' ||
+    t.task_type === 'weekly_report'
+  ) {
     formType.value = t.task_type
   }
   formCron.value = t.cron_expr
@@ -385,6 +420,9 @@ function startEdit(t: AutomationTask) {
         ? cfg.channel
         : preferredChannel()
     formDays.value = typeof cfg.days === 'number' ? cfg.days : 1
+    // 周期报告的粒度：只认三个合法值，非法时回退日报
+    formKind.value =
+      cfg.kind === 'weekly' || cfg.kind === 'monthly' ? cfg.kind : 'daily'
   } catch {
     // config 非法时保持默认值：编辑保存会用默认值覆盖，可接受
   }
@@ -406,8 +444,41 @@ function resetForm() {
   // 新建报告任务的默认通道沿用上次选择，未配置 Vault 时退回应用内
   formChannel.value = preferredChannel()
   formDays.value = 1
+  formKind.value = 'daily'
   showTaskForm.value = true
   taskFormError.value = ''
+}
+
+/**
+ * 按当前表单拼装任务 config（JSON 字符串）
+ *
+ * 三种任务类型的 config 结构互不相同，**必须分三支**：
+ * 早期只有二分支（提取 / 报告），`period_report` 混进报告分支会被写成
+ * `{channel, days}`，而后端 `run_period_task` 只认 `kind` —— 任务会静默按日报跑，
+ * 用户设的粒度与通道全被忽略。
+ *
+ * @returns config JSON 字符串
+ */
+function buildTaskConfig(): string {
+  if (formType.value === 'batch_extract') {
+    return JSON.stringify({
+      provider: formProvider.value.trim() || 'agnes',
+      min_score: formMinScore.value,
+      batch_limit: formBatchLimit.value
+    })
+  }
+  if (formType.value === 'period_report') {
+    // 周期报告只入库、不落盘（决策⑭）：没有 channel，只有粒度
+    return JSON.stringify({
+      kind: formKind.value,
+      provider: formProvider.value.trim() || 'agnes',
+      window_mode: 'natural'
+    })
+  }
+  return JSON.stringify({
+    channel: formChannel.value,
+    days: formDays.value
+  })
 }
 
 /**
@@ -426,18 +497,7 @@ async function handleSaveTask() {
     taskFormError.value = 'cron 表达式须为六位（秒 分 时 日 月 周）'
     return
   }
-  // 按任务类型拼装 config：提取类三参数，报告类两参数
-  const config =
-    formType.value === 'batch_extract'
-      ? JSON.stringify({
-          provider: formProvider.value.trim() || 'agnes',
-          min_score: formMinScore.value,
-          batch_limit: formBatchLimit.value
-        })
-      : JSON.stringify({
-          channel: formChannel.value,
-          days: formDays.value
-        })
+  const config = buildTaskConfig()
 
   savingTask.value = true
   try {
@@ -519,6 +579,9 @@ onMounted(() => {
   color: var(--tone-fg);
 }
 .badge-batch_extract { background: var(--info); }
+/* 周期报告是新的默认报告任务，用主色让它在一列旧任务里可辨；
+   缺这条会让徽标变成无底透明块（类名有、样式没有） */
+.badge-period_report { background: var(--primary); }
 .badge-daily_report { background: var(--success); }
 .badge-weekly_report { background: var(--tone-indigo); }
 /* 调度是一行时间信息 → 元信息档 11 */

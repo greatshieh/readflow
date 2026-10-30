@@ -26,11 +26,16 @@ import { stripFrontmatter } from './reportMarkdown'
 const CALLOUT_LABELS: Record<string, string> = {
   summary: '摘要',
   info: '提示',
-  note: '笔记',
+  // danger / warning / note 三档给"周期报告的要点三级"用：
+  // 高→红、中→黄、低→蓝（见 `styles/report-content.css` 与设计文档 §4.2.4）。
+  // 三个语义名借 Obsidian 的既有类型而不是自定义 `[!point-high]`——
+  // 自定义类型在 Obsidian 里会退化成裸标签，导出到别处就丢了语义。
+  // 全库原本没有任何内容使用这三个类型（已核实），改文案不影响既有报告。
+  note: '留意',
   tip: '建议',
   quote: '引用',
-  warning: '警告',
-  danger: '注意',
+  warning: '关注',
+  danger: '重点',
   success: '完成',
   question: '疑问',
   bug: '缺陷',
@@ -136,7 +141,11 @@ function parseQuote(lines: string[], start: number): [string, number] {
       .join('')
     const label = CALLOUT_LABELS[type] ?? type
     const head = `<div class="md-callout-head"><span class="md-callout-badge md-callout-badge-${type}">${label}</span></div>`
-    const titleHtml = title ? `<p class="md-callout-title">${renderInline(title)}</p>` : ''
+    // 标题与徽标文案相同时不重复渲染：周期报告的要点写成 `> [!danger] 重点`，
+    // 徽标已经说了"重点"，再来一行标题会变成"重点 重点"。
+    // 保留标题本身是有价值的——导出的 md 在 Obsidian 里要靠它显示级别名。
+    const showTitle = title !== '' && title !== label
+    const titleHtml = showTitle ? `<p class="md-callout-title">${renderInline(title)}</p>` : ''
     return [`<div class="md-callout md-callout-${type}">${head}${titleHtml}${body}</div>`, i]
   }
   const inner = buf.map((l) => renderInline(l)).join('<br>')

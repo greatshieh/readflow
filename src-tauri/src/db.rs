@@ -1712,6 +1712,11 @@ pub async fn init_db(app: &tauri::AppHandle) -> Result<SqlitePool, sqlx::Error> 
         eprintln!("种子化默认自动化任务失败（不影响启动）: {}", e);
     }
 
+    // 一次性迁移：存量库把旧的每日/每周研究报告任务停用，改由周期报告任务产出
+    if let Err(e) = migrate_period_report_tasks(&pool).await {
+        eprintln!("切换周期报告任务失败（不影响启动）: {}", e);
+    }
+
     eprintln!("数据库初始化成功: {}", db_path);
 
     Ok(pool)
@@ -1784,10 +1789,15 @@ async fn seed_default_settings(pool: &SqlitePool) -> Result<(), String> {
 
 /// 种子化默认自动化任务（仅当任务表为空时写入，绝不覆盖用户已有任务）
 ///
-/// 种子化三个默认任务：
+/// 种子化四个默认任务：
 /// - 智能提取（启用）：夜间批量提取，执行器 Phase A 已就绪；
-/// - 每日报告（启用，channel=app）：开箱即用，无需任何额外配置；
+/// - 周期日报（启用）：每天 08:00 汇总**全部文章**生成日报，开箱即用；
+/// - 每日研究报告（**停用**）：事件驱动的旧格式日报，与新周期日报撞车，
+///   默认关掉但**不删除**——旧链路「原来的研究报告不动」，用户随时可在设置里重新启用；
 /// - 周报（默认停用，channel=obsidian）：需用户先配置 Vault 路径再启用。
+///
+/// 存量库不会重跑本函数（`count > 0` 即返回），因此还需要
+/// [`migrate_period_report_tasks`] 做一次性切换。
 ///
 /// # 参数
 /// * `pool` - 数据库连接池
@@ -1822,15 +1832,31 @@ async fn seed_default_tasks(pool: &SqlitePool) -> Result<(), String> {
     .await
     .map_err(|e| e.to_string())?;
 
-    // 每日报告：每天 08:00 生成，channel=app 落到应用数据目录，
-    // 不依赖任何外部配置，开箱即用
+    // 周期日报：每天 08:00 汇总窗口内**全部文章**生成日报（不区分研究实体）。
+    // 正文只入库、不落盘，导出由用户在阅读时手动触发，因此没有任何 channel 配置。
+    let period_daily_config = crate::research::period::default_daily_config();
+    sqlx::query(
+        "INSERT INTO automation_tasks (name, task_type, cron_expr, config, enabled) \
+         VALUES (?, ?, ?, ?, 1)",
+    )
+    .bind("周期日报")
+    .bind("period_report")
+    .bind(crate::research::period::DEFAULT_DAILY_CRON)
+    .bind(period_daily_config)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // 每日研究报告：事件驱动的旧格式（按实体分节、落盘到 reports/）。
+    // 与新周期日报撞车（两者都叫"日报"、口径完全不同），故**默认停用**，
+    // 但保留任务行与 cron 配置——旧链路本身一行未改，用户想用随时可启用。
     let daily_config = serde_json::json!({
         "channel": "app",
         "days": 1
     });
     sqlx::query(
         "INSERT INTO automation_tasks (name, task_type, cron_expr, config, enabled) \
-         VALUES (?, ?, ?, ?, 1)",
+         VALUES (?, ?, ?, ?, 0)",
     )
     .bind("每日研究报告")
     .bind("daily_report")
@@ -1860,6 +1886,76 @@ async fn seed_default_tasks(pool: &SqlitePool) -> Result<(), String> {
     .await
     .map_err(|e| e.to_string())?;
 
+    Ok(())
+}
+
+/// 一次性迁移：把「每日研究报告」这类旧报告任务切到新的周期报告任务
+///
+/// # 为什么需要它
+/// [`seed_default_tasks`] 只在任务表为空时写入，**存量库不会重跑**。若不做迁移，
+/// 存量用户会每天 08:00 收到旧格式日报（按实体分节、落盘到 reports/），
+/// 而新的周期日报要点一次才生成——列表里两类"日报"并存、口径不同，属于信任级缺陷。
+///
+/// # 做什么
+/// 1. 停用 `daily_report` / `weekly_report` 两类旧任务（**只停用、不删除**：
+///    用户可能改过它们的 cron，删了就丢配置）；
+/// 2. 若任务表里没有任何 `period_report` 任务，补种一条「周期日报」；
+/// 3. 只有"真的停用了旧任务"时才置一次切换提示，供设置页显示一行说明；
+/// 4. 写标记，保证只做一次——之后用户手动改回来的状态不会被再次覆盖。
+///
+/// # 参数
+/// * `pool` - 数据库连接池
+///
+/// # 错误
+/// 读写失败时返回错误信息（调用方仅告警，不阻断启动）
+async fn migrate_period_report_tasks(pool: &SqlitePool) -> Result<(), String> {
+    if crate::research::period::migration_done(pool).await {
+        return Ok(());
+    }
+
+    // 先数一下有多少条仍启用的旧报告任务：0 条说明用户早就不用它们了，不必弹提示
+    let enabled_old: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM automation_tasks \
+         WHERE task_type IN ('daily_report', 'weekly_report') AND enabled = 1",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if enabled_old > 0 {
+        sqlx::query(
+            "UPDATE automation_tasks SET enabled = 0 \
+             WHERE task_type IN ('daily_report', 'weekly_report')",
+        )
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
+    let period_tasks: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM automation_tasks WHERE task_type = 'period_report'")
+            .fetch_one(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    if period_tasks == 0 {
+        sqlx::query(
+            "INSERT INTO automation_tasks (name, task_type, cron_expr, config, enabled) \
+             VALUES (?, ?, ?, ?, 1)",
+        )
+        .bind("周期日报")
+        .bind("period_report")
+        .bind(crate::research::period::DEFAULT_DAILY_CRON)
+        .bind(crate::research::period::default_daily_config())
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
+    if enabled_old > 0 {
+        // 提示是一次性的：用户看过即清（前端点「知道了」会删这个键）
+        Setting::set(pool, "period_report_switch_notice", "1").await?;
+    }
+    crate::research::period::mark_migration_done(pool).await;
     Ok(())
 }
 
@@ -2392,6 +2488,56 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
             note TEXT NOT NULL DEFAULT '',
             last_triggered DATETIME DEFAULT NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+
+    // ─── 周期报告（按日/周/月汇总全部文章）──────────────────────────────────
+    // 与旧研究报告的本质区别：旧报告是**纯文件**（列表靠解析文件名，元信息只有
+    // size/mtime），周期报告需要「篇数/主题数/源数/引用源→article_id」这些结构化
+    // 字段，其中"引用源能点回原文"只能靠 article_id，文件里的文字做不到。
+    //
+    // 两张表都是新表：`CREATE TABLE IF NOT EXISTS` 对存量库会自动建，不需要版本号，
+    // 也不需要 ALTER（本项目没有 SCHEMA_VERSION，见文件头「schema 演进」约定）。
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS report_periods (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,               -- daily / weekly / monthly
+            window_mode TEXT NOT NULL,        -- natural（自然周期）/ custom（自定义区间）
+            period_start DATETIME NOT NULL,   -- 窗口起点，含
+            period_end DATETIME NOT NULL,     -- 窗口终点，**不含**（与传参语义相反，勿简化）
+            title TEXT NOT NULL DEFAULT '',   -- 报告标题（模型给，失败时为周期标签兜底）
+            lead TEXT DEFAULT '',             -- 一句话结论（列表副标题用）
+            article_count INTEGER NOT NULL DEFAULT 0,
+            topic_count INTEGER NOT NULL DEFAULT 0,
+            feed_count INTEGER NOT NULL DEFAULT 0,
+            model TEXT DEFAULT '',            -- 生成所用模型
+            status TEXT NOT NULL DEFAULT 'ready',  -- generating / ready / failed
+            error TEXT DEFAULT '',            -- 失败原因（仅在 failed 时有值，与状态分开存）
+            markdown TEXT DEFAULT '',         -- 正文 md 源；html 不存，导出时现渲染
+            is_read INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            -- 同一粒度 + 同一口径 + 同一起点 = 同一期，重新生成即覆盖（无历史版本）
+            UNIQUE(kind, window_mode, period_start)
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS report_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_id INTEGER NOT NULL,
+            ref_no INTEGER NOT NULL,          -- 正文里显示的 [n]，等于文章在 prompt 里的序号
+            article_id INTEGER,               -- 允许 NULL：文章被清理后仍保留标题快照
+            title TEXT NOT NULL DEFAULT '',   -- 快照，文章删了也能看
+            feed_name TEXT DEFAULT '',
+            published TEXT DEFAULT '',
+            url TEXT DEFAULT '',
+            topic_no INTEGER,                 -- 归属主题序号（1 基），用于按节分组
+            UNIQUE(report_id, ref_no),
+            FOREIGN KEY (report_id) REFERENCES report_periods(id) ON DELETE CASCADE
         )"#,
     )
     .execute(pool)
@@ -5891,5 +6037,88 @@ mod tests {
             .await
             .expect("级联删除后的查询不应失败");
         assert!(rows.is_empty(), "事件随文章级联删除，应无返回行");
+    }
+
+    /// 周期报告任务的一次性迁移：停用旧报告任务、补种新任务、且只做一次
+    ///
+    /// 这是本次唯一"改存量数据"的路径，因此三条断言都要守住：
+    /// 旧任务被停用但**没被删**、新任务恰好一条、用户之后手动改回的状态不被再次覆盖。
+    #[tokio::test]
+    async fn period_report_migration_switches_old_tasks_once() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("建内存库失败");
+        create_tables(&pool).await.expect("建表失败");
+
+        // 模拟存量库：旧日报启用、旧周报停用
+        for (name, task_type, enabled) in
+            [("每日研究报告", "daily_report", 1), ("每周研究报告", "weekly_report", 0)]
+        {
+            sqlx::query(
+                "INSERT INTO automation_tasks (name, task_type, cron_expr, config, enabled) \
+                 VALUES (?, ?, '0 0 8 * * *', '{}', ?)",
+            )
+            .bind(name)
+            .bind(task_type)
+            .bind(enabled)
+            .execute(&pool)
+            .await
+            .expect("插入旧任务失败");
+        }
+
+        migrate_period_report_tasks(&pool)
+            .await
+            .expect("迁移失败");
+
+        let old_enabled: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM automation_tasks \
+             WHERE task_type IN ('daily_report','weekly_report') AND enabled = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("统计失败");
+        assert_eq!(old_enabled, 0, "旧报告任务应被停用");
+
+        let old_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM automation_tasks WHERE task_type = 'daily_report'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("统计失败");
+        assert_eq!(old_rows, 1, "只停用不删除，用户改过的 cron 不能丢");
+
+        let new_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM automation_tasks WHERE task_type = 'period_report'")
+                .fetch_one(&pool)
+                .await
+                .expect("统计失败");
+        assert_eq!(new_rows, 1, "应补种一条周期日报任务");
+
+        let notice = Setting::get(&pool, "period_report_switch_notice")
+            .await
+            .expect("读取标记失败");
+        assert_eq!(notice.as_deref(), Some("1"), "停用过旧任务才提示");
+
+        // 用户手动把旧任务重新启用后再跑一次迁移：标记已写，不应再被关掉
+        sqlx::query("UPDATE automation_tasks SET enabled = 1 WHERE task_type = 'daily_report'")
+            .execute(&pool)
+            .await
+            .expect("手动启用失败");
+        migrate_period_report_tasks(&pool)
+            .await
+            .expect("二次迁移失败");
+        let re_enabled: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM automation_tasks WHERE task_type = 'daily_report' AND enabled = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("统计失败");
+        assert_eq!(re_enabled, 1, "迁移只做一次，用户的选择优先");
+        let still_one: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM automation_tasks WHERE task_type = 'period_report'")
+                .fetch_one(&pool)
+                .await
+                .expect("统计失败");
+        assert_eq!(still_one, 1, "不应重复补种");
     }
 }

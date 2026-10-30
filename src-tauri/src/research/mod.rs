@@ -13,12 +13,14 @@
 //! - [`extract`]：prompt 组装、JSON 容错解析、单篇/批量提取
 //! - [`normalize`]：实体归一化（canonical/别名匹配、未命中自动新建）与事件落库
 //! - [`report`]：日报/周报 Markdown 渲染与多通道输出（应用内 / Obsidian / 文件）
+//! - [`period`]：周期报告（日/周/月）——按时间汇总全部文章、交模型归纳、正文只入库
 //!
 //! 本模块同时承载自动化任务的**统一执行器**（[`run_task_once`]）：
 //! cron 调度与手动触发共用同一条执行路径，运行结果统一回写任务行。
 
 pub mod extract;
 pub mod normalize;
+pub mod period;
 pub mod report;
 
 use std::collections::HashSet;
@@ -119,6 +121,9 @@ pub async fn run_task_once(
         "weekly_report" => {
             report::run_report_task(pool, &task.config, report::ReportKind::Weekly).await
         }
+        // 周期报告任务：按自然周期汇总**全部文章**（不区分研究实体），
+        // 与上面两个事件驱动的旧任务完全独立
+        "period_report" => period::run_period_task(pool, &task.config).await,
         other => TaskOutcome::Failed(format!("未知任务类型: {}", other)),
     };
 

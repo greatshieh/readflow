@@ -2,7 +2,7 @@
   <!-- 研究工作台弹窗外壳：三个页签（时间线 / 报告 / 实体）的容器与切换。
        layout="side"：固定高度弹窗，切页签不再跳变；tab 竖排在左列。
        关系图已不在此处——弹窗画布太小，只保留主屏全宽展示（入口见 FeedPanel 工具栏与 D 键）。 -->
-  <BaseModal :open="open" title="研究工作台" layout="side" @close="close">
+  <BaseModal :open="open" title="研究工作台" layout="side" side-wide @close="close">
     <!-- 左列：标题 + 纵排页签。关闭钮由 BaseModal 的 side 布局统一放在面板右上角 -->
     <aside class="side-nav">
       <div class="side-head">
@@ -13,7 +13,7 @@
           事件时间线
         </button>
         <button class="side-tab" :class="{ active: tab === 'reports' }" @click="tab = 'reports'">
-          研究报告
+          报告
         </button>
         <button class="side-tab" :class="{ active: tab === 'entities' }" @click="tab = 'entities'">
           实体管理
@@ -34,13 +34,24 @@
         </button>
       </div>
 
+      <!-- 报告页签内的两段式分段控件。
+           位置在 `.m-body` 之外（`.side-main` 层、标题栏之下）：`.m-body` 自己带
+           padding 与 overflow-y:auto，分段塞进去会变成"内层再来一份 padding + 跟着内容滚走"。
+           只有报告页签显示它，且两段内容常驻（v-show），切回来生成参数不丢。 -->
+      <ReportSegmentBar v-if="tab === 'reports'" />
+
       <!-- 右列：页签内容区（三个页签的根元素都带 class="m-body"，占满右列） -->
       <!-- 三个页签一律 v-show 常驻挂载（不是 v-if）：各页签的筛选参数
            （时间窗 / 实体筛选 / 报告类型与天数）在拆分前的单组件里
            天然跨页签、跨开关持久，v-if 会在每次切换时把这些状态连同 DOM 一起丢掉。
            页签各自的加载时机由它们 watch `active` / `open` 自行驱动，见各组件文件头。 -->
       <ResearchTimelineTab v-show="tab === 'timeline'" :open="open" @close="close" />
-      <ResearchReportsTab v-show="tab === 'reports'" :active="tab === 'reports'" :open="open" />
+      <ResearchReportsTab
+        v-show="tab === 'reports'"
+        :active="tab === 'reports'"
+        :open="open"
+        @close="close"
+      />
       <ResearchEntitiesTab v-show="tab === 'entities'" @entities-changed="onEntitiesChanged" />
     </div>
   </BaseModal>
@@ -74,9 +85,12 @@ import BaseModal from './BaseModal.vue'
 import ResearchTimelineTab from './ResearchTimelineTab.vue'
 import ResearchReportsTab from './ResearchReportsTab.vue'
 import ResearchEntitiesTab from './ResearchEntitiesTab.vue'
+import ReportSegmentBar from './report/ReportSegmentBar.vue'
 import { useResearchStore } from '@/stores/research'
 import { useEntitiesStore } from '@/stores/entities'
 import { useUiStore } from '@/stores/ui'
+import { useReportPeriodStore } from '@/stores/reportPeriod'
+import { useToastStore } from '@/stores/toast'
 
 const props = defineProps<{
   /** 弹窗是否打开 */
@@ -90,32 +104,60 @@ const emit = defineEmits<{
 const researchStore = useResearchStore()
 const entitiesStore = useEntitiesStore()
 const uiStore = useUiStore()
+const reportStore = useReportPeriodStore()
+const toast = useToastStore()
 
-/** 当前 tab：timeline = 事件时间线；reports = 研究报告；entities = 实体管理 */
+/** 当前 tab：timeline = 事件时间线；reports = 报告（含周期报告与研究报告两段）；entities = 实体管理 */
 const tab = ref<'timeline' | 'reports' | 'entities'>('timeline')
 
 /** 标题栏显示的页签名称 */
 const tabTitle = computed(() => {
   const titles: Record<string, string> = {
     timeline: '事件时间线',
-    reports: '研究报告',
+    reports: '报告',
     entities: '实体管理',
   }
   return titles[tab.value] ?? '研究工作台'
 })
 
 // 打开时确保实体列表已加载：时间线的实体筛选下拉依赖它（可能尚未加载过）
+// 同时消费"来源条要求打开某份周期报告"的待办意图（跨组件跳转，见 §4.6.5）。
 watch(
   () => props.open,
   async val => {
-    if (val && entitiesStore.entities.length === 0) {
+    if (!val) return
+    if (entitiesStore.entities.length === 0) {
       await entitiesStore.loadEntities()
     }
-  }
+    const pending = reportStore.consumePendingOpen()
+    if (pending !== null) {
+      tab.value = 'reports'
+      reportStore.setSegment('period')
+      try {
+        await reportStore.focusReport(pending)
+      } catch (e) {
+        // 报告已被删除或覆盖：不跳空白页，退到列表并说明
+        reportStore.closeReport()
+        toast.show(e instanceof Error ? e.message : '该报告已不存在')
+      }
+    }
+  },
+  // immediate：组件若在 `open=true` 的状态下挂载（外壳改成 v-if 就会发生），
+  // 不带 immediate 的 watch 不会为"挂载时已成立的状态"补一次，待打开的意图会丢掉
+  { immediate: true },
 )
 
-/** 关闭弹窗。页签内的临时提示/展开态由各页签在下次打开时自行重置（见各自文件头） */
+/**
+ * 关闭弹窗
+ *
+ * 生成期间**拦下关闭**（决策⑬：P0–P2 先阻塞），但必须给一次反馈——
+ * 三条关闭路径（Esc / 点遮罩 / 点 ✕）全被静默吃掉时，用户会以为应用卡死。
+ */
 function close() {
+  if (reportStore.generating) {
+    toast.show('正在生成报告，请稍候')
+    return
+  }
   emit('close')
   tab.value = 'timeline'
   researchStore.closeReport()

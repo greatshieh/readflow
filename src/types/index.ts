@@ -323,7 +323,13 @@ export interface AutomationTask {
   id: number
   /** 任务名称（如"每日研究报告"） */
   name: string
-  /** 任务类型：batch_extract（批量提取）/ daily_report（日报）/ weekly_report（周报） */
+  /**
+   * 任务类型：
+   * - `batch_extract` 批量提取
+   * - `period_report` 周期报告（按时间汇总全部文章，日报/周报/月报）
+   * - `daily_report` 每日研究报告（按实体分节，旧链路）
+   * - `weekly_report` 每周研究报告（按实体分节，旧链路）
+   */
   task_type: string
   /** cron 表达式（tokio-cron-scheduler 格式，如 "0 30 2 * * *"） */
   cron_expr: string

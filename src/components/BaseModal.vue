@@ -12,7 +12,7 @@
     <div
       ref="panelRef"
       class="base-modal"
-      :class="[`size-${size}`, layout === 'side' ? 'layout-side' : '', { global }]"
+      :class="[`size-${size}`, layout === 'side' ? 'layout-side' : '', { global, 'side-wide': sideWide }]"
       role="dialog"
       aria-modal="true"
       :aria-label="title"
@@ -55,6 +55,9 @@
  *   **本组件不渲染关闭钮**：模板只有 `<slot />`，关闭钮在各宿主的标题栏里
  *   （`SettingsModal` / `ResearchModal` 的 `.btn-icon`）；`--side-close-reserve`
  *   只是给宿主对齐用的占位高度参考。要"收进外壳"属功能改动，须单独排期。
+ * * `sideWide` - 仅在 `layout="side"` 下生效：把面板从 880 加宽到 1000。
+ *   给研究工作台的报告页用（正文 + 引用源右栏需要两列），设置弹窗保持 880。
+ *   **不要直接改 `.layout-side` 的宽度**——那是两个宿主共用的，改一处会连带改另一处。
  *
  * # 事件
  * * `close` - 用户按下 Esc 或点击遮罩空白处；是否真的关闭由父组件决定
@@ -74,10 +77,12 @@ const props = withDefaults(
     size?: 'sm' | 'md' | 'lg' | 'xl' | '2xl' | '3xl'
     /** 布局：default 高度随内容自适应；side 固定高度 + 宽面板，宿主内部排「左 tab 列 + 右内容列」 */
     layout?: 'default' | 'side'
+    /** side 布局下的加宽档位（880 → 1000），只有研究工作台传 */
+    sideWide?: boolean
     /** 全局确认框变体（GlobalModal 专用）：z-index 压过普通弹窗，且键盘事件不向 activeModal 让路 */
     global?: boolean
   }>(),
-  { size: 'lg', layout: 'default' },
+  { size: 'lg', layout: 'default', sideWide: false },
 )
 
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -410,5 +415,15 @@ onBeforeUnmount(deactivate)
   width: min(880px, 92vw);
   height: min(80vh, 720px);
   flex-direction: row;
+}
+/* 加宽档位：研究工作台的报告页要放「正文 + 引用源右栏」两列，
+   880 下正文只剩 486px（含右栏就挤没了）。1000 给正文留出 600+，
+   仍落在中文舒适行宽（420–630px）内；再宽只是留白，不加。
+   高度同步提到 86vh：报告比设置项长，垂直空间比宽度更值钱。 */
+.base-modal.layout-side.side-wide {
+  /* 上界用 92vw 而不是 94vw：`.base-modal` 的 max-width 就是 92vw（按 zoom 反算），
+     写更大的值只会被裁掉，看起来像"设了没用"。 */
+  width: min(1000px, 92vw);
+  height: min(86vh, 720px);
 }
 </style>
