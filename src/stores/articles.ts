@@ -29,7 +29,7 @@
  * Rust 端以 snake_case 形参接收，Tauri 自动完成两者转换。切勿改成 snake_case，否则后端收不到值。
  */
 
-import { defineStore } from 'pinia'
+import { acceptHMRUpdate, defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { Article, AiStreamPayload, Highlight } from '@/types'
 // 批量标记已读后需要同步侧边栏未读角标，因此依赖 feeds store 的 loadFeeds；
@@ -846,3 +846,11 @@ export const useArticlesStore = defineStore('articles', () => {
     statsDailyRead
   }
 })
+
+// 开发期热更新：用新定义重建 Pinia 实例。
+// 少了这段，Vite 热更新只重跑本模块，而 pinia 缓存里仍是旧实例的 action 集合，
+// 于是新组件调用本轮新增的方法会拿到 undefined，TypeError 被事件处理器吞掉，
+// 界面表现是「点了没反应」；生产构建不会进入本分支。
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useArticlesStore, import.meta.hot))
+}

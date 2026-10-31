@@ -28,7 +28,7 @@
  *   真实 Tauri 桌面应用中不存在该问题（内建环境检测见 `@tauri-apps/api/core`）。
  */
 
-import { defineStore } from 'pinia'
+import { acceptHMRUpdate, defineStore } from 'pinia'
 import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 // `@/types` 导出的是单数形式的 `Setting`（对应 settings 表中的一行 key-value 记录），
@@ -91,3 +91,11 @@ export const useSettingsStore = defineStore('settings', () => {
 
   return { settings, loadSettings, setSetting, getSetting }
 })
+
+// 开发期热更新：用新定义重建 Pinia 实例。
+// 少了这段，Vite 热更新只重跑本模块，而 pinia 缓存里仍是旧实例的 action 集合，
+// 于是新组件调用本轮新增的方法会拿到 undefined，TypeError 被事件处理器吞掉，
+// 界面表现是「点了没反应」；生产构建不会进入本分支。
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useSettingsStore, import.meta.hot))
+}

@@ -19,7 +19,7 @@
  * Tauri 自动完成转换。
  */
 
-import { defineStore } from 'pinia'
+import { acceptHMRUpdate, defineStore } from 'pinia'
 import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import type { Tag } from '@/types'
@@ -177,3 +177,11 @@ export const useTagsStore = defineStore('tags', () => {
     setArticleTags
   }
 })
+
+// 开发期热更新：用新定义重建 Pinia 实例。
+// 少了这段，Vite 热更新只重跑本模块，而 pinia 缓存里仍是旧实例的 action 集合，
+// 于是新组件调用本轮新增的方法会拿到 undefined，TypeError 被事件处理器吞掉，
+// 界面表现是「点了没反应」；生产构建不会进入本分支。
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useTagsStore, import.meta.hot))
+}

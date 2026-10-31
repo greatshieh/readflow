@@ -20,7 +20,7 @@
  * 更简洁，也避免组件间耦合。任何组件 `useUiStore()` 即可读写同一份状态。
  */
 
-import { defineStore } from 'pinia'
+import { acceptHMRUpdate, defineStore } from 'pinia'
 import { ref } from 'vue'
 
 export const useUiStore = defineStore('ui', () => {
@@ -148,3 +148,11 @@ export const useUiStore = defineStore('ui', () => {
 
   return { focusMode, toggleFocusMode, setFocusMode, mainView, setMainView, toggleGraphView, toggleRecommendView, entityDashboardOpen, entityDashboardId, openEntityDashboard, closeEntityDashboard, feedColWidth, articleColWidth, setFeedColWidth, setArticleColWidth }
 })
+
+// 开发期热更新：用新定义重建 Pinia 实例。
+// 少了这段，Vite 热更新只重跑本模块，而 pinia 缓存里仍是旧实例的 action 集合，
+// 于是新组件调用本轮新增的方法会拿到 undefined，TypeError 被事件处理器吞掉，
+// 界面表现是「点了没反应」；生产构建不会进入本分支。
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useUiStore, import.meta.hot))
+}
