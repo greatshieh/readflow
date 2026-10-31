@@ -62,6 +62,15 @@ const MAX_FACT_CHARS: usize = 60;
 /// 每个主题最多保留的关键事实条数
 const MAX_FACTS: usize = 5;
 
+/// 「本期值得跟进」的条数上限
+///
+/// 卡在 5 而不是 10，是刻意的：跟进清单的作用是**收敛注意力**。
+/// 一天列十个"值得关注"，等于什么都没说；三项以内才会真的被打开看。
+const MAX_FOLLOWUPS: usize = 5;
+
+/// 单条跟进理由的字符上限（一句话说清"变化"）
+const MAX_FOLLOWUP_REASON_CHARS: usize = 120;
+
 /// 默认 AI 提供商标识（与 `extract` / `report` 的缺省一致；设置页目前只维护这一个）
 const DEFAULT_PROVIDER: &str = "agnes";
 
@@ -373,6 +382,28 @@ struct RawReport {
     /// 主题节（3–7 个）
     #[serde(default)]
     topics: Vec<RawTopic>,
+    /// 本期值得跟进（0–5 个，见 [`RawFollowup`]）
+    #[serde(default)]
+    followups: Vec<RawFollowup>,
+}
+
+/// 模型给出的一个"值得跟进"的候选实体
+///
+/// 与 topics 的区别：topics 是**已经发生的事**的分组，followups 是
+/// **接下来该盯什么**的提名。前者是对材料的归纳，后者是对注意力的分配，
+/// 所以 `reason` 必须写"变化"（加速/转向/背离）而不是"出现了"——
+/// 只是"出现了"的东西每天都有，不构成跟进理由。
+#[derive(Debug, Clone, Deserialize)]
+struct RawFollowup {
+    /// 实体/标的名（尽量用原文里的规范名）
+    #[serde(default)]
+    name: String,
+    /// 为什么要盯它：一句话说清"变化"
+    #[serde(default)]
+    reason: String,
+    /// 引用源编号
+    #[serde(default)]
+    refs: Vec<i64>,
 }
 
 /// 模型给出的一条要点
@@ -464,6 +495,17 @@ impl Level {
     }
 }
 
+/// 校验后的"值得跟进"条目
+#[derive(Debug, Clone)]
+struct Followup {
+    /// 实体/标的名（已截断、去重）
+    name: String,
+    /// 跟进理由（已截断）
+    reason: String,
+    /// 引用源编号
+    refs: Vec<i64>,
+}
+
 /// 校验后的完整报告
 #[derive(Debug, Clone)]
 struct Report {
@@ -475,6 +517,8 @@ struct Report {
     highlights: Vec<Highlight>,
     /// 主题节
     topics: Vec<Topic>,
+    /// 本期值得跟进（可能为空：素材少时不该硬凑）
+    followups: Vec<Followup>,
 }
 
 /// 按字符（非字节）安全截断
@@ -568,11 +612,37 @@ fn normalize(raw: &str, article_count: usize, fallback_title: &str) -> Option<Re
         truncate_chars(parsed.title.trim(), 60)
     };
 
+    // 「值得跟进」的清洗比 topics 更严：宁可少给，不可给假。
+    // 名字或理由任一为空的条目直接丢——一条没有理由的"建议跟进"
+    // 对用户没有任何信息量，只会稀释真正有变化的那两三条。
+    let mut seen_names: Vec<String> = Vec::new();
+    let followups: Vec<Followup> = parsed
+        .followups
+        .iter()
+        .filter(|f| !f.name.trim().is_empty() && !f.reason.trim().is_empty())
+        .take(MAX_FOLLOWUPS)
+        .filter_map(|f| {
+            let name = truncate_chars(f.name.trim(), 40);
+            // 同一个实体只留第一条：模型偶尔会为同一标的写两个角度
+            let key = name.to_lowercase();
+            if seen_names.contains(&key) {
+                return None;
+            }
+            seen_names.push(key);
+            Some(Followup {
+                reason: truncate_chars(f.reason.trim(), MAX_FOLLOWUP_REASON_CHARS),
+                name,
+                refs: clean_refs(&f.refs),
+            })
+        })
+        .collect();
+
     Some(Report {
         title,
         lead: truncate_chars(parsed.lead.trim(), 160),
         highlights,
         topics,
+        followups,
     })
 }
 
@@ -609,13 +679,22 @@ fn build_prompt(kind: PeriodKind, window: PeriodWindow, articles: &[PeriodArticl
          3) highlights：3–7 条要点，每条 60–140 字，按重要性排序，\
          level 取值只能是 high / medium / low；\n\
          4) topics：3–7 个主题，把内容相近的文章聚在一起，\
-         每个主题含 name（不超过 30 字）、summary（3–4 句）、facts（2–5 条带数字的关键事实，每条不超过 40 字）、refs；\n\n\
+         每个主题含 name（不超过 30 字）、summary（3–4 句）、facts（2–5 条带数字的关键事实，每条不超过 40 字）、refs；\n\
+         5) followups：本期**值得接下来继续盯**的标的（0–5 个），\
+         每个含 name（实体或标的的规范名）、reason（为什么值得跟进）、refs。\n\n\
+         关于 followups 的严格要求：\n\
+         - reason 必须写出**变化**（例如「出货增速由 30% 降到 8%」「首次提到海外产能」\
+         「与上期判断方向相反」），不能只是「出现了某公司的新闻」——\
+         只是出现了的东西每天都有，不构成跟进理由；\n\
+         - 没有真实变化就返回空数组 []，不要为了凑数而列；\n\
+         - 不要与 topics 重复罗列，followups 关注的是「接下来该看什么」而不是「这期发生了什么」。\n\n\
          硬约束：\n\
          - refs 只能填上面给出的文章编号，不得编造编号；\n\
          - 只能依据上述材料，材料没写的数据一律不提；\n\
          - 不要输出 Markdown 代码块或任何解释文字，直接输出 JSON：\n\
          {{\"title\":\"...\",\"lead\":\"...\",\"highlights\":[{{\"level\":\"high\",\"text\":\"...\",\"refs\":[1,4]}}],\
-         \"topics\":[{{\"name\":\"...\",\"summary\":\"...\",\"facts\":[\"...\"],\"refs\":[1,4]}}]}}",
+         \"topics\":[{{\"name\":\"...\",\"summary\":\"...\",\"facts\":[\"...\"],\"refs\":[1,4]}}],\
+         \"followups\":[{{\"name\":\"...\",\"reason\":\"...\",\"refs\":[2]}}]}}",
         label = kind.label(),
         period = window.label(kind),
         count = articles.len(),
@@ -691,6 +770,28 @@ fn render_markdown(
         if i + 1 < report.topics.len() {
             out.push_str("---\n\n");
         }
+    }
+
+    // 「本期值得跟进」放在引用源之前、全部主题之后。
+    //
+    // 位置是有讲究的：读者看完所有主题，脑子里已经在问"那我接下来该看什么"，
+    // 此刻给这份清单正好接上；放在开头会变成"还没看内容就被指路"，
+    // 放在文末之后（引用源之后）则会被当作附录跳过。
+    //
+    // 段标题用「接下来盯什么」而不是「值得跟进」：后者像系统通知，
+    // 前者是一个动作邀请。这里不用 callout——跟进清单是待办，不是提示。
+    if !report.followups.is_empty() {
+        out.push_str("---\n\n## 接下来盯什么\n\n");
+        out.push_str("> 这些不是因为「出现了新闻」，而是因为**出现了变化**。\n\n");
+        for f in &report.followups {
+            out.push_str(&format!(
+                "- **{}**：{}{}\n",
+                f.name,
+                f.reason,
+                ref_suffix(&f.refs)
+            ));
+        }
+        out.push('\n');
     }
 
     out.push_str("---\n\n## 引用源\n\n");
@@ -810,6 +911,26 @@ pub struct PeriodSource {
     pub topic_no: Option<i64>,
 }
 
+/// 周期报告的一条"值得跟进"
+///
+/// 字段名走 camelCase（与 `PeriodSummary` / `PeriodSource` 一致）：
+/// 本 crate 默认 snake_case，但周期报告是新增域，前端按 camelCase 声明；
+/// 两边不一致**不会编译报错**，只表现为前端拿到 undefined。改字段时同步前端类型。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeriodFollowup {
+    /// 行 ID
+    pub id: i64,
+    /// 候选实体名（模型给的规范名）
+    pub entity_name: String,
+    /// 为什么值得跟进（写的是"变化"）
+    pub reason: String,
+    /// 命中的已有实体 ID（NULL = 还没跟踪）
+    pub entity_id: Option<i64>,
+    /// 是否已点过「跟踪」
+    pub tracked: bool,
+}
+
 /// 阅读页一次取全的载荷
 #[derive(Debug, Clone, Serialize)]
 pub struct PeriodDetail {
@@ -819,6 +940,8 @@ pub struct PeriodDetail {
     pub markdown: String,
     /// 引用源
     pub sources: Vec<PeriodSource>,
+    /// 本期值得跟进（可能为空；为空时前端整段不渲染）
+    pub followups: Vec<PeriodFollowup>,
 }
 
 /// `report_periods` 的行映射（内部用，字段与 DDL 一一对应）
@@ -929,10 +1052,29 @@ pub async fn get(pool: &SqlitePool, id: i64) -> Result<PeriodDetail, String> {
     })
     .collect();
 
+    let followups = sqlx::query_as::<_, (i64, String, String, Option<i64>, i64)>(
+        "SELECT id, entity_name, reason, entity_id, tracked \
+         FROM report_followups WHERE report_id = ? ORDER BY id",
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?
+    .into_iter()
+    .map(|r| PeriodFollowup {
+        id: r.0,
+        entity_name: r.1,
+        reason: r.2,
+        entity_id: r.3,
+        tracked: r.4 != 0,
+    })
+    .collect();
+
     Ok(PeriodDetail {
         summary: row.to_summary(),
         markdown: row.markdown,
         sources,
+        followups,
     })
 }
 
@@ -958,12 +1100,70 @@ pub async fn delete(pool: &SqlitePool, id: i64) -> Result<(), String> {
         .execute(pool)
         .await
         .map_err(|e| e.to_string())?;
+    // 跟进清单同理：不清会留下一堆指向已删报告的孤儿行
+    sqlx::query("DELETE FROM report_followups WHERE report_id = ?")
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
     sqlx::query("DELETE FROM report_periods WHERE id = ?")
         .bind(id)
         .execute(pool)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// 把一条「值得跟进」落成真正的实体（用户点了「跟踪」）
+///
+/// # 为什么实体只能由人点出来
+/// 让 AI 自动把所有被提到的公司都加成实体库，等于把实体库变成第二份文章列表，
+/// 而实体库的价值恰恰在于"我已经筛过了"。所以这里只处理用户点过的那一条。
+///
+/// # 幂等
+/// 已经 tracked 的条目重复点不报错，直接返回已有 entity_id。
+///
+/// # 参数
+/// * `pool` - 连接池
+/// * `followup_id` - `report_followups` 行 ID
+///
+/// # 返回值
+/// 实体 ID（新建或已存在）
+///
+/// # 错误
+/// 行不存在、数据库写入失败时返回错误信息
+pub async fn track_followup(pool: &SqlitePool, followup_id: i64) -> Result<i64, String> {
+    let row: Option<(String, Option<i64>)> = sqlx::query_as(
+        "SELECT entity_name, entity_id FROM report_followups WHERE id = ?",
+    )
+    .bind(followup_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let (name, existing) = row.ok_or_else(|| "这条跟进已不存在".to_string())?;
+
+    let entity_id = match existing {
+        Some(eid) => eid,
+        None => {
+            // 类型先统一记 `company`：模型只给了名字，猜行业类型会猜错，
+            // 而错误类型会污染后续的关系图分组。用户在实体管理里改一次即可。
+            let eid = crate::db::Entity::create(pool, &name, "company").await?;
+            sqlx::query("UPDATE report_followups SET entity_id = ?, tracked = 1 WHERE id = ?")
+                .bind(eid)
+                .bind(followup_id)
+                .execute(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            return Ok(eid);
+        }
+    };
+
+    sqlx::query("UPDATE report_followups SET tracked = 1 WHERE id = ?")
+        .bind(followup_id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(entity_id)
 }
 
 /// 导出的载荷（正文 + 默认文件名，不含扩展名）
@@ -1162,6 +1362,8 @@ fn collect_cited(report: &Report) -> Vec<i64> {
         .iter()
         .flat_map(|h| h.refs.iter().copied())
         .chain(report.topics.iter().flat_map(|t| t.refs.iter().copied()))
+        // 跟进段也会带 [n]：漏了它就会出现正文有编号、引用源清单里没有的断链
+        .chain(report.followups.iter().flat_map(|f| f.refs.iter().copied()))
         .collect();
     all.sort_unstable();
     all.dedup();
@@ -1283,6 +1485,38 @@ async fn finalize(
         )
         .bind(&article.link)
         .bind(topic_no)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
+    // 「本期值得跟进」：同样覆盖式重写。
+    //
+    // 这里顺手把 name 与 entities 表做一次**宽松匹配**，命中就回填 entity_id：
+    //   - 匹配上 → 前端能直接显示"已跟踪"，点按钮不会重复建实体；
+    //   - 匹配不上 → entity_id 留 NULL，点「跟踪」时才真正创建实体。
+    // 匹配只在写入时做一次，不在读取时算：用户之后手动改了实体名，
+    // 不该让历史报告的关联跟着变（报告是快照，不是视图）。
+    sqlx::query("DELETE FROM report_followups WHERE report_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    for f in &report.followups {
+        let hit: Option<i64> =
+            sqlx::query_scalar("SELECT id FROM entities WHERE lower(name) = lower(?) LIMIT 1")
+                .bind(&f.name)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| e.to_string())?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO report_followups (report_id, entity_name, reason, entity_id)              VALUES (?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(&f.name)
+        .bind(&f.reason)
+        .bind(hit)
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
@@ -1618,6 +1852,11 @@ mod tests {
                 facts: vec!["事实".into()],
                 refs: vec![2, 1],
             }],
+            followups: vec![Followup {
+                name: "宁德时代".into(),
+                reason: "出货增速下滑".into(),
+                refs: vec![1],
+            }],
         };
         let articles = select_articles(&pool, window, MAX_ARTICLES)
             .await
@@ -1781,5 +2020,181 @@ mod tests {
             assert!(v.get(key).is_some(), "缺字段 {key}");
         }
         assert_eq!(v["refNo"], 7);
+    }
+
+    /// PeriodFollowup 同样必须是 camelCase（前端按 entityName / entityId 读）
+    #[test]
+    fn followup_serializes_as_camel_case() {
+        let f = PeriodFollowup {
+            id: 3,
+            entity_name: "宁德时代".into(),
+            reason: "出货增速由 30% 降到 8%".into(),
+            entity_id: None,
+            tracked: false,
+        };
+        let v = serde_json::to_value(&f).expect("序列化失败");
+        for key in ["entityName", "entityId", "tracked", "reason"] {
+            assert!(v.get(key).is_some(), "缺字段 {key}");
+        }
+        assert!(v.get("entity_name").is_none(), "不该出现 snake_case 键");
+        // null 与 false 都要能被前端区分"未跟踪"与"跟踪了但实体丢失"
+        assert!(v["entityId"].is_null());
+        assert_eq!(v["tracked"], false);
+    }
+
+    /// 跟进条目的清洗：空名/空理由丢弃、同名去重、超量截断
+    #[test]
+    fn normalize_drops_empty_and_duplicate_followups() {
+        let raw = r#"{
+            "title": "T", "lead": "L",
+            "highlights": [],
+            "topics": [{"name": "主题", "summary": "s", "facts": [], "refs": [1]}],
+            "followups": [
+                {"name": "宁德时代", "reason": "出货增速下滑", "refs": [1]},
+                {"name": "宁德时代", "reason": "重复出现的同名", "refs": [1]},
+                {"name": "", "reason": "没有名字", "refs": []},
+                {"name": "有名字没理由", "reason": "   ", "refs": []},
+                {"name": "比亚迪", "reason": "首次提到海外产能", "refs": [99]}
+            ]
+        }"#;
+        let report = normalize(raw, 3, "兜底").expect("应解析成功");
+        assert_eq!(report.followups.len(), 2, "重复名与空字段都要被丢掉");
+        assert_eq!(report.followups[0].name, "宁德时代");
+        assert_eq!(report.followups[1].name, "比亚迪");
+        // 越界的引用编号要被清掉，否则正文里的 [99] 会指向不存在的引用源
+        assert!(report.followups[1].refs.is_empty());
+    }
+
+    /// 没有 followups 字段的旧格式输出仍应解析成功（向后兼容）
+    #[test]
+    fn normalize_tolerates_missing_followups() {
+        let raw = r#"{
+            "title": "T", "lead": "L",
+            "highlights": [],
+            "topics": [{"name": "主题", "summary": "s", "facts": [], "refs": [1]}]
+        }"#;
+        let report = normalize(raw, 3, "兜底").expect("应解析成功");
+        assert!(report.followups.is_empty());
+    }
+
+    /// 跟踪：未命中实体时新建，重复点幂等，已跟踪的条目返回同一实体
+    #[tokio::test]
+    async fn track_followup_creates_entity_once_and_is_idempotent() {
+        let pool = test_pool().await;
+        let day = Utc.with_ymd_and_hms(2026, 10, 30, 0, 0, 0).single().unwrap();
+        let id = upsert_generating(
+            &pool,
+            PeriodKind::Daily,
+            WindowMode::Natural,
+            PeriodWindow {
+                from: day,
+                to: day + Duration::days(1),
+            },
+        )
+        .await
+        .expect("插入占位行失败");
+        // 直接写两条跟进：一条已命中实体，一条没有
+        sqlx::query("INSERT INTO entities (name, entity_type) VALUES ('比亚迪', 'company')")
+            .execute(&pool)
+            .await
+            .expect("插入实体失败");
+        let hit: i64 = sqlx::query_scalar("SELECT id FROM entities WHERE name = '比亚迪'")
+            .fetch_one(&pool)
+            .await
+            .expect("查实体失败");
+        let f1: i64 = sqlx::query_scalar(
+            "INSERT INTO report_followups (report_id, entity_name, reason, entity_id) \
+             VALUES (?, '比亚迪', 'r', ?) RETURNING id",
+        )
+        .bind(id)
+        .bind(hit)
+        .fetch_one(&pool)
+        .await
+        .expect("插入跟进失败");
+        let f2: i64 = sqlx::query_scalar(
+            "INSERT INTO report_followups (report_id, entity_name, reason) \
+             VALUES (?, '宁德时代', 'r') RETURNING id",
+        )
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .expect("插入跟进失败");
+
+        // 已命中的：直接标记，不新建实体
+        let eid = track_followup(&pool, f1).await.expect("跟踪失败");
+        assert_eq!(eid, hit, "已命中实体时不应新建");
+        let tracked: i64 = sqlx::query_scalar("SELECT tracked FROM report_followups WHERE id = ?")
+            .bind(f1)
+            .fetch_one(&pool)
+            .await
+            .expect("读 tracked 失败");
+        assert_eq!(tracked, 1);
+
+        // 未命中的：新建实体并回填
+        let eid2 = track_followup(&pool, f2).await.expect("跟踪失败");
+        let name: String = sqlx::query_scalar("SELECT name FROM entities WHERE id = ?")
+            .bind(eid2)
+            .fetch_one(&pool)
+            .await
+            .expect("读实体失败");
+        assert_eq!(name, "宁德时代");
+
+        // 幂等：再点一次返回同一实体，且实体表不重复
+        let again = track_followup(&pool, f2).await.expect("二次跟踪失败");
+        assert_eq!(again, eid2);
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entities")
+            .fetch_one(&pool)
+            .await
+            .expect("计数失败");
+        assert_eq!(count, 2, "只有比亚迪与宁德时代两个实体");
+    }
+
+    /// 删除报告要显式清掉跟进行（PRAGMA foreign_keys 不可依赖）
+    #[tokio::test]
+    async fn delete_report_removes_followups() {
+        let pool = test_pool().await;
+        let day = Utc.with_ymd_and_hms(2026, 10, 30, 0, 0, 0).single().unwrap();
+        let id = upsert_generating(
+            &pool,
+            PeriodKind::Daily,
+            WindowMode::Natural,
+            PeriodWindow {
+                from: day,
+                to: day + Duration::days(1),
+            },
+        )
+        .await
+        .expect("插入占位行失败");
+        sqlx::query(
+            "INSERT INTO report_followups (report_id, entity_name, reason) VALUES (?, 'X', 'r')",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .expect("插入跟进失败");
+
+        delete(&pool, id).await.expect("删除失败");
+        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM report_followups")
+            .fetch_one(&pool)
+            .await
+            .expect("计数失败");
+        assert_eq!(left, 0, "跟进行必须被显式删除，否则成孤儿");
+    }
+
+    /// 跟进段落的引用必须计入引用源清单，否则正文出现断链编号
+    #[test]
+    fn collect_cited_includes_followup_refs() {
+        let report = Report {
+            title: "T".into(),
+            lead: String::new(),
+            highlights: vec![],
+            topics: vec![],
+            followups: vec![Followup {
+                name: "X".into(),
+                reason: "r".into(),
+                refs: vec![2, 5],
+            }],
+        };
+        assert_eq!(collect_cited(&report), vec![2, 5]);
     }
 }

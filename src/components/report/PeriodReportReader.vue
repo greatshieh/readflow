@@ -61,6 +61,47 @@
     <div v-else class="rd-body">
       <div class="rd-doc-wrap">
         <article ref="docRef" class="rc rd-doc" v-html="html" @click="onDocClick"></article>
+
+        <!-- 本期值得跟进：正文 md 里也有一节同名段落（导出到 Obsidian 后仍可读），
+             这里额外渲染一遍是因为**md 里不能放按钮**。
+             两份同源（都来自 report_followups），所以不会出现内容打架；
+             差别只在能力：md 是给人读的，这里是给人点的。 -->
+        <section v-if="detail.followups.length > 0" class="rf" aria-label="本期值得跟进">
+          <div class="rf-head">
+            <h2>接下来盯什么</h2>
+            <span class="rf-n">{{ detail.followups.length }}</span>
+          </div>
+          <p class="rf-tip">
+            这些不是因为「出现了新闻」，而是因为出现了变化。点「跟踪」才会加进你的实体库——
+            不加就不占位。
+          </p>
+          <ul class="rf-list">
+            <li v-for="f in detail.followups" :key="f.id" class="rf-item">
+              <div class="rf-main">
+                <span class="rf-name">{{ f.entityName }}</span>
+                <span class="rf-reason">{{ f.reason }}</span>
+              </div>
+              <button
+                v-if="f.tracked"
+                class="rf-btn done"
+                type="button"
+                disabled
+                :title="`已在实体库中（ID ${f.entityId}）`"
+              >
+                已跟踪
+              </button>
+              <button
+                v-else
+                class="rf-btn"
+                type="button"
+                :disabled="trackingId === f.id"
+                @click="onTrack(f.id)"
+              >
+                {{ trackingId === f.id ? '添加中…' : '跟踪' }}
+              </button>
+            </li>
+          </ul>
+        </section>
       </div>
 
       <aside class="rd-src" aria-label="引用源">
@@ -147,6 +188,8 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { renderMarkdown } from '@/utils/markdown'
 import { markRefs } from '@/utils/refMarker'
 import { formatLocalStamp, periodKindLabel, type PeriodKind } from '@/utils/periodWindow'
+import { useReportPeriodStore } from '@/stores/reportPeriod'
+import { useToastStore } from '@/stores/toast'
 import type { PeriodDetail, PeriodSource } from '@/stores/reportPeriod'
 import SourcePreviewIsland from './SourcePreviewIsland.vue'
 import ReportExportMenu from './ReportExportMenu.vue'
@@ -163,6 +206,9 @@ const emit = defineEmits<{
   /** 请求删除这份报告（确认框由上层弹，保证与"覆盖"同一种确认口吻） */
   (e: 'delete'): void
 }>()
+
+const store = useReportPeriodStore()
+const toast = useToastStore()
 
 /** 正文容器（引用联动的作用域） */
 const docRef = ref<HTMLElement | null>(null)
@@ -185,6 +231,31 @@ const exportAnchor = ref<{ x: number; y: number } | null>(null)
 
 /** 正文 HTML（Markdown → 安全 HTML） */
 const html = computed(() => renderMarkdown(props.detail.markdown))
+
+/** 正在「跟踪」的跟进行 ID（0 = 空闲），用于按钮禁用与文案 */
+const trackingId = ref(0)
+
+/**
+ * 把一条「值得跟进」加进实体库
+ *
+ * 写入由 store 完成（就地更新 detail.followups，不整份重拉）：
+ * 重拉会让阅读区滚动位置跳动，而用户此刻正停在跟进段落上。
+ *
+ * @param id - `report_followups` 行 ID
+ */
+async function onTrack(id: number) {
+  if (trackingId.value !== 0) return
+  trackingId.value = id
+  try {
+    await store.trackFollowup(id)
+    toast.show('已加入实体库，可在「实体管理」里调整类型与告警规则')
+  } catch (e) {
+    toast.show(e instanceof Error ? e.message : String(e))
+  } finally {
+    trackingId.value = 0
+  }
+}
+
 
 /**
  * 是否为生成失败的残留
@@ -514,6 +585,106 @@ onBeforeUnmount(() => {
   /* 正文行宽上限：中文舒适行宽 30–45 字；弹窗加宽后不给上限会一路拉到 600+ px，
      每行 40 多个字反而更难读 */
   max-width: 34em;
+}
+
+/* ═══ 接下来盯什么（正文之后的行动区）═══
+   宽度跟正文一致（34em）：它读起来是正文的最后一段，不是右侧的侧栏。 */
+.rf {
+  max-width: 34em;
+  margin-top: var(--sp-5);
+  padding: var(--sp-4);
+  border-radius: var(--r-lg);
+  background: var(--fill);
+  border: 1px solid var(--border);
+}
+.rf-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-15);
+}
+.rf-head h2 {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.rf-n {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  background: var(--surface);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.rf-tip {
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.rf-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.rf-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-15);
+  background: var(--surface);
+  border-radius: var(--r-md);
+}
+.rf-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rf-name {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.rf-reason {
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+.rf-btn {
+  flex-shrink: 0;
+  align-self: center;
+  border: 1px solid var(--primary);
+  background: transparent;
+  color: var(--primary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  padding: 3px var(--sp-15);
+  border-radius: var(--r-sm);
+  white-space: nowrap;
+}
+.rf-btn:hover:not(:disabled) {
+  background: var(--primary-fg);
+}
+.rf-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+.rf-btn:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+/* 已跟踪：去掉边框与主题色，让它明确"不用再点了" */
+.rf-btn.done {
+  border-color: var(--border);
+  color: var(--text-tertiary);
+  opacity: 1;
 }
 
 /* 引用源右栏 */

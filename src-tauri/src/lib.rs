@@ -461,6 +461,7 @@ pub fn run() {
             report_period_set_read,
             report_period_delete,
             report_period_cancel,
+            report_followup_track,
             report_export_prepare,
             report_export_write,
             // 行情/财务数据层（金融升级 Phase 1）
@@ -3419,6 +3420,22 @@ async fn report_period_get(id: i64) -> Result<research::period::PeriodDetail, St
 async fn report_period_set_read(id: i64, read: bool) -> Result<(), String> {
     let pool = db_pool().await.map_err(|e| e.to_string())?;
     research::period::set_read(&pool, id, read).await
+}
+
+/// 把周期报告里的一条「值得跟进」落成实体（用户点了跟踪）
+///
+/// 只处理用户点过的那一条：自动把模型提到的所有公司都加成实体，
+/// 会让实体库退化成第二份文章列表，失去"我已经筛过"的价值。
+///
+/// # 参数
+/// * `followup_id` - `report_followups` 行 ID
+///
+/// # 返回值
+/// 实体 ID（已存在则返回既有 ID，幂等）
+#[tauri::command]
+async fn report_followup_track(followup_id: i64) -> Result<i64, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::period::track_followup(&pool, followup_id).await
 }
 
 /// 删除一份周期报告（只删库行，正文从不落盘）

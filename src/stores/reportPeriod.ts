@@ -65,11 +65,22 @@ export interface PeriodSource {
   topicNo: number | null
 }
 
+/** 一条「本期值得跟进」（与后端 `PeriodFollowup` 一一对应，字段名必须一致） */
+interface PeriodFollowup {
+  id: number
+  entityName: string
+  reason: string
+  entityId: number | null
+  tracked: boolean
+}
+
 /** 阅读页载荷 */
 export interface PeriodDetail {
   summary: PeriodSummary
   markdown: string
   sources: PeriodSource[]
+  /** 本期值得跟进（可能为空数组；为空时整段不渲染） */
+  followups: PeriodFollowup[]
 }
 
 /** 来源上下文：从某份报告的第 n 条引用跳到文章后，正文栏据此显示返回条 */
@@ -301,6 +312,25 @@ export const useReportPeriodStore = defineStore('reportPeriod', () => {
     }
   }
 
+  /**
+   * 把一条「值得跟进」落成真实体（用户点了跟踪）
+   *
+   * 就地更新 `detail.followups` 里的这一条，不整份重拉：
+   * 重拉会让阅读区滚动位置跳动，而用户此刻正停在跟进段落上。
+   *
+   * @param followupId - `report_followups` 行 ID
+   * @returns 实体 ID
+   */
+  async function trackFollowup(followupId: number): Promise<number> {
+    const entityId = await invoke<number>('report_followup_track', { followupId })
+    const row = detail.value?.followups.find((f) => f.id === followupId)
+    if (row) {
+      row.entityId = entityId
+      row.tracked = true
+    }
+    return entityId
+  }
+
   /** 回到列表（不清锚点，用户翻页后回来还在同一期） */
   function closeReport() {
     detail.value = null
@@ -529,6 +559,7 @@ export const useReportPeriodStore = defineStore('reportPeriod', () => {
     detailLoading,
     openReport,
     closeReport,
+    trackFollowup,
     removeReport,
     focusReport,
     // 生成

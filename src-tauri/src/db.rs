@@ -2483,6 +2483,40 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
     .execute(pool)
     .await?;
 
+    // ─── 周期报告「本期值得跟进」（P4） ─────────────────────────────────────
+    //
+    // 为什么不给 report_periods 加一列存 JSON：
+    //   给已有表加列对存量库有风险（IF NOT EXISTS 不补列，写入/读取/回填三条路一起炸），
+    //   而新表对存量库零风险。且这条数据本身是"多行结构"（一个报告多个候选实体），
+    //   独立成表后"是否已跟踪"可以直接 JOIN entities 算出来，不用在 JSON 里维护状态。
+    //
+    // **为什么必须落表而不是只渲染进 markdown**：
+    //   段落里的「跟踪」按钮要在报告读完之后仍然可用、且能显示"已跟踪"，
+    //   这需要持久化。markdown 是给人读的产物，不是状态存储。
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS report_followups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_id INTEGER NOT NULL,
+            entity_name TEXT NOT NULL,             -- 候选实体名（模型给出，可能不在 entities 表里）
+            reason TEXT NOT NULL DEFAULT '',       -- 为什么值得跟进：写着"变化"，不是"出现了"
+            entity_id INTEGER,                     -- 命中已有实体时回填，便于显示"已跟踪"
+            tracked INTEGER NOT NULL DEFAULT 0,    -- 1 = 用户已点过「跟踪」
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            -- 同一份报告里同一个实体只留一条：模型偶尔会重复列出
+            UNIQUE(report_id, entity_name),
+            FOREIGN KEY (report_id) REFERENCES report_periods(id) ON DELETE CASCADE
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_followups_report ON report_followups(report_id, tracked)",
+    )
+    .execute(pool)
+    .await?;
+
+
     // 全部表结构与索引已在上方按最终形态一次性定义完毕（CREATE ... IF NOT EXISTS）。
     // 设计约定：项目未发布，schema 演进采取"改定义 + 重置开发库"的方式，
     // 不引入运行时补列（ALTER TABLE）等补丁式迁移，保证建表语句即完整真相。
