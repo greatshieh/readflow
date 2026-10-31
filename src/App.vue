@@ -79,6 +79,7 @@ import { useArticlesStore } from '@/stores/articles'
 import { useSettingsStore } from '@/stores/settings'
 import { useUiStore } from '@/stores/ui'
 import { useModalStore } from '@/stores/modal'
+import { useReportPeriodStore } from '@/stores/reportPeriod'
 import { applyAppearance } from '@/utils/appearance'
 import { anyDialogOpen } from '@/utils/dialogStack'
 import { SHORTCUT_KEYS } from '@/utils/shortcuts'
@@ -111,6 +112,12 @@ const uiStore = useUiStore()
 const articlesStore = useArticlesStore()
 /** 全局弹窗 store 实例：快捷键需要判断当前是否有弹窗抢占交互 */
 const modalStore = useModalStore()
+/**
+ * 周期报告 store 实例：`Alt+←` / `Cmd+[` 要读来源上下文判断能否"回到刚才读的报告"
+ *
+ * 只读 `sourceContext`、只调 `backToReport()`——返回成败的判定在弹窗那边，这里不碰。
+ */
+const reportStore = useReportPeriodStore()
 
 /** 设置模态显隐状态，由 `open-settings` 窗口事件置为 true */
 const showSettings = ref(false)
@@ -394,6 +401,64 @@ for (let n = 1; n <= 9; n += 1) {
 }
 
 /**
+ * 是否为「回到刚才读的报告」的组合键
+ *
+ * `Alt+←`（Win/Linux）与 `Cmd+[`（macOS）是同一次"后退"在两个平台上的写法。
+ * 只认这两个，且要求另一个修饰键不同时按下——避免把 `Ctrl+Alt+←`（某些输入法/
+ * 窗口管理器的组合）也吃进来。
+ *
+ * @param e - 键盘事件
+ * @returns 命中时 true
+ */
+function isBackToReportKey(e: KeyboardEvent): boolean {
+  if (e.key === 'ArrowLeft' && e.altKey && !e.metaKey && !e.ctrlKey) return true
+  if (e.key === '[' && e.metaKey && !e.altKey && !e.ctrlKey) return true
+  return false
+}
+
+/**
+ * 事件目标是否为文本输入类元素（输入框 / 文本域 / contenteditable）
+ *
+ * @param target - 键盘事件的目标
+ * @returns 是文本输入目标时 true
+ */
+function isTextEntryTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null
+  const tag = el?.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable === true
+}
+
+/**
+ * 回到刚才读的报告（正文栏「上下文栏」的键盘等价物）
+ *
+ * # 为什么单独判定、不进 `SHORTCUTS` 表
+ * 那张表按 `KeyboardEvent.key` 逐字比较，`Alt+←` 的 `key` 是 `ArrowLeft`。
+ * 一旦进表，主屏任何位置的 `←`（包括输入框里向左移光标）都会被 `preventDefault`
+ * 吞掉——所以必须在下面 `if (e.metaKey || e.ctrlKey || e.altKey) return` **之前**处理。
+ *
+ * # 触发条件（须全部满足）
+ * 1. 主屏在文章视图 —— 其他视图下正文栏本身不渲染，栏不可见；
+ * 2. 有来源上下文且未失效 —— 失效态没有可回的目标；
+ * 3. 焦点不在输入类元素里 —— 与单字母快捷键同一条规矩；
+ * 4. 没有弹窗打开 —— 与鼠标路径等价：栏被弹窗盖住时点不到，"看不见的入口不该响应"。
+ *
+ * @param e - 键盘事件
+ * @returns 命中并已处理时 true（调用方据此提前返回）
+ */
+function handleBackToReport(e: KeyboardEvent): boolean {
+  if (!isBackToReportKey(e)) return false
+  if (uiStore.mainView !== 'articles') return false
+  const ctx = reportStore.sourceContext
+  if (!ctx || ctx.stale) return false
+  if (isTextEntryTarget(e.target)) return false
+  if (anyDialogOpen.value || modalStore.activeModal) return false
+  // 仅对真正接管的组合键阻止默认行为（Alt+← 在部分平台上等同"后退"）
+  e.preventDefault()
+  reportStore.backToReport()
+  return true
+}
+
+/**
  * 全局键盘快捷键处理
  *
  * # 响应条件（须全部满足）
@@ -403,6 +468,8 @@ for (let n = 1; n <= 9; n += 1) {
  * 4. 没有弹窗打开 —— 否则弹窗里按 `m` 会在用户看不见列表的情况下触发"全部已读"。
  *
  * Esc 退出专注模式的判断放在最前，因为它不涉及修饰键冲突，且应当在任何情况下可用。
+ * `Alt+←` / `Cmd+[`（回到刚才读的报告）紧随其后、**在组合键放行之前**判定，
+ * 理由见 {@link handleBackToReport}。
  *
  * # 弹窗判定为何读全局计数
  * `anyDialogOpen`（`utils/dialogStack`）由所有 `BaseModal` 弹窗在开合时登记，计数器
@@ -431,6 +498,9 @@ function handleKeydown(e: KeyboardEvent) {
       return
     }
   }
+  // 回到刚才读的报告（Alt+← / Cmd+[）：必须在下面「组合键直接放行」之前判定，
+  // 否则会先被那条 `return` 放行掉（理由见 handleBackToReport 的注释）
+  if (handleBackToReport(e)) return
   // 组合键直接放行（不拦截、也不阻止默认行为）
   if (e.metaKey || e.ctrlKey || e.altKey) return
 
@@ -441,9 +511,7 @@ function handleKeydown(e: KeyboardEvent) {
   if (e.shiftKey && key !== '?') return
 
   // 输入框 / 文本框内不响应快捷键，避免冲突
-  const target = e.target as HTMLElement | null
-  const tag = target?.tagName
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return
+  if (isTextEntryTarget(e.target)) return
   // 弹窗打开时不响应：避免误触"全部已读"这类不可逆操作
   if (anyDialogOpen.value || modalStore.activeModal) return
 

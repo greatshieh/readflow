@@ -9,11 +9,13 @@
     <!-- 跟随边框：正文区保留这一层，但**不加光斑**——
          正文是实底（--read-bg，见 .content-column），透不出光，光斑只会糊成脏斑。 -->
     <div class="pane-frame" ref="frameRef" aria-hidden="true"></div>
+    <!-- 报告上下文栏：从报告引用跳到文章后出现，回到报告「送达成功」后消失。
+         它必须是 `.content` 的**兄弟**而不是子级：栏的可见条件只有一个（`sourceContext`
+         非空），与是否选中文章无关——文章被清理 / 被筛选掉 / 用户取消选中时，正文栏回到
+         空态，但用户仍然要能回报告。所以未选中文章时这条栏也在。 -->
+    <SourceBar v-if="reportStore.sourceContext" />
     <!-- 正文内容：仅在存在选中文章时渲染 -->
     <div class="content" v-if="selectedArticle" @click="showArticleList = true">
-      <!-- 报告来源条：从报告引用跳过来时才有（否则不占高度）。
-           放在工具条之上：它是"这是从哪来的"的上下文，比操作按钮更靠前。 -->
-      <SourceBar v-if="reportStore.sourceContext" />
       <!-- 顶部固定工具条：对齐 Folo 的 Entry ActionBar（标记已读/未读 · 收藏 · 标签 ·
            目录 · 译文 · 专注 · 导出 · 更多）。
            浮层开合、外点关闭与 Esc 由工具条自持；只有"切译文"与"打开原文"两个会改变
@@ -285,7 +287,7 @@ const articlesStore = useArticlesStore()
 const feedsStore = useFeedsStore()
 const uiStore = useUiStore()
 const settingsStore = useSettingsStore()
-/** 周期报告 store：只读 `sourceContext`，决定正文栏顶部是否显示"回到报告"来源条 */
+/** 周期报告 store：只读 `sourceContext`，决定正文栏顶部是否显示「报告上下文栏」 */
 const reportStore = useReportPeriodStore()
 /** 正文容器引用：高亮标记要直接写进这段 v-html 渲染出的 DOM 里 */
 const contentBodyRef = ref<HTMLElement | null>(null)

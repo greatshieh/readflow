@@ -161,7 +161,7 @@
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { showConfirm } from '@/stores/modal'
-import { useReportPeriodStore, type PeriodSummary, type PeriodSource } from '@/stores/reportPeriod'
+import { useReportPeriodStore, compactPeriodLabel, type PeriodSummary, type PeriodSource } from '@/stores/reportPeriod'
 import { useArticlesStore } from '@/stores/articles'
 import { useUiStore } from '@/stores/ui'
 import { useToastStore } from '@/stores/toast'
@@ -364,16 +364,28 @@ async function onDelete() {
  *
  * 反序会触发 `BaseModal` 的焦点归还 → 焦点落到订阅栏按钮上 → 再选中文章，
  * 键盘用户会看到焦点闪两下。
+ *
+ * 上下文里必须一次写全四样东西（DESIGN §4.4、§5.4）：期号标签（栏的段①）、
+ * AI 标题（段②）、跳去的文章 ID（徽标的显示条件）、**离开时的滚动量**（回退时按它
+ * 恢复位置）。滚动量由阅读页记着——它才是滚动容器 `.rd-doc-wrap` 的宿主。
+ *
+ * @param source - 被点开的引用源
+ * @param meta - 阅读页给出的跳转现场（当前只有离开时的滚动量）
  */
-async function onOpenArticle(source: PeriodSource) {
+async function onOpenArticle(source: PeriodSource, meta: { scrollTop: number }) {
   if (source.articleId === null) {
     toast.show('这篇原文已被清理，只剩报告里的快照')
     return
   }
+  const summary = store.detail?.summary
   store.setSourceContext({
-    reportId: store.detail?.summary.id ?? 0,
-    reportTitle: store.detail?.summary.title ?? '',
+    reportId: summary?.id ?? 0,
+    reportTitle: summary?.title ?? '',
+    reportLabel: summary ? compactPeriodLabel(summary.kind, summary.periodStart) : '',
     refNo: source.refNo,
+    articleId: source.articleId,
+    scrollTop: meta.scrollTop,
+    stale: false,
   })
   uiStore.setMainView('articles')
   await articlesStore.selectArticle(source.articleId)

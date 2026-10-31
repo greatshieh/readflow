@@ -59,7 +59,7 @@
 
     <!-- 阅读区：正文 + 引用源右栏，两列各自独立滚动 -->
     <div v-else class="rd-body">
-      <div class="rd-doc-wrap">
+      <div class="rd-doc-wrap" ref="wrapRef">
         <article ref="docRef" class="rc rd-doc" v-html="html" @click="onDocClick"></article>
 
         <!-- 本期值得跟进：正文 md 里也有一节同名段落（导出到 Obsidian 后仍可读），
@@ -202,7 +202,13 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'back'): void
-  (e: 'open-article', source: PeriodSource): void
+  /**
+   * 请求跳到某条引用的原文
+   *
+   * 第二个参数是"跳转现场"：滚动量只有本组件知道（滚动容器 `.rd-doc-wrap` 在这里），
+   * 上层要把它存进来源上下文，回来时才恢复得回去。
+   */
+  (e: 'open-article', source: PeriodSource, meta: { scrollTop: number }): void
   /** 请求删除这份报告（确认框由上层弹，保证与"覆盖"同一种确认口吻） */
   (e: 'delete'): void
 }>()
@@ -210,6 +216,8 @@ const emit = defineEmits<{
 const store = useReportPeriodStore()
 const toast = useToastStore()
 
+/** 正文滚动容器（引用联动的作用域；回退时按它恢复滚动量） */
+const wrapRef = ref<HTMLElement | null>(null)
 /** 正文容器（引用联动的作用域） */
 const docRef = ref<HTMLElement | null>(null)
 /** 标题（打开后接管焦点） */
@@ -255,7 +263,6 @@ async function onTrack(id: number) {
     trackingId.value = 0
   }
 }
-
 
 /**
  * 是否为生成失败的残留
@@ -383,11 +390,14 @@ function closeIsland() {
 /**
  * 浮岛「打开全文」
  *
+ * 顺带把**当前滚动量**带上去：跳走之后本组件可能被卸载/重渲染，而"我刚才滚到哪"
+ * 只有这里知道。上层把它存进来源上下文，回退时再喂回来。
+ *
  * @param s - 引用源
  */
 function onOpenArticle(s: PeriodSource) {
   closeIsland()
-  emit('open-article', s)
+  emit('open-article', s, { scrollTop: wrapRef.value?.scrollTop ?? 0 })
 }
 
 /**
@@ -426,8 +436,147 @@ watch(
   { immediate: true },
 )
 
+/** 有界重试的 rAF 句柄（等容器真正有布局盒） */
+let restoreRaf: number | null = null
+/** 恢复后接管焦点用的 rAF 句柄（卸载时取消，避免回调里访问已卸载的 DOM） */
+let restoreFocusRaf: number | null = null
+
+/**
+ * 恢复最多尝试几次（同步 1 次 + 两帧重试）
+ *
+ * # 为什么 3 次就够——阈值取小是有机制的，不是"拍脑袋觉得够快"
+ * `getClientRects()` 会**强制同步布局**：只要祖先不是 `display: none`，调用当场就有盒。
+ * 于是"大报告渲染卡顿 50ms"表现为**这一帧算得久**，而不会表现为"连续多帧都拿不到布局盒"。
+ * 真正能返回空列表的只有两类情形：
+ * 1. 元素在 `display: none` 的子树里（上游 `ResearchModal` 已把页签切到 `reports` 提到
+ *    所有 await 之前，正常路径第一次同步尝试就过）；
+ * 2. 元素还没进文档（`wrapRef === null`，例如阅读页刚挂载）。
+ * 两类都会在 2 帧内必然分出结果（要么可见、要么这份报告根本不会渲染——失败态没有
+ * `.rd-doc-wrap`、或组件已被卸载）。所以 3 次足够。
+ *
+ * ⚠ **不要因为"看起来阈值太小"把它调大**：调大只会延长快照滞留窗口，并不会让恢复更可靠。
+ */
+const RESTORE_MAX_FRAMES = 3
+
+/** 一次位置恢复的快照（与 `store.pendingRestore` 同构） */
+type RestoreSnapshot = { refNo: number | null; scrollTop: number }
+
+/**
+ * 判断元素是否完整落在某个滚动容器的可视区内
+ *
+ * @param el - 待判断的目标元素
+ * @param container - 滚动容器
+ * @returns 完整可见时 true（部分露出也算 false）
+ */
+function isFullyVisible(el: HTMLElement, container: HTMLElement): boolean {
+  const r = el.getBoundingClientRect()
+  const c = container.getBoundingClientRect()
+  return r.top >= c.top && r.bottom <= c.bottom
+}
+
+/**
+ * 把快照应用到当前 DOM：滚动量 → 引用高亮 →（必要时）居中 → 下一帧接管焦点
+ *
+ * 调用前提：`wrap` 已有布局盒（`display: none` 时 `scrollTop` 是空操作、
+ * `getBoundingClientRect` 全是 0，本函数会静默做错事，所以由调用方把关）。
+ *
+ * # 为什么"居中"是有条件的
+ * 只有那条引用**不在视野内**时才居中。内容没变过时它本来就在视野里，此时强行居中会把
+ * 刚恢复的滚动量改掉——而"清 `ctx` 之后位置仍然对得上"正是这次改动的回归判据
+ * （DESIGN §5.5 第 8 条）。
+ *
+ * # 焦点为什么再晚一帧
+ * `BaseModal` 在 `props.open` 变真后的 `nextTick` 里执行 `moveFocusIn`，其微任务排在
+ * 恢复之后，会把焦点抢走；晚一帧（rAF，在所有微任务之后）才落得下。
+ *
+ * @param snapshot - 待恢复的快照
+ * @param wrap - 正文滚动容器（`.rd-doc-wrap`）
+ */
+function applyRestore(snapshot: RestoreSnapshot, wrap: HTMLElement): void {
+  wrap.scrollTop = snapshot.scrollTop
+  const n = snapshot.refNo
+  if (n === null) return
+  // `[data-ref]` 由 `utils/refMarker` 生成，是可聚焦的 `<button>`，
+  // 天然能 `.focus()`，不需要补 `tabindex`
+  const target = docRef.value?.querySelector<HTMLElement>(`[data-ref="${n}"]`) ?? null
+  if (!target) return
+  flash(n)
+  if (!isFullyVisible(target, wrap)) target.scrollIntoView({ block: 'center' })
+  if (restoreFocusRaf !== null) cancelAnimationFrame(restoreFocusRaf)
+  restoreFocusRaf = requestAnimationFrame(() => {
+    restoreFocusRaf = null
+    target.focus()
+  })
+}
+
+/**
+ * 回退时恢复"离开现场"：滚动位置 → 原引用高亮 → 焦点落到那个 `[n]`
+ *
+ * # 为什么只读 `pendingRestore`、绝不读 `sourceContext`
+ * 清除 `ctx` 发生在"送达之后"，位置恢复也在"送达之后"，两者天然有先后竞争。
+ * 若这里从 `ctx` 取滚动量，`ctx` 先被清就拿到 null，表现为**"回来了但位置丢了"**——
+ * 比原问题（回不去）更难查。`ctx` 只管栏的显隐与文案，位置只认这份快照。
+ *
+ * # 为什么先等"容器有布局盒"，而不是直接写 `scrollTop`
+ * 页签是 `v-show` 常驻的：只要 `tab` 还是 `timeline`，整棵子树就是 `display: none`。
+ * 在 `display: none` 里写 `scrollTop` 会被钳成 0（空操作），而
+ * `getBoundingClientRect()` 两边都是 0 会让 `isFullyVisible` 恒判"可见"从而不补滚——
+ * 于是"恢复"看起来执行了，实际什么都没做，随后快照还被消费掉：**永久静默失效**。
+ * 所以用 `getClientRects().length > 0` 作为"真的有布局盒"的判据
+ * （不用 `offsetParent`：它对 `position: fixed` 元素会是 null，判据不干净）。
+ *
+ * 上游 `ResearchModal` 已经把 `tab = 'reports'` 提到所有 `await` 之前，正常路径在
+ * 第一次尝试时页签就可见；这里的重试是**双保险**，兜住任何"以 display:none 挂载"的场景。
+ *
+ * # 命中不到 `[data-ref]` 时
+ * 静默只恢复滚动，不 flash、不报错：报告可能已被覆盖重生成，编号对不上了，
+ * 这不是错误，只是"那条引用没了"。
+ *
+ * # 为什么带 `immediate`
+ * 本组件可能整个被卸载过（`detail` 被清空、或将来弹窗改成 `v-if`），重新挂载时
+ * 要能把还挂着的快照捡起来——否则"降级重放 + 位置恢复"那条路会静默失效。
+ */
+watch(
+  () => store.pendingRestore,
+  snapshot => {
+    if (!snapshot) return
+    // 上一轮重试若还没跑完，先取消：否则它会在下一帧把**旧快照**应用上去
+    if (restoreRaf !== null) cancelAnimationFrame(restoreRaf)
+    let frames = 0
+    /**
+     * 试一次；没有布局盒就排到下一帧再试（有界）
+     *
+     * @returns 无返回值；成功或放弃时都会 `consumeRestore()`
+     */
+    const attempt = (): void => {
+      restoreRaf = null
+      const wrap = wrapRef.value
+      if (wrap && wrap.getClientRects().length > 0) {
+        applyRestore(snapshot, wrap)
+        store.consumeRestore()
+        return
+      }
+      frames += 1
+      if (frames >= RESTORE_MAX_FRAMES) {
+        // 放弃前留痕：用户的阅读位置在这里被吞掉，线上出问题时总得有线索可查
+        console.warn('[report] 位置恢复放弃：容器始终无布局盒', { refNo: snapshot.refNo })
+        // 放弃，但**必须消费**：留着会在下次打开任意报告时被误用
+        // （报告被滚到别人的位置、还闪了一个不属于它的编号）
+        store.consumeRestore()
+        return
+      }
+      restoreRaf = requestAnimationFrame(attempt)
+    }
+    // 先同步试一次：容器若已就绪，不必白等一帧（否则用户能看到"先停在顶部再跳下去"）
+    attempt()
+  },
+  { immediate: true },
+)
+
 onBeforeUnmount(() => {
   if (flashTimer) clearTimeout(flashTimer)
+  if (restoreRaf !== null) cancelAnimationFrame(restoreRaf)
+  if (restoreFocusRaf !== null) cancelAnimationFrame(restoreFocusRaf)
 })
 </script>
 

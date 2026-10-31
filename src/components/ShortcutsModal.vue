@@ -18,9 +18,12 @@
     </div>
 
     <div class="sc-foot">
-      <!-- Esc 不在 SHORTCUTS 表内：它必须在「弹窗已打开 / 焦点在输入框」这些守卫之前
-           判定，走不了统一查表，故单独实现、只在此处以文字补明 -->
+      <!-- Esc 与 Alt+← 都不在 SHORTCUTS 表内：前者必须在「弹窗已打开 / 焦点在输入框」
+           这些守卫之前判定，后者是组合键（表按 KeyboardEvent.key 逐字比较，
+           一旦进表，输入框里向左移光标会被 preventDefault 吞掉）。
+           两者都走不了统一查表，故只在此处以文字补明 -->
       <span><kbd class="sc-kbd">esc</kbd> 退出专注阅读模式</span>
+      <span><kbd class="sc-kbd">Alt + ←</kbd> 回到刚才读的报告（macOS：Cmd + [）</span>
       <span class="sc-note">列表未获焦点、输入框内输入时，快捷键一律不响应</span>
     </div>
   </BaseModal>

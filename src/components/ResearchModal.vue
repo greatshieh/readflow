@@ -98,7 +98,7 @@ import ReportSegmentBar from './report/ReportSegmentBar.vue'
 import { useResearchStore } from '@/stores/research'
 import { useEntitiesStore } from '@/stores/entities'
 import { useUiStore } from '@/stores/ui'
-import { useReportPeriodStore } from '@/stores/reportPeriod'
+import { useReportPeriodStore, FocusReportError } from '@/stores/reportPeriod'
 import { useThesesStore } from '@/stores/theses'
 import { useArticlesStore } from '@/stores/articles'
 import { useToastStore } from '@/stores/toast'
@@ -141,19 +141,62 @@ watch(
   () => props.open,
   async val => {
     if (!val) return
-    // 论点页签的小红点依赖 stats，打开时先拉一次列表
-    if (thesesStore.list.length === 0) void thesesStore.loadList()
-    if (entitiesStore.entities.length === 0) {
-      await entitiesStore.loadEntities()
-    }
+    // ── ① 这两步不依赖任何 IPC，必须排在所有 await 之前 ────────────────
+    // `consumePendingOpen()` + `tab = 'reports'` 一旦排到下面 `loadEntities()` 之后，
+    // 就会晚一个真 IPC（宏任务量级）。而同一次 pre-flush 里，子组件
+    // `PeriodReportReader` 的恢复 watch 已经在等 DOM 了——它这时读到的报告页签仍是
+    // `v-show=false`（`display: none`）：
+    //   · `.rd-doc-wrap` 没有布局盒 → `scrollTop = N` 被钳成 0（空操作）；
+    //   · 两个 rect 全 0 → "是否在视野内"恒为真 → 也不会补滚。
+    // 结果就是"报告回来了，但停在顶部、焦点没落 `[n]`"，且快照已被消费，无从补救。
+    // 触发条件是 `entitiesStore.entities.length === 0`（实体库为空的用户 / 列表加载
+    // 失败过的用户）——少数人 100% 复现，正是最难查的那类。
+    // 排到 await 之前，页签就在**当前这次 flush 内**变成可见，恢复动作随后一定能拿到
+    // 有布局的 DOM（推理见 `PeriodReportReader` 的恢复 watch 注释）。
     const pending = reportStore.consumePendingOpen()
     if (pending !== null) {
       tab.value = 'reports'
       reportStore.setSegment('period')
+    }
+
+    if (entitiesStore.entities.length === 0) {
+      await entitiesStore.loadEntities()
+    }
+    // 论点页签的小红点依赖 stats，而 stats 来自列表 → 打开时先拉一次，
+    // 否则用户看不到"有反证要处理"这个信号（列表页签他自己会再拉，成本很小）
+    if (thesesStore.list.length === 0) void thesesStore.loadList()
+
+    // ── ② 真正打开报告：这里才需要列表与实体就绪 ──────────────────────
+    if (pending !== null) {
       try {
         await reportStore.focusReport(pending)
+        // ── 送达即回收（本次改动的唯一清除落点）──
+        // `pendingOpenId` 全仓库只有 `backToReport()` 一个生产者，"消费了待打开意图
+        // 并成功打开"与"一次返回被送达"是一对一的。清除放在这里而不是
+        // `backToReport`（同步、不知道成败）或 `focusReport`（不该知道"返回"这个概念），
+        // 才既不会"先清再试"，也不会误伤将来别的调用者。
+        // `reportId === pending` 是防御：哪天多一个 `requestOpen` 的生产者，
+        // 这道判断保证它不会顺手清掉别人的上下文。
+        if (reportStore.sourceContext?.reportId === pending) {
+          reportStore.clearSourceContext()
+        }
       } catch (e) {
-        // 报告已被删除或覆盖：不跳空白页，退到列表并说明
+        // 位置快照必须就地消费：这条路径上阅读页没被打开（或已被 `closeReport`
+        // 卸载），没有人会去消费它。留在 store 里会被下一次打开**任意**报告的
+        // `immediate` 恢复命中 → 用户看到"打开报告 9 却被滚到 480、还闪了第 12 条"。
+        reportStore.consumeRestore()
+        // 两类失败必须分开处理，不能一律判死：
+        // · 报告**真的**不存在（被删 / 被覆盖重生成）→ 转终态失效，栏留在原地；
+        // · 列表加载失败等临时故障 → **不标 stale**，`ctx` 保留，用户还能再点一次重试。
+        //   `stale` 是终态、只有 ✕ 能收，把"网络抖了"标成终态等于把病根换个形式重演。
+        if (isReportMissing(e)) {
+          // 关键：**不清 `ctx`**，只把它切成失效态——栏留在原地（disabled + ✕），
+          // 用户至少还有一个"这条入口"可点、可关；清掉就等于"失败即失联"，
+          // 正是本次要消掉的病（DESIGN §4.4 规则 #4）。三者并存：
+          // 退回列表 + toast 说明原因 + 栏转失效态。
+          reportStore.markSourceStale('这份报告已不存在')
+        }
+        // 退回列表：两种失败下都让用户能自己重选一份（报告不在时尤其必要）
         reportStore.closeReport()
         toast.show(e instanceof Error ? e.message : '该报告已不存在')
       }
@@ -163,6 +206,20 @@ watch(
   // 不带 immediate 的 watch 不会为"挂载时已成立的状态"补一次，待打开的意图会丢掉
   { immediate: true },
 )
+
+/**
+ * 这次失败是不是"报告真的没了"
+ *
+ * 优先读错误类型上的 `kind`（`FocusReportError` 由 `focusReport` 抛出）——
+ * 文案会变、类别不会。字符串比对只作兜底：将来若有别处抛同样的旧文案，行为不变。
+ *
+ * @param e - `focusReport` 抛出的异常
+ * @returns 报告已不存在时 true；列表加载失败等临时故障返回 false
+ */
+function isReportMissing(e: unknown): boolean {
+  if (e instanceof FocusReportError) return e.kind === 'missing'
+  return e instanceof Error && e.message === '该报告已不存在'
+}
 
 /**
  * 关闭弹窗

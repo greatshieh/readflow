@@ -8,12 +8,17 @@
  *   否则会与内容区争同一个滚动容器），而内容由页签组件渲染，两者要共享同一份真源；
  * - 当前浏览器周期（粒度 / 口径 / 锚点日期）与列表、阅读中的报告；
  * - 生成流程（进度、取消、失败原因）；
- * - **来源上下文 `B1`**（从报告点进文章后，正文栏顶部那条返回条的依据）。
+ * - **来源上下文 `B1`**（从报告点进文章后，正文栏顶部那条「上下文栏」的依据）。
  *
  * # 为什么 `B1` 必须放 Store
  * 弹窗内部状态能保留，靠的是"`BaseModal` 无 `v-if` + 三个页签 `v-show` 常驻"这个
  * **隐式契约**。哪天有人为性能给弹窗加 `v-if`，返回会静默失效且不报错。
  * `B1` 显式存 store，弹窗被销毁重建也能恢复；组件在跳走时就已卸载，放组件里必丢。
+ *
+ * # `B1` 的生命周期（本次改动的核心）
+ * 从"用后即弃"改成"**送达即回收**"：返回动作先派发，`ctx` 的清除只发生在
+ * 打开成功之后；失败不清、转 `stale` 失效态留在栏上。详见
+ * `// ─── 来源上下文 B1 ───` 一节的注释与 `deliverables/design/report-backtrack/DESIGN.md` §4.4。
  *
  * # 边界
  * 这里只包 `invoke` 与状态编排，不写业务规则：窗口计算在 `utils/periodWindow.ts`，
@@ -83,14 +88,94 @@ export interface PeriodDetail {
   followups: PeriodFollowup[]
 }
 
-/** 来源上下文：从某份报告的第 n 条引用跳到文章后，正文栏据此显示返回条 */
+/**
+ * 来源上下文：从某份报告的第 n 条引用跳到文章后，正文栏据此显示「上下文栏」
+ *
+ * 它只负责**栏的显隐与文案**；阅读位置的恢复另走 `pendingRestore`（见该变量注释）。
+ */
 interface SourceContext {
   /** 来源报告 ID */
   reportId: number
-  /** 来源报告的展示名（如「10月30日 · 日报」） */
+  /**
+   * 来源报告的 AI 标题**全文**（模型生成的一句话标题，最长 60 字）
+   *
+   * 原样照搬、不做预处理：前端截成 30 字会让 `title` 属性也变短，用户再也看不到全名。
+   * 截断由 CSS（ellipsis）负责，`title` 属性里始终是全文（DESIGN §5.4）。
+   */
   reportTitle: string
-  /** 刚才点的那条引用编号；直接跳文章时为 null */
+  /**
+   * 期号标签（如「10月30日 日报」），写入上下文时算好
+   *
+   * 栏里不再引 `utils/periodWindow`：期号是"回到哪一份"的坐标，必须在栏渲染时零计算。
+   */
+  reportLabel: string
+  /** 刚才点的那条引用编号；不是从引用跳过去时为 null */
   refNo: number | null
+  /** 从报告跳到的那个文章 ID：当前文章换了就隐去「引用 n」徽标（徽标只对那一篇有意义） */
+  articleId: number
+  /** 离开报告时 `.rd-doc-wrap` 的滚动量，回退时按它恢复位置 */
+  scrollTop: number
+  /**
+   * 目标报告已不存在（被删除 / 被覆盖重生成）
+   *
+   * `stale` 是**终态**：栏留在原地转失效态，用户点 ✕ 收掉它，不提供"重试"
+   * （重试路径交给「研究工作台 → 报告」，那里能看到最新列表）。
+   */
+  stale: boolean
+}
+
+/**
+ * 上下文栏用的紧凑期号标签
+ *
+ * # 为什么不复用 `periodLabel`
+ * 后者输出「2026年10月30日 周五」（11 个字）。上下文栏只有 36px 高，还要同时放
+ * AI 标题，期号多占的每个字都是从标题里抢来的（DESIGN §5.4）。
+ *
+ * @param kind - 周期粒度（`PeriodSummary.kind` 原样传入，后端是字符串）
+ * @param periodStart - 该期起点（ISO 字符串；按**本地时区**取日期，不做 UTC 换算）
+ * @returns 日报「10月30日 日报」/ 周报「10.26 – 11.01 周报」/ 月报「2026年10月 月报」；
+ *          日期无法解析时退化为粒度名（如「日报」），栏里至少还有一段可读文字
+ */
+export function compactPeriodLabel(kind: string, periodStart: string): string {
+  const start = new Date(periodStart)
+  if (Number.isNaN(start.getTime())) return periodKindLabel(kind as PeriodKind)
+  const p2 = (n: number) => String(n).padStart(2, '0')
+  if (kind === 'weekly') {
+    // 窗口左闭右开：本期最后一天 = 起点 + 6
+    const last = new Date(start.getTime())
+    last.setDate(last.getDate() + 6)
+    return `${start.getMonth() + 1}.${p2(start.getDate())} – ${last.getMonth() + 1}.${p2(last.getDate())} 周报`
+  }
+  if (kind === 'monthly') {
+    return `${start.getFullYear()}年${start.getMonth() + 1}月 月报`
+  }
+  return `${start.getMonth() + 1}月${start.getDate()}日 日报`
+}
+
+/** `focusReport` 失败的两种类别 */
+type FocusReportFailure = 'missing' | 'list'
+
+/**
+ * `focusReport` 抛出的错误（带可判定的类别）
+ *
+ * # 为什么要有类型，而不是让调用方比字符串
+ * 调用方（`ResearchModal`）要按失败类别分流：报告**真的**不存在才允许把来源上下文
+ * 转成终态 `stale`；列表加载失败这类临时故障绝不能标死（标死等于"失败即失联"，
+ * 正是本次改造要消掉的病）。文案会改、类别不会，所以用 `kind` 而不是 `message` 判定。
+ */
+export class FocusReportError extends Error {
+  /** 失败类别：`missing` = 报告已不存在；`list` = 列表加载失败（临时故障） */
+  readonly kind: FocusReportFailure
+
+  /**
+   * @param kind - 失败类别
+   * @param message - 面向用户的文案（会被直接 toast 出来）
+   */
+  constructor(kind: FocusReportFailure, message: string) {
+    super(message)
+    this.name = 'FocusReportError'
+    this.kind = kind
+  }
 }
 
 /** 生成阶段（与后端 `report:progress` 的 stage 取值对应） */
@@ -296,6 +381,12 @@ export const useReportPeriodStore = defineStore('reportPeriod', () => {
    * @param id - 报告 ID
    */
   async function openReport(id: number): Promise<void> {
+    // 打开的是**另一份**报告 → 用户已经主动换了在读的东西，"回到上一份"不再有意义，
+    // 上下文随栏一起作废（清除规则 #3）。返回自身时 `id === ctx.reportId`，
+    // 这条守卫不成立，不会把"正在返回的那一份"误清掉。
+    if (sourceContext.value && sourceContext.value.reportId !== id) {
+      clearSourceContext()
+    }
     detailLoading.value = true
     try {
       detail.value = await invoke<PeriodDetail>('report_period_get', { id })
@@ -310,6 +401,11 @@ export const useReportPeriodStore = defineStore('reportPeriod', () => {
     } finally {
       detailLoading.value = false
     }
+  }
+
+  /** 回到列表（不清锚点，用户翻页后回来还在同一期） */
+  function closeReport() {
+    detail.value = null
   }
 
   /**
@@ -331,13 +427,11 @@ export const useReportPeriodStore = defineStore('reportPeriod', () => {
     return entityId
   }
 
-  /** 回到列表（不清锚点，用户翻页后回来还在同一期） */
-  function closeReport() {
-    detail.value = null
-  }
-
   /**
    * 删除一份报告
+   *
+   * 若删掉的正是上下文指向的那份：**不清 `ctx`**，只置 `stale`——栏留在原地转失效态，
+   * 用户手上还按着文章，直接抽走入口等于让他在原地失联（清除规则 #5）。
    *
    * @param id - 报告 ID
    */
@@ -345,6 +439,7 @@ export const useReportPeriodStore = defineStore('reportPeriod', () => {
     await invoke('report_period_delete', { id })
     list.value = list.value.filter((r) => r.id !== id)
     if (detail.value?.summary.id === id) detail.value = null
+    if (sourceContext.value?.reportId === id) markSourceStale('这份报告已被删除')
   }
 
   // ─── 生成 ──────────────────────────────────────────────────────────────────
@@ -456,28 +551,74 @@ export const useReportPeriodStore = defineStore('reportPeriod', () => {
   }
 
   // ─── 来源上下文 B1 ─────────────────────────────────────────────────────────
+  //
+  // # 生命周期：先回退，送达成功才回收（DESIGN §4.4）
+  //
+  // 旧实现是「先清再试」：`SourceBar.goBack()` 先 `clearSourceContext()` 再
+  // `requestOpen()`，一次失败就永久失去入口（票在上车之前就被收走了）。
+  // 现在顺序反过来——`backToReport()` 只写 `pendingRestore` 并派发打开意图，
+  // **它自己绝不清 `ctx`**；清理发生在 `ResearchModal` 里
+  // `await focusReport()` 之后的成功分支，语义是"送达即回收"。
+  //
+  // # `clearSourceContext()` 只有三个调用点（其余地方一律不许清）
+  // 1. 用户点栏上的 ✕ —— 语义是"我不再需要这条路"；
+  // 2. 用户打开了另一份报告（`openReport` 内 `id !== ctx.reportId`）；
+  // 3. 返回送达成功（`ResearchModal` 里 `focusReport` 之后）。
+  // 失败路径**不清**，只转 `stale`；关弹窗、切文章、切视图、切分段也都不动。
 
-  /** 当前来源上下文（null = 正文栏不显示返回条） */
+  /** 当前来源上下文（null = 正文栏不显示上下文栏） */
   const sourceContext = ref<SourceContext | null>(null)
-  /** 待打开的周期报告 ID（来源条点了返回、但弹窗已关闭时用） */
+  /** 待打开的周期报告 ID（上下文栏点了返回、但弹窗已关闭时用） */
   const pendingOpenId = ref<number | null>(null)
+
+  /**
+   * 待恢复的阅读位置（`backToReport()` 写入，阅读页恢复完位置后清空）
+   *
+   * # 为什么位置恢复的唯一数据源是它，而不是 `sourceContext`
+   * 清除 `ctx` 发生在"送达之后"，位置恢复也发生在"送达之后"，两者有先后竞争：
+   * 若恢复逻辑从 `ctx` 取 `scrollTop`，`ctx` 先被清就拿到 null，表现为
+   * **"回来了但位置丢了"**——比原问题（回不去）更难查。
+   * 所以职责切干净：`ctx` 只管栏的显隐与文案，位置只走这里。
+   */
+  const pendingRestore = ref<{ refNo: number | null; scrollTop: number } | null>(null)
 
   /**
    * 记录来源（点「打开全文」时先写，后面任何一步失败至少还回得去）
    *
-   * @param ctx - 来源上下文
+   * @param ctx - 来源上下文（含期号标签、跳去的文章、离开报告的滚动量）
    */
   function setSourceContext(ctx: SourceContext) {
     sourceContext.value = ctx
   }
 
-  /** 清空来源上下文（点 ✕ 或返回成功后） */
+  /**
+   * 清空来源上下文（栏随之消失）
+   *
+   * 调用点只有三处（见本节顶部注释）：用户点 ✕、打开另一份报告、返回送达成功。
+   * 幂等：置 null 而已，重复调用无副作用——真正要防的不是重复清，而是**提前清**。
+   */
   function clearSourceContext() {
     sourceContext.value = null
   }
 
   /**
-   * 请求打开某份报告（来源条返回时用）
+   * 把当前来源上下文标记为失效（目标报告已不存在）
+   *
+   * 就地改 `stale`、**不清空对象**：栏要留在原地变成失效态。若这里清掉 `ctx`，
+   * 用户既没有退回目标、也没有栏可点，就退化成"失败即失联"，正是本次要消掉的病。
+   *
+   * @param reason - 失效原因。界面文案固定为「这份报告已不存在」（DESIGN §4.4 明确
+   *                 不提供第二种话术、不提供"重试"），原因只落控制台供排查
+   */
+  function markSourceStale(reason = '') {
+    const ctx = sourceContext.value
+    if (!ctx) return
+    ctx.stale = true
+    if (reason) console.warn(`[reportPeriod] 来源上下文失效：${reason}`)
+  }
+
+  /**
+   * 请求打开某份报告（上下文栏返回时用）
    *
    * 弹窗可能是关着的，这里只登记意图并派发与「研究工作台」同一个 window 事件，
    * 由 `FeedPanel` 负责把弹窗打开、`ResearchModal` 负责切到报告页签并读这份。
@@ -498,16 +639,69 @@ export const useReportPeriodStore = defineStore('reportPeriod', () => {
   }
 
   /**
+   * 回到来源报告（栏的主按钮、引用徽标、`Alt+←` / `Cmd+[` 共用的唯一入口）
+   *
+   * 只做两件事：把"离开时的位置"记进 `pendingRestore`、派发打开意图。
+   * **函数体内绝不 `clearSourceContext()`**——它是同步函数，`requestOpen` 只是派发
+   * 事件，此刻根本不知道转场成败；在这里清就等于回到"先清再试"的老路。
+   *
+   * @returns 无返回值；`ctx` 为空或已失效时无操作（失效态没有可回的目标）
+   */
+  function backToReport() {
+    const ctx = sourceContext.value
+    if (!ctx || ctx.stale) return
+    pendingRestore.value = { refNo: ctx.refNo, scrollTop: ctx.scrollTop }
+    requestOpen(ctx.reportId)
+  }
+
+  /**
+   * 消费一次待恢复位置（读后立即清空，避免下一次打开报告时被重复应用）
+   *
+   * @returns `{ refNo, scrollTop }`；没有待恢复内容时为 null
+   */
+  function consumeRestore(): { refNo: number | null; scrollTop: number } | null {
+    const snapshot = pendingRestore.value
+    pendingRestore.value = null
+    return snapshot
+  }
+
+  /**
    * 打开报告页签并定位到指定报告（供外壳在弹窗打开后调用）
    *
+   * # 回退 vs 重放
+   * 弹窗里**已经是这份报告**时直接短路：只把浏览周期对齐，然后返回。
+   * 不 `loadList()`、不 `openReport()`（即不重发 `report_period_get`）——
+   * "回退"是回到我刚才停的地方，"重放"是重新拉一遍，后者既慢又会让位置与
+   * 会话感丢失（DESIGN §4.3 第 2 步）。
+   *
+   * # 两种失败必须可区分
+   * 「列表没拉成功」和「列表里没有这一份」是完全不同的两件事：前者是临时故障，
+   * 用户再点一次就好；后者才是终态。调用方据此决定要不要把来源上下文标成 `stale`
+   * （终态只有 ✕ 能收），所以这里抛带 `kind` 的 {@link FocusReportError}。
+   *
    * @param id - 报告 ID
+   * @throws {FocusReportError} `kind === 'list'` 表示列表加载失败（可重试）；
+   *         `kind === 'missing'` 表示列表正常但没有这一份（降级重放也救不回来）
    */
   async function focusReport(id: number): Promise<void> {
+    const open = detail.value
+    if (open && open.summary.id === id) {
+      // 短路分支必须在 loadList 之前返回：走重放会白跑一次列表查询与一次报告拉取
+      kind.value = (open.summary.kind as PeriodKind) ?? kind.value
+      windowMode.value = (open.summary.windowMode as WindowMode) ?? 'natural'
+      anchor.value = new Date(open.summary.periodStart)
+      return
+    }
     await loadList()
+    // `loadList` 把失败写进 `listError` 且不抛（见其注释），所以这里要显式判一次：
+    // 不判就会把"列表没拉到"误判成"报告不存在"，那是一个不可撤销的错误结论
+    if (listError.value) {
+      throw new FocusReportError('list', '报告列表加载失败，请稍后重试')
+    }
     const target = list.value.find((r) => r.id === id)
     if (!target) {
       // 报告已被删除或覆盖：不跳空白页，退到列表并提示
-      throw new Error('该报告已不存在')
+      throw new FocusReportError('missing', '该报告已不存在')
     }
     // 让浏览周期跟上这份报告的窗口，否则返回后"当前期"与正在读的那期不一致
     kind.value = (target.kind as PeriodKind) ?? kind.value
@@ -559,9 +753,9 @@ export const useReportPeriodStore = defineStore('reportPeriod', () => {
     detailLoading,
     openReport,
     closeReport,
-    trackFollowup,
     removeReport,
     focusReport,
+    trackFollowup,
     // 生成
     generating,
     stage,
@@ -576,6 +770,10 @@ export const useReportPeriodStore = defineStore('reportPeriod', () => {
     sourceContext,
     setSourceContext,
     clearSourceContext,
+    markSourceStale,
+    backToReport,
+    pendingRestore,
+    consumeRestore,
     requestOpen,
     consumePendingOpen,
     refresh,
