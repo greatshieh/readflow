@@ -728,7 +728,8 @@ export const useArticlesStore = defineStore('articles', () => {
    * @param color - 高亮颜色（默认 yellow）
    * @param startOffset - 文本起点偏移
    * @param endOffset - 文本终点偏移
-   * @returns 无返回值；成功时把高亮追加进 `highlights`
+   * @returns 新高亮 ID；失败返回 null（高亮失败不该阻断调用方，
+   *          例如「挂到论点」在主流程上还要继续，故不抛错）
    */
   async function createHighlight(
     articleId: number,
@@ -737,7 +738,7 @@ export const useArticlesStore = defineStore('articles', () => {
     color: string = 'yellow',
     startOffset: number = 0,
     endOffset: number = 0
-  ): Promise<void> {
+  ): Promise<number | null> {
     try {
       const { invoke } = await import('@tauri-apps/api/core')
       const id = await invoke<number>('highlights_create', {
@@ -759,8 +760,10 @@ export const useArticlesStore = defineStore('articles', () => {
         end_offset: endOffset,
         created_at: new Date().toISOString()
       })
+      return id
     } catch (e) {
       console.error('创建高亮失败:', e)
+      return null
     }
   }
 

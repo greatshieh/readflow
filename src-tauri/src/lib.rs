@@ -464,6 +464,15 @@ pub fn run() {
             report_followup_track,
             report_export_prepare,
             report_export_write,
+            // 论点台账命令（判断 / 证据 / 变更留痕）
+            thesis_list,
+            thesis_get,
+            thesis_create,
+            thesis_update,
+            thesis_delete,
+            thesis_add_evidence,
+            thesis_remove_evidence,
+            thesis_evidence_of,
             // 行情/财务数据层（金融升级 Phase 1）
             market_link_symbol,
             market_get_state,
@@ -2946,6 +2955,76 @@ async fn entity_sentiment(entity_id: i64) -> Result<Option<EventSentiment>, Stri
 async fn entity_articles(entity_id: i64) -> Result<Vec<db::ArticlePreview>, String> {
     let pool = db_pool().await.map_err(|e| e.to_string())?;
     db::ResearchEvent::list_articles_by_entity(&pool, entity_id, 50).await
+}
+
+// ─── 论点台账命令（8）──────────────────────────────────────────────────────────
+//
+// 这一层是"用户自己的判断"。与其它研究命令的区别：它们全在**生产**数据，
+// 而这里第一次让用户**写下**判断，并把系统产出（事件/高亮/文章）挂上去。
+
+/// 列出论点
+///
+/// # 参数
+/// * `status` - 状态筛选：active / confirmed / refuted / archived / all；None 表示不筛选（归档仍隐藏）
+/// * `entity_id` - 按标的实体筛选
+#[tauri::command]
+async fn thesis_list(
+    status: Option<String>,
+    entity_id: Option<i64>,
+) -> Result<Vec<research::thesis::Thesis>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::thesis::list(&pool, status.as_deref(), entity_id).await
+}
+
+/// 取论点完整详情（本体 + 证据 + 变更记录）
+#[tauri::command]
+async fn thesis_get(id: i64) -> Result<research::thesis::ThesisDetail, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::thesis::get_detail(&pool, id).await
+}
+
+/// 新建论点，返回新行 ID
+#[tauri::command]
+async fn thesis_create(input: research::thesis::NewThesis) -> Result<i64, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::thesis::create(&pool, input).await
+}
+
+/// 更新论点（只对真正变化的字段留痕）
+#[tauri::command]
+async fn thesis_update(id: i64, patch: research::thesis::ThesisPatch) -> Result<(), String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::thesis::update(&pool, id, patch).await
+}
+
+/// 删除论点（连同证据与变更记录）
+#[tauri::command]
+async fn thesis_delete(id: i64) -> Result<(), String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::thesis::delete(&pool, id).await
+}
+
+/// 挂一条证据到论点，返回证据行 ID
+#[tauri::command]
+async fn thesis_add_evidence(input: research::thesis::NewEvidence) -> Result<i64, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::thesis::add_evidence(&pool, input).await
+}
+
+/// 移除一条证据
+#[tauri::command]
+async fn thesis_remove_evidence(evidence_id: i64) -> Result<(), String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::thesis::remove_evidence(&pool, evidence_id).await
+}
+
+/// 反查某条来源被挂到了哪些论点（阅读时判断"这条我评过没有"）
+///
+/// 返回 `[thesis_id, stance]` 二元组列表。
+#[tauri::command]
+async fn thesis_evidence_of(kind: String, ref_id: i64) -> Result<Vec<(i64, String)>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::thesis::evidence_theses_of(&pool, &kind, ref_id).await
 }
 
 /// 为单个实体重抽历史事件：对库内文本命中该实体的文章逐篇补抽 AI 事件

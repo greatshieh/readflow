@@ -124,13 +124,62 @@
       </div>
     </div>
 
-    <!-- 高亮调色板：选中正文文字后浮出（外观与"保住选区"的交互见 HighlightPalette.vue） -->
+    <!-- 高亮调色板：选中正文文字后浮出（外观与"保住选区"的交互见 HighlightPalette.vue）。
+         extra 插槽是「挂到论点」入口——论点必须能在读到它的那一刻记下，
+         让人先离开文章再去别处挂，人就会放弃（设计文档 §4.2 的第一落点）。 -->
     <HighlightPalette
       v-if="selectedArticle && showHighlightPalette"
       :colors="HIGHLIGHT_COLORS"
       @pick="createHighlight"
       @cancel="cancelHighlight"
-    />
+    >
+      <template #extra>
+        <button class="palette-thesis" type="button" @click.stop="openThesisPicker">
+          挂到论点
+        </button>
+      </template>
+    </HighlightPalette>
+
+    <!-- 挂到论点的二级面板：选论点 + 标立场。
+         单独一层而不是塞进调色板：调色板一行放不下 6 个论点 + 3 个立场，
+         挤进去会把"高亮四色"这个主功能推到看不见。 -->
+    <div v-if="thesisPicker" class="thesis-picker" @mousedown.prevent>
+      <div class="tp-row">
+        <span class="tp-hint">挂到</span>
+        <AppSelect
+          :model-value="tpThesisId"
+          :options="tpOptions"
+          placeholder="选一个论点"
+          width="240px"
+          @update:model-value="tpThesisId = $event"
+        />
+      </div>
+      <div class="tp-row">
+        <span class="tp-hint">立场</span>
+        <div class="tp-stances" role="group" aria-label="这条证据的立场">
+          <button
+            v-for="s in TP_STANCES"
+            :key="s.value"
+            type="button"
+            class="tp-stance"
+            :class="[s.tone, { on: tpStance === s.value }]"
+            :aria-pressed="tpStance === s.value"
+            @click.stop="tpStance = s.value"
+          >
+            {{ s.label }}
+          </button>
+        </div>
+        <span class="tp-spacer"></span>
+        <button class="tp-ok" type="button" :disabled="tpThesisId === '' || tpSaving" @click.stop="submitThesisEvidence">
+          {{ tpSaving ? '挂着…' : '挂上' }}
+        </button>
+        <button class="tp-cancel" type="button" @click.stop="closeThesisPicker">取消</button>
+      </div>
+      <!-- 有实体但没有论点：说清怎么建，而不是给个空下拉让人猜 -->
+      <p v-if="thesesStore.list.length === 0" class="tp-empty">
+        还没有论点。先在「研究工作台 → 论点」里立一条，再回来挂证据。
+      </p>
+    </div>
 
     <!-- 研究事件悬浮入口：模块与自持状态（面板开合/外点关闭/Esc）见 ResearchFab.vue。
          与「文章追问」FAB 共用同一个可见条件（见 showReadingFabs）——两者同处右下角
@@ -207,12 +256,15 @@ import AppLogo from '@/components/AppLogo.vue'
 import ArticleChat from '@/components/ArticleChat.vue'
 import ArticleSummaryCard from '@/components/ArticleSummaryCard.vue'
 import ContentToolbar from '@/components/ContentToolbar.vue'
+import AppSelect from '@/components/AppSelect.vue'
 import HighlightPalette from '@/components/HighlightPalette.vue'
 import ResearchFab from '@/components/ResearchFab.vue'
 import SourceBar from '@/components/report/SourceBar.vue'
 import { useHighlights, HIGHLIGHT_COLORS } from '@/composables/useHighlights'
 import { useCursorGlow } from '@/composables/useCursorGlow'
 import { useArticlesStore } from '@/stores/articles'
+import { useThesesStore, type EvidenceStance } from '@/stores/theses'
+import { useToastStore } from '@/stores/toast'
 import { useFeedsStore } from '@/stores/feeds'
 import { useUiStore } from '@/stores/ui'
 import { useSettingsStore } from '@/stores/settings'
@@ -548,6 +600,112 @@ const {
   removeHighlight
 } = useHighlights({ contentBodyRef, displayContent })
 
+// ─── 挂到论点（阅读区的证据落点）────────────────────────────────────────────
+/** 论点台账 store：面板要用它的列表与写入方法 */
+const thesesStore = useThesesStore()
+const toastStore = useToastStore()
+
+/** 二级面板是否展开（false 时调色板只露「挂到论点」一个入口） */
+const thesisPicker = ref(false)
+/** 选中的论点 ID（空串 = 未选，AppSelect 不吃 null） */
+const tpThesisId = ref<string | number>('')
+/** 立场：默认 `mixed`（存疑）。
+ *  刻意不给 `support` 做默认——默认"支持"等于替用户往确认偏误上推一步，
+ *  "存疑"是零承诺，必须用户主动点一次才能定性。 */
+const tpStance = ref<EvidenceStance>('mixed')
+const tpSaving = ref(false)
+
+/** 立场档位：反驳在前，与详情页的分区顺序一致 */
+const TP_STANCES: Array<{ value: EvidenceStance; label: string; tone: string }> = [
+  { value: 'oppose', label: '反驳', tone: 'bad' },
+  { value: 'mixed', label: '存疑', tone: 'mixed' },
+  { value: 'support', label: '支持', tone: 'ok' },
+]
+
+/**
+ * 论点下拉选项
+ *
+ * 只列未归档的论点：归档意味着"这条判断我不管了"，
+ * 再往里挂证据是自相矛盾的。选项前缀带实体名，同实体多条判断时能区分。
+ */
+const tpOptions = computed(() =>
+  thesesStore.list
+    .filter((t) => t.status !== 'archived')
+    .map((t) => ({
+      value: t.id,
+      label: `${t.entityName} · ${t.statement.length > 22 ? `${t.statement.slice(0, 22)}…` : t.statement}`,
+    })),
+)
+
+/** 打开二级面板 */
+function openThesisPicker() {
+  thesisPicker.value = true
+  tpThesisId.value = ''
+  tpStance.value = 'mixed'
+  // 列表可能在两处都没加载过（用户开机就直奔阅读区）→ 打开时补一次
+  if (thesesStore.list.length === 0) void thesesStore.loadList()
+}
+
+/** 关闭二级面板，并把外层调色板一起收起（否则浮层挂着却无事可做） */
+function closeThesisPicker() {
+  thesisPicker.value = false
+  tpThesisId.value = ''
+  cancelHighlight()
+}
+
+/**
+ * 把当前选区挂成一条证据
+ *
+ * # 为什么先建高亮再用高亮当证据
+ * 后端的 `article` 类型快照取的是 title + summary，**不是选中的那段话**；
+ * 只有 `highlight` 类型的快照才是选中文本。所以链路是
+ * 选区 → `highlights_create`（颜色取 yellow，与普通高亮一致）→
+ * `thesis_add_evidence(kind='highlight', ref_id=新高亮 id, stance)`。
+ *
+ * # 失败处理
+ * 高亮成功但证据失败时会留下一条"孤儿高亮"——这是可接受的降级：
+ * 用户至少保住了那段标记，且 toast 说明了原因，他可以从论点详情页补挂。
+ *
+ * @returns 无返回值；成功后收起浮层并提示
+ */
+async function submitThesisEvidence() {
+  const article = selectedArticle.value
+  const pending = pendingSelection.value
+  if (!article || !pending || tpThesisId.value === '') return
+  tpSaving.value = true
+  try {
+    const highlightId = await articlesStore.createHighlight(
+      article.id,
+      pending.text,
+      '',
+      'yellow',
+      pending.start,
+      pending.end
+    )
+    if (highlightId === null) {
+      toastStore.show('高亮保存失败，证据没挂上')
+      return
+    }
+    await thesesStore.addEvidence({
+      thesisId: Number(tpThesisId.value),
+      kind: 'highlight',
+      refId: highlightId,
+      stance: tpStance.value,
+    })
+    const label = tpStance.value === 'oppose' ? '反驳' : tpStance.value === 'mixed' ? '存疑' : '支持'
+    toastStore.show(`已挂为${label}证据`)
+    // 收起选区与浮层：留着蓝色选区会让人以为还要再做一步
+    window.getSelection()?.removeAllRanges()
+    thesisPicker.value = false
+    tpThesisId.value = ''
+    cancelHighlight()
+  } catch (e) {
+    toastStore.show(e instanceof Error ? e.message : String(e))
+  } finally {
+    tpSaving.value = false
+  }
+}
+
 // 正文变化 = 换了文章或切了原文/译文，两种情况都要按新正文重取目录
 watch(
   displayContent,
@@ -667,6 +825,9 @@ watch(
     showTranslation.value = false
     webViewUrl.value = ''
     showHighlightPalette.value = false
+    // 挂到论点的二级面板同理：留着它挂的就是上一篇的选区
+    thesisPicker.value = false
+    tpThesisId.value = ''
     // 丢弃上一篇文章的选区快照：留着会把高亮建到新文章上
     pendingSelection.value = null
     // 清空上一篇文章的高亮：留着会让新文章的相同文字短暂地被标黄
@@ -1043,4 +1204,108 @@ onUnmounted(() => {
 .content-body :deep(mark[data-hl-color="green"]) { background: var(--hl-green); }
 .content-body :deep(mark[data-hl-color="blue"]) { background: var(--hl-blue); }
 .content-body :deep(mark[data-hl-color="pink"]) { background: var(--hl-pink); }
+
+/* ═══ 挂到论点：调色板里的入口 ═══ */
+.palette-thesis {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--primary);
+  padding: var(--sp-1) var(--sp-05);
+  border-radius: var(--r-sm);
+  /* 常驻可聚焦：键盘 Tab 到它时要有可见焦点环，不能只靠 hover */
+  outline: none;
+}
+.palette-thesis:hover { background: var(--primary-fg); }
+.palette-thesis:focus-visible {
+  box-shadow: 0 0 0 2px var(--primary);
+}
+
+/* ═══ 挂到论点：二级面板 ═══
+   位置在调色板正下方（不重叠），宽度自适应内容；
+   z-index 高于调色板，否则下拉浮层会被它盖住。 */
+.thesis-picker {
+  position: absolute;
+  top: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 102;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-15);
+  padding: var(--sp-15) var(--sp-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-hover);
+  min-width: 380px;
+  max-width: min(560px, 92%);
+}
+.tp-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.tp-hint {
+  flex-shrink: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-tertiary);
+  width: 28px;
+}
+.tp-spacer { flex: 1 1 auto; }
+.tp-stances {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--fill);
+  border-radius: var(--r-md);
+}
+.tp-stance {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  padding: 2px var(--sp-15);
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+}
+/* 选中态才上色：三个按钮常年带色会让人以为已经选好了 */
+.tp-stance.on { background: var(--surface); font-weight: 500; }
+.tp-stance.on.bad { color: var(--danger); }
+.tp-stance.on.mixed { color: var(--warning); }
+.tp-stance.on.ok { color: var(--success); }
+.tp-ok {
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--primary);
+  /* 紫底白字是全局主按钮的既有惯例（styles.css 里 .btn-primary 同款）；
+     `--on-primary` 这个令牌并不存在，写上去会静默回退，干脆直接给值 */
+  color: #fff;
+}
+.tp-ok:disabled { opacity: 0.45; cursor: not-allowed; }
+.tp-cancel {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-tertiary);
+  padding: var(--sp-1) var(--sp-05);
+}
+.tp-cancel:hover { color: var(--text-primary); }
+.tp-empty {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
 </style>

@@ -1,5 +1,5 @@
 <template>
-  <!-- 研究工作台弹窗外壳：三个页签（时间线 / 报告 / 实体）的容器与切换。
+  <!-- 研究工作台弹窗外壳：四个页签（时间线 / 报告 / 实体 / 论点）的容器与切换。
        layout="side"：固定高度弹窗，切页签不再跳变；tab 竖排在左列。
        关系图已不在此处——弹窗画布太小，只保留主屏全宽展示（入口见 FeedPanel 工具栏与 D 键）。 -->
   <BaseModal :open="open" title="研究工作台" layout="side" side-wide @close="close">
@@ -17,6 +17,12 @@
         </button>
         <button class="side-tab" :class="{ active: tab === 'entities' }" @click="tab = 'entities'">
           实体管理
+        </button>
+        <!-- 论点放在最后而不是最前：时间线是全应用的入口（每天开机先看它），
+             论点是自己写下的判断，频率低但深度高，紧邻实体管理更顺（都由实体派生） -->
+        <button class="side-tab" :class="{ active: tab === 'theses' }" @click="tab = 'theses'">
+          论点
+          <span v-if="thesesStore.stats.challenged > 0" class="side-dot" aria-hidden="true"></span>
         </button>
       </nav>
     </aside>
@@ -53,6 +59,7 @@
         @close="close"
       />
       <ResearchEntitiesTab v-show="tab === 'entities'" @entities-changed="onEntitiesChanged" />
+      <ThesisPanel v-show="tab === 'theses'" @open-article="onOpenThesisArticle" />
     </div>
   </BaseModal>
 </template>
@@ -62,8 +69,9 @@
  * 研究工作台弹窗组件（外壳）
  *
  * # 职责
- * 只负责弹窗外壳与页签切换：BaseModal 容器、头部、tab 条，以及三个页签组件
- * （`ResearchTimelineTab` / `ResearchReportsTab` / `ResearchEntitiesTab`）的编排。
+ * 只负责弹窗外壳与页签切换：BaseModal 容器、头部、tab 条，以及四个页签组件
+ * （`ResearchTimelineTab` / `ResearchReportsTab` / `ResearchEntitiesTab` /
+ * `ThesisPanel`）的编排。
  * 页签内部的表单状态、数据加载与临时提示都在各页签组件里（见各文件头的"挂载语义"一节）。
  *
  * # 关系图为何不在这里
@@ -85,11 +93,14 @@ import BaseModal from './BaseModal.vue'
 import ResearchTimelineTab from './ResearchTimelineTab.vue'
 import ResearchReportsTab from './ResearchReportsTab.vue'
 import ResearchEntitiesTab from './ResearchEntitiesTab.vue'
+import ThesisPanel from './thesis/ThesisPanel.vue'
 import ReportSegmentBar from './report/ReportSegmentBar.vue'
 import { useResearchStore } from '@/stores/research'
 import { useEntitiesStore } from '@/stores/entities'
 import { useUiStore } from '@/stores/ui'
 import { useReportPeriodStore } from '@/stores/reportPeriod'
+import { useThesesStore } from '@/stores/theses'
+import { useArticlesStore } from '@/stores/articles'
 import { useToastStore } from '@/stores/toast'
 
 const props = defineProps<{
@@ -105,10 +116,13 @@ const researchStore = useResearchStore()
 const entitiesStore = useEntitiesStore()
 const uiStore = useUiStore()
 const reportStore = useReportPeriodStore()
+const thesesStore = useThesesStore()
+const articlesStore = useArticlesStore()
 const toast = useToastStore()
 
-/** 当前 tab：timeline = 事件时间线；reports = 报告（含周期报告与研究报告两段）；entities = 实体管理 */
-const tab = ref<'timeline' | 'reports' | 'entities'>('timeline')
+/** 当前 tab：timeline = 事件时间线；reports = 报告（含周期报告与研究报告两段）；
+ *  entities = 实体管理；theses = 论点台账 */
+const tab = ref<'timeline' | 'reports' | 'entities' | 'theses'>('timeline')
 
 /** 标题栏显示的页签名称 */
 const tabTitle = computed(() => {
@@ -116,16 +130,19 @@ const tabTitle = computed(() => {
     timeline: '事件时间线',
     reports: '报告',
     entities: '实体管理',
+    theses: '论点',
   }
   return titles[tab.value] ?? '研究工作台'
 })
 
 // 打开时确保实体列表已加载：时间线的实体筛选下拉依赖它（可能尚未加载过）
-// 同时消费"来源条要求打开某份周期报告"的待办意图（跨组件跳转，见 §4.6.5）。
+// 同时消费"上下文栏点了返回"的待办意图（跨组件跳转，见 DESIGN §4.4）。
 watch(
   () => props.open,
   async val => {
     if (!val) return
+    // 论点页签的小红点依赖 stats，打开时先拉一次列表
+    if (thesesStore.list.length === 0) void thesesStore.loadList()
     if (entitiesStore.entities.length === 0) {
       await entitiesStore.loadEntities()
     }
@@ -177,6 +194,21 @@ function close() {
 function onEntitiesChanged() {
   if (uiStore.mainView === 'graph') void researchStore.reloadGraph()
   else researchStore.invalidateGraph()
+}
+
+/**
+ * 论点详情里点了「打开原文」
+ *
+ * 复刻报告页签的做法：关弹窗 → 切主屏阅读区 → 选中该文章。
+ * 不在这里做"就地预览"是因为论点详情已经占满右列，再叠一层预览
+ * 会把"证据快照"和"原文"挤在同一个窄栏里，两边都不好看。
+ *
+ * @param articleId - 文章 ID
+ */
+async function onOpenThesisArticle(articleId: number) {
+  emit('close')
+  uiStore.setMainView('articles')
+  await articlesStore.selectArticle(articleId)
 }
 </script>
 
@@ -235,6 +267,18 @@ function onEntitiesChanged() {
 }
 .side-tab:hover { background: var(--fill); color: var(--text-primary); }
 .side-tab.active { background: var(--primary-fg); color: var(--primary); font-weight: 500; }
+/* 页签上的"有待处理反证"提示点。
+   不用数字：这个数只是"该去看一眼"的信号，具体几条在列表里更清楚，
+   而左列只有 148px，挂数字会把页签文字挤到换行。 */
+.side-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: var(--sp-05);
+  border-radius: 50%;
+  background: var(--danger);
+  vertical-align: middle;
+}
 
 /* 右列：页签内容区。页签组件的根元素（class="m-body"）会带上本组件的
    作用域属性，故这条父级 scoped 规则能命中四个页签的根容器

@@ -14,6 +14,7 @@
 //! - [`normalize`]：实体归一化（canonical/别名匹配、未命中自动新建）与事件落库
 //! - [`report`]：日报/周报 Markdown 渲染与多通道输出（应用内 / Obsidian / 文件）
 //! - [`period`]：周期报告（日/周/月）——按时间汇总全部文章、交模型归纳、正文只入库
+//! - [`thesis`]：论点台账——用户自己的判断、证据挂接（支持/反驳）、变更留痕
 //!
 //! 本模块同时承载自动化任务的**统一执行器**（[`run_task_once`]）：
 //! cron 调度与手动触发共用同一条执行路径，运行结果统一回写任务行。
@@ -22,6 +23,7 @@ pub mod extract;
 pub mod normalize;
 pub mod period;
 pub mod report;
+pub mod thesis;
 
 use std::collections::HashSet;
 use std::sync::LazyLock;

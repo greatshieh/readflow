@@ -2457,31 +2457,88 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
     .execute(pool)
     .await?;
 
-    // AI 从文章正文抽取的结构化财务指标（entity + metric 的长表形态）。
-    // 与下方 market 那组表语义不同：那里存外部行情源拉取的时序/快照，这里存模型读出来的数字，
-    // 靠 `evidence` 记住原文出处，因此可以回溯"这个数字是从哪句话来的"。
+    // ─── 论点台账（Thesis Ledger） ──────────────────────────────────────────
+    //
+    // 定位：项目此前的所有表都是"系统产出"（文章/事件/报告/高亮），
+    // 唯独没有地方放**用户自己的判断**。三张表补的就是这一层：
+    // 论点 = 一句话判断 + 标的实体 + 状态 + 证据集 + 变更留痕。
+    //
+    // 与既有表的关系（都是"挂上去"，不改动既有表）：
+    //   thesis_evidence.ref_id 可指向 research_events / highlights / articles 三者之一，
+    //   **故意不建外键**——理由见该表注释。
     sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS financial_data (
+        r#"CREATE TABLE IF NOT EXISTS theses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            article_id INTEGER NOT NULL,
-            entity_id INTEGER NOT NULL,
-            metric_key TEXT NOT NULL,
-            metric_value TEXT NOT NULL,
-            metric_numeric REAL DEFAULT 0.0,
-            currency TEXT DEFAULT '',
-            period TEXT DEFAULT '',
-            evidence TEXT NOT NULL DEFAULT '',
-            source_model TEXT DEFAULT '',
+            statement TEXT NOT NULL,               -- 一句话判断（前端限 200 字）
+            entity_id INTEGER NOT NULL,            -- 标的：一个论点只关于一个实体
+            status TEXT NOT NULL DEFAULT 'active', -- active / confirmed / refuted / archived
+            confidence INTEGER NOT NULL DEFAULT 3, -- 主观置信 1–5，不用概率（人对百分比的自我认知是假的）
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE,
-            FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE,
-            UNIQUE(article_id, entity_id, metric_key)
-        )
-        "#,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE
+        )"#,
     )
     .execute(pool)
     .await?;
+
+    // 证据关联表：把"系统的产出"接到"我的判断"上。
+    //
+    // ⚠️ ref_id 不建外键，这是**有意为之**，别"修正"它：
+    //   1) 它指向三张结构不同的表（events / highlights / articles），单列外键表达不了；
+    //   2) 我们恰恰要"源数据被删了，证据还在"——文章有保留策略、research_events 是级联删除，
+    //      建了外键反而会被一起删掉，论点就变成了空壳。
+    //   可读性靠 snapshot_text 快照兜底（见下）。
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS thesis_evidence (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            thesis_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,                    -- event / highlight / article
+            ref_id INTEGER NOT NULL,
+            stance TEXT NOT NULL,                  -- support / oppose / mixed
+            note TEXT NOT NULL DEFAULT '',         -- 我为什么认/不认它
+            snapshot_text TEXT NOT NULL DEFAULT '',-- 快照正文：源被删后仍可读（长期可用性的底线）
+            snapshot_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(thesis_id, kind, ref_id),       -- 同一条证据挂同一论点只算一次
+            FOREIGN KEY (thesis_id) REFERENCES theses(id) ON DELETE CASCADE
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+
+    // 变更留痕：回答"我当初为什么这么判断"。
+    // 只记三个字段的变化（confidence / status / statement），不记证据增删——
+    // 证据本身带 created_at，时间线能还原。
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS thesis_revisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            thesis_id INTEGER NOT NULL,
+            field TEXT NOT NULL,                   -- confidence / status / statement
+            from_value TEXT NOT NULL DEFAULT '',
+            to_value TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',       -- 变更理由（可选，但半年后最有用）
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (thesis_id) REFERENCES theses(id) ON DELETE CASCADE
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+
+    // 论点的三条主查询路径，逐一建索引：
+    // 1) 按实体看"这只票我有几个论点" + 按状态筛选 → (entity_id, status)
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_theses_entity ON theses(entity_id, status)")
+        .execute(pool)
+        .await?;
+    // 2) 打开论点按方向分区展示证据 → (thesis_id, stance)
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_evidence_thesis ON thesis_evidence(thesis_id, stance)",
+    )
+    .execute(pool)
+    .await?;
+    // 3) 反查：这条事件/高亮被挂到了哪些论点（阅读时判断"这条我评过没有"）
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_evidence_ref ON thesis_evidence(kind, ref_id)")
+        .execute(pool)
+        .await?;
 
     // ─── 周期报告「本期值得跟进」（P4） ─────────────────────────────────────
     //
@@ -2516,6 +2573,31 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
     .execute(pool)
     .await?;
 
+    // AI 从文章正文抽取的结构化财务指标（entity + metric 的长表形态）。
+    // 与下方 market 那组表语义不同：那里存外部行情源拉取的时序/快照，这里存模型读出来的数字，
+    // 靠 `evidence` 记住原文出处，因此可以回溯"这个数字是从哪句话来的"。
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS financial_data (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            article_id INTEGER NOT NULL,
+            entity_id INTEGER NOT NULL,
+            metric_key TEXT NOT NULL,
+            metric_value TEXT NOT NULL,
+            metric_numeric REAL DEFAULT 0.0,
+            currency TEXT DEFAULT '',
+            period TEXT DEFAULT '',
+            evidence TEXT NOT NULL DEFAULT '',
+            source_model TEXT DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE,
+            FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+            UNIQUE(article_id, entity_id, metric_key)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
 
     // 全部表结构与索引已在上方按最终形态一次性定义完毕（CREATE ... IF NOT EXISTS）。
     // 设计约定：项目未发布，schema 演进采取"改定义 + 重置开发库"的方式，

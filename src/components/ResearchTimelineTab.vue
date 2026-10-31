@@ -101,10 +101,61 @@
               </a>
             </div>
             <div class="event-meta">提取模型：{{ ev.source_model || '未知' }}</div>
+
+            <!-- 人的反馈落点：机器抽出的事件要能被"认可"或"否证"，
+                 只让用户看而不给归档的动作，时间线永远只是噪音。
+                 放在展开区而非行内：行内已经挤了类型/情感/日期/删除四件事。 -->
+            <div class="event-acts">
+              <span class="acts-hint">挂到论点</span>
+              <button
+                v-for="s in STANCE_ACTS"
+                :key="s.value"
+                class="act"
+                :class="s.tone"
+                :disabled="evActing === ev.id"
+                :title="`把这条事件作为「${s.label}」证据挂到某个论点`"
+                @click.stop="openAttach(ev, s.value)"
+              >
+                {{ s.label }}
+              </button>
+              <span v-if="attachedHint[ev.id]" class="acts-done">{{ attachedHint[ev.id] }}</span>
+            </div>
           </div>
         </div>
       </div>
     </div>
+
+    <!-- 选论点弹层：时间线里挂证据时只需选"挂哪条、什么立场"，
+         事件本身（fact/evidence/来源）已由后端取快照，前端不重复传文本。 -->
+    <BaseModal :open="attachTarget !== null" title="挂到论点" size="sm" @close="closeAttach">
+      <div class="at">
+        <p class="at-fact">{{ attachTarget?.fact }}</p>
+        <label class="at-field">
+          <span class="at-label">论点</span>
+          <AppSelect
+            :model-value="attachThesisId"
+            :options="attachOptions"
+            placeholder="选一个论点"
+            @update:model-value="attachThesisId = $event"
+          />
+        </label>
+        <p v-if="attachOptions.length === 0" class="at-empty">
+          还没有可用于挂载的论点。先在「论点」页签里立一条判断。
+        </p>
+        <p v-if="attachError" class="at-error">{{ attachError }}</p>
+        <div class="at-foot">
+          <button class="btn btn-secondary" type="button" @click="closeAttach">取消</button>
+          <button
+            class="btn btn-primary"
+            type="button"
+            :disabled="attachThesisId === '' || attachSaving"
+            @click="submitAttach"
+          >
+            {{ attachSaving ? '挂着…' : '挂上' }}
+          </button>
+        </div>
+      </div>
+    </BaseModal>
 
     <!-- 操作栏：手动批量提取（补跑入口） -->
     <div class="actions">
@@ -136,10 +187,13 @@
  */
 import { ref, computed, watch } from 'vue'
 import AppSelect, { type SelectOption } from './AppSelect.vue'
+import BaseModal from './BaseModal.vue'
 import { useResearchStore } from '@/stores/research'
 import { useEntitiesStore } from '@/stores/entities'
 import { useArticlesStore } from '@/stores/articles'
 import { useEventTypesStore } from '@/stores/eventTypes'
+import { useThesesStore, type EvidenceStance } from '@/stores/theses'
+import { useToastStore } from '@/stores/toast'
 import { showConfirm } from '@/stores/modal'
 import type { ResearchEventWithContext } from '@/types'
 
@@ -157,6 +211,8 @@ const researchStore = useResearchStore()
 const entitiesStore = useEntitiesStore()
 const articlesStore = useArticlesStore()
 const eventTypesStore = useEventTypesStore()
+const thesesStore = useThesesStore()
+const toast = useToastStore()
 
 /** 时间窗口（天数，0 = 不限） */
 const filterDays = ref<number>(30)
@@ -218,6 +274,96 @@ const deletingId = ref<number>(-1)
 
 /** 批量提取进行中 */
 const extracting = ref(false)
+
+// ─── 挂到论点（P3）────────────────────────────────────────────────────────────
+/** 立场档位：顺序与论点详情页一致（反驳 → 存疑 → 支持） */
+const STANCE_ACTS: Array<{ value: EvidenceStance; label: string; tone: string }> = [
+  { value: 'oppose', label: '反驳', tone: 'bad' },
+  { value: 'mixed', label: '存疑', tone: 'mixed' },
+  { value: 'support', label: '支持', tone: 'ok' },
+]
+
+/** 弹层正在挂载的事件（null = 关闭） */
+const attachTarget = ref<ResearchEventWithContext | null>(null)
+/** 本次要用的立场（由点哪个按钮决定，弹层里不再重复问） */
+const attachStance = ref<EvidenceStance>('mixed')
+/** 选中的论点 ID（空串 = 未选） */
+const attachThesisId = ref<string | number>('')
+const attachSaving = ref(false)
+const attachError = ref('')
+/** 正在挂载的事件 ID（-1 = 空闲），用于按钮禁用 */
+const evActing = ref<number>(-1)
+/** 已挂成功的事件 → 提示文案（按事件 ID 索引，只在本会话有效） */
+const attachedHint = ref<Record<number, string>>({})
+
+/**
+ * 可选论点
+ *
+ * 只列未归档的；且**优先把该事件所属实体的论点排在最前**——
+ * 时间线按实体分组，用户点某条事件时最可能挂的是这个实体自己的判断。
+ */
+const attachOptions = computed<SelectOption[]>(() => {
+  const eid = attachTarget.value?.entity_id ?? 0
+  const rows = thesesStore.list.filter((t) => t.status !== 'archived')
+  const own = rows.filter((t) => t.entityId === eid)
+  const other = rows.filter((t) => t.entityId !== eid)
+  return [...own, ...other].map((t) => ({
+    value: t.id,
+    label: `${t.entityName} · ${t.statement.length > 22 ? `${t.statement.slice(0, 22)}…` : t.statement}`,
+  }))
+})
+
+/**
+ * 打开挂载弹层
+ *
+ * @param ev - 目标事件
+ * @param stance - 由行内按钮决定的立场
+ */
+function openAttach(ev: ResearchEventWithContext, stance: EvidenceStance) {
+  attachTarget.value = ev
+  attachStance.value = stance
+  attachThesisId.value = ''
+  attachError.value = ''
+  if (thesesStore.list.length === 0) void thesesStore.loadList()
+}
+
+/** 关闭挂载弹层并清空临时态 */
+function closeAttach() {
+  attachTarget.value = null
+  attachThesisId.value = ''
+  attachError.value = ''
+}
+
+/**
+ * 提交挂载
+ *
+ * 事件的内容（fact / evidence / 来源文章）由后端按 `kind='event'` 取快照，
+ * 前端只给 ID 与立场——避免前端再拼一遍文本，也避免快照与事件原文不一致。
+ */
+async function submitAttach() {
+  const ev = attachTarget.value
+  if (!ev || attachThesisId.value === '') return
+  attachSaving.value = true
+  evActing.value = ev.id
+  attachError.value = ''
+  try {
+    await thesesStore.addEvidence({
+      thesisId: Number(attachThesisId.value),
+      kind: 'event',
+      refId: ev.id,
+      stance: attachStance.value,
+    })
+    const label = attachStance.value === 'oppose' ? '反驳' : attachStance.value === 'mixed' ? '存疑' : '支持'
+    attachedHint.value[ev.id] = `已挂为${label}证据`
+    toast.show(`已挂为${label}证据`)
+    closeAttach()
+  } catch (e) {
+    attachError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    attachSaving.value = false
+    evActing.value = -1
+  }
+}
 
 /** 批量提取结果消息 */
 const extractMsg = ref('')
@@ -682,6 +828,85 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
 .event-meta {
   font-size: var(--fs-modal-meta);
   color: var(--text-tertiary);
+}
+
+/* ═══ 挂到论点（展开区底部的一行动作）═══ */
+.event-acts {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-05);
+  margin-top: var(--sp-15);
+  padding-top: var(--sp-15);
+  border-top: 1px dashed var(--border);
+  flex-wrap: wrap;
+}
+.acts-hint {
+  flex-shrink: 0;
+  font-size: var(--fs-modal-meta);
+  color: var(--text-tertiary);
+  margin-right: var(--sp-05);
+}
+.act {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-modal-meta);
+  padding: 2px var(--sp-15);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  /* 命中区不小于 22px：行内小钮在弹窗里用手点也够得着 */
+  min-height: 22px;
+}
+.act:hover:not(:disabled) { background: var(--fill); }
+.act:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.act:disabled { opacity: 0.5; cursor: not-allowed; }
+/* 三类立场用边框色区分，不用实心底色：这一行是次要动作，不该抢过事件正文 */
+.act.bad:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+.act.mixed:hover:not(:disabled) { border-color: var(--warning); color: var(--warning); }
+.act.ok:hover:not(:disabled) { border-color: var(--success); color: var(--success); }
+.acts-done {
+  font-size: var(--fs-modal-meta);
+  color: var(--success);
+}
+
+/* ═══ 选论点弹层内容 ═══ */
+.at {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.at-fact {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--fill);
+  border-radius: var(--r-md);
+  font-size: var(--fs-modal-body);
+  line-height: var(--lh-modal-body);
+  color: var(--text-primary);
+}
+.at-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-05);
+}
+.at-label {
+  font-size: var(--fs-modal-label);
+  color: var(--text-secondary);
+}
+.at-empty,
+.at-error {
+  margin: 0;
+  font-size: var(--fs-modal-label);
+  line-height: var(--lh-modal-label);
+}
+.at-empty { color: var(--text-tertiary); }
+.at-error { color: var(--danger); }
+.at-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  margin-top: var(--sp-05);
 }
 
 /* 操作栏 */

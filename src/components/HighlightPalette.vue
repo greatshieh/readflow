@@ -17,6 +17,10 @@
       :title="c.label"
       @click.stop="emit('pick', c.key)"
     ></button>
+    <!-- 右侧扩展位：「挂到论点」入口由宿主 ContentColumn 注入。
+         用插槽而不是把论点逻辑塞进来：调色板只认颜色，不认识论点域。 -->
+    <span v-if="$slots.extra" class="palette-sep" aria-hidden="true"></span>
+    <slot name="extra"></slot>
     <button class="palette-cancel" @click.stop="emit('cancel')">取消</button>
   </div>
 </template>
@@ -66,6 +70,13 @@ const emit = defineEmits<{
   box-shadow: var(--shadow-hover);
 }
 .palette-hint { font-size: var(--fs-sm); color: var(--text-tertiary); }
+/* 扩展位与色板之间的竖分隔线 */
+.palette-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  margin: 0 var(--sp-1);
+}
 .palette-swatch {
   width: 20px;
   height: 20px;
