@@ -2,8 +2,8 @@
  * 展示层格式化工具
  *
  * # 职责
- * 提供纯函数式的展示格式化能力：相对时间、完整日期时间、文本截断。
- * 对外导出 `formatDistance` / `formatFullDate` / `truncate`，
+ * 提供纯函数式的展示格式化能力：相对时间、完整日期时间。
+ * 对外导出 `formatDistance` / `formatFullDate`，
  * 主要被 `components/ArticleColumn.vue`（文章列表）与 `components/ContentColumn.vue`（正文）等界面消费。
  *
  * # 设计意图
@@ -65,21 +65,4 @@ export function formatFullDate(dateStr: string): string {
     hour: '2-digit',
     minute: '2-digit'
   })
-}
-
-/**
- * 按字符长度截断文本并追加省略号
- *
- * 按 `String.length`（UTF-16 码元）而非"视觉宽度"或"词边界"截断：
- * 列表摘要只需防止溢出，精确的分词处理会带来不必要的复杂度；
- * 中英文混排时中文每字 1 个码元，实际宽度差异可接受。
- *
- * @param text - 待截断的原始文本
- * @param length - 允许保留的最大字符数（不含省略号）
- * @returns 未超长时原样返回；超长时返回前 `length` 个字符 + '...'，
- *          因此结果长度可能为 `length + 3`
- */
-export function truncate(text: string, length: number): string {
-  if (text.length <= length) return text
-  return text.slice(0, length) + '...'
 }

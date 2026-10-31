@@ -23,7 +23,6 @@ use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
 
 use crate::ai;
-use crate::db::Setting;
 
 use super::TaskOutcome;
 
@@ -1350,24 +1349,6 @@ pub fn default_daily_config() -> String {
         "window_mode": "natural"
     })
     .to_string()
-}
-
-/// 一次性迁移标记的 settings 键
-///
-/// 存量库的种子任务不会重跑，旧「每日研究报告」会一直每天 08:00 产出旧格式日报，
-/// 与新周期日报并存。用一个标记保证迁移只做一次，用户之后手动改回也不会再被覆盖。
-pub const MIGRATION_KEY: &str = "period_report_task_migrated";
-
-/// 判断迁移是否已执行
-pub async fn migration_done(pool: &SqlitePool) -> bool {
-    matches!(Setting::get(pool, MIGRATION_KEY).await, Ok(Some(v)) if v == "1")
-}
-
-/// 标记迁移已执行
-pub async fn mark_migration_done(pool: &SqlitePool) {
-    if let Err(e) = Setting::set(pool, MIGRATION_KEY, "1").await {
-        eprintln!("写入周期报告迁移标记失败（下次启动会重试）: {}", e);
-    }
 }
 
 #[cfg(test)]

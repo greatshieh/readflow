@@ -17,10 +17,10 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
 /** 弹窗类型枚举 */
-export type ModalType = 'confirm' | 'prompt' | 'alert'
+type ModalType = 'confirm' | 'prompt' | 'alert'
 
 /** 确认弹窗的参数结构 */
-export interface ConfirmOptions {
+interface ConfirmOptions {
   /** 弹窗标题（显示在弹窗头部） */
   title: string
   /** 弹窗正文内容（支持换行） */
@@ -28,7 +28,7 @@ export interface ConfirmOptions {
 }
 
 /** 输入弹窗的参数结构 */
-export interface PromptOptions {
+interface PromptOptions {
   /** 弹窗标题 */
   title: string
   /** 弹窗正文 / 占位提示 */
@@ -38,7 +38,7 @@ export interface PromptOptions {
 }
 
 /** 提示弹窗的参数结构 */
-export interface AlertOptions {
+interface AlertOptions {
   /** 弹窗标题 */
   title: string
   /** 弹窗正文内容 */

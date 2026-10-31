@@ -20,10 +20,10 @@
  */
 
 /** 快捷键分组：帮助面板按此分区展示 */
-export type ShortcutGroup = '订阅' | '文章' | '视图' | '应用'
+type ShortcutGroup = '订阅' | '文章' | '视图' | '应用'
 
 /** 单条快捷键定义 */
-export interface ShortcutDef {
+interface ShortcutDef {
   /**
    * 触发键列表：每项与 `KeyboardEvent.key.toLowerCase()` 逐字比较。
    *

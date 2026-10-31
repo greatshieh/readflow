@@ -51,7 +51,7 @@ export type ViewFilter = 'all' | 'unread' | 'bookmarked' | 'liked' | 'skipped'
 export type ArticleSortKey = 'latest' | 'score' | 'title'
 
 /** 列表每页条数（首屏、加载更多、翻页都用同一个档位，保证 hasMore 判定一致） */
-export const ARTICLE_PAGE_SIZE = 50
+const ARTICLE_PAGE_SIZE = 50
 
 /**
  * 流式增量累积文本

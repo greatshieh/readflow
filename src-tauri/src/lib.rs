@@ -464,8 +464,6 @@ pub fn run() {
             report_export_prepare,
             report_export_write,
             // 行情/财务数据层（金融升级 Phase 1）
-            market_set_token,
-            market_set_em_key,
             market_link_symbol,
             market_get_state,
             market_sync,
@@ -475,7 +473,6 @@ pub fn run() {
             market_list_calendar,
             market_add_alert,
             market_list_alerts,
-            market_check_alerts,
         ])
         // 启动失败属于不可恢复错误，直接 panic 而不是静默退出，
         // 便于在日志里看到明确原因
@@ -2018,7 +2015,7 @@ struct AiStreamPayload<'a> {
 /// * `article_id` - 文章 ID
 ///
 /// # 返回值
-/// 可直接传给 [`ai::generate_summary`] / [`ai::translate_article`] 的增量回调
+/// 可直接传给 [`ai::generate_summary_custom`] / [`ai::translate_article`] 的增量回调
 fn delta_sink(
     app_handle: AppHandle,
     request_id: String,
@@ -2041,7 +2038,7 @@ fn delta_sink(
 /// 生成文章 AI 摘要
 ///
 /// 依据 `provider_id` 从 settings 表读取该供应商的 url / key / model，
-/// 组装 [`ai::AIProvider`] 后调用 [`ai::generate_summary`]。
+/// 组装 [`ai::AIProvider`] 后调用 [`ai::generate_summary_custom`]。
 /// 生成过程中模型吐出的每一批增量都会以 `ai-stream` 事件推给前端。
 ///
 /// # 参数
@@ -2056,7 +2053,7 @@ fn delta_sink(
 ///
 /// # 错误
 /// - 任一项配置缺失：`AI provider URL/API key/model not configured`
-/// - 下游 [`ai::generate_summary`] 的各类错误（文章不存在、网络失败、落库失败）
+/// - 下游 [`ai::generate_summary_custom`] 的各类错误（文章不存在、网络失败、落库失败）
 #[tauri::command]
 async fn ai_generate_summary(
     article_id: i64,
@@ -2093,7 +2090,8 @@ async fn ai_generate_summary(
         model,
     };
 
-    // 取文章：与 ai::generate_summary 共用同一套 SELECT，确保 entity_score / summary 都可用
+    // 取完整文章：下面组装 prompt 要用 title / description / content 三件套。
+    // （`ai::generate_summary_custom` 内部只做一次存在性校验，不回读字段。）
     let article = sqlx::query_as::<_, Article>(
         "SELECT * FROM articles WHERE id = ? LIMIT 1"
     )
@@ -3530,20 +3528,6 @@ async fn report_export_write(
 // 数据源分层：新浪免 token 默认（实时快照/价格预警）；Tushare/东财按设置凭据启用（历史/财务/日历）。
 // 前端仅渲染，未配置源时由 `market_get_state` 返回的状态决定占位符（见 `MarketPanel.vue`）。
 
-/// 写入 Tushare token（存本地 settings，不出本机；明文落库，库已本地优先且 .gitignore）
-#[tauri::command]
-async fn market_set_token(token: String) -> Result<(), String> {
-    let pool = db_pool().await.map_err(|e| e.to_string())?;
-    Setting::set(&pool, "tushare_token", &token).await.map_err(|e| e.to_string())
-}
-
-/// 写入东财 apikey（存本地 settings，不出本机）
-#[tauri::command]
-async fn market_set_em_key(key: String) -> Result<(), String> {
-    let pool = db_pool().await.map_err(|e| e.to_string())?;
-    Setting::set(&pool, "emapi_key", &key).await.map_err(|e| e.to_string())
-}
-
 /// 关联实体 ↔ 证券代码（同一实体+代码幂等）
 #[tauri::command]
 async fn market_link_symbol(entity_id: i64, symbol: String, market: String) -> Result<(), String> {
@@ -3631,12 +3615,6 @@ async fn market_add_alert(symbol: String, op: String, price: f64, note: String) 
 #[tauri::command]
 async fn market_list_alerts() -> Result<Vec<market::MarketAlert>, String> {
     let pool = db_pool().await.map_err(|e| e.to_string())?;
-    market::list_alerts(&pool, false).await
+    market::list_alerts(&pool).await
 }
 
-/// 遍历启用中的预警规则：拉新浪实时快照比对，命中推送系统通知；返回本次触发数
-#[tauri::command]
-async fn market_check_alerts() -> Result<usize, String> {
-    let pool = db_pool().await.map_err(|e| e.to_string())?;
-    market::check_alerts(&pool).await
-}

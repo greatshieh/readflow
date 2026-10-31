@@ -340,16 +340,8 @@ pub async fn add_alert(
 }
 
 /// 列出预警规则
-pub async fn list_alerts(
-    pool: &SqlitePool,
-    only_enabled: bool,
-) -> Result<Vec<MarketAlert>, String> {
-    let sql = if only_enabled {
-        "SELECT id, symbol, op, price, enabled, note FROM market_alerts WHERE enabled = 1 ORDER BY id DESC"
-    } else {
-        "SELECT id, symbol, op, price, enabled, note FROM market_alerts ORDER BY id DESC"
-    };
-    let rows = sqlx::query(sql)
+pub async fn list_alerts(pool: &SqlitePool) -> Result<Vec<MarketAlert>, String> {
+    let rows = sqlx::query("SELECT id, symbol, op, price, enabled, note FROM market_alerts ORDER BY id DESC")
         .fetch_all(pool)
         .await
         .map_err(|e| e.to_string())?;
@@ -364,42 +356,4 @@ pub async fn list_alerts(
             note: r.get("note"),
         })
         .collect())
-}
-
-/// 命中后更新最近触发时间
-async fn mark_alert_triggered(pool: &SqlitePool, id: i64) -> Result<(), String> {
-    sqlx::query("UPDATE market_alerts SET last_triggered = CURRENT_TIMESTAMP WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// 遍历启用中的预警规则：拉新浪实时快照比对，命中即推送系统通知
-///
-/// 返回本次触发的规则数。单条规则失败（网络/解析）仅 `eprintln!` 跳过，不中断整体。
-pub async fn check_alerts(pool: &SqlitePool) -> Result<usize, String> {
-    let alerts = list_alerts(pool, true).await?;
-    let mut fired = 0;
-    for a in alerts {
-        match sina::fetch_snapshot(&a.symbol).await {
-            Some(q) => {
-                let hit = match a.op.as_str() {
-                    ">" => q.close > a.price,
-                    "<" => q.close < a.price,
-                    ">=" => q.close >= a.price,
-                    "<=" => q.close <= a.price,
-                    _ => false,
-                };
-                if hit {
-                    crate::notify::notify_price_alert(pool, &a.symbol, q.close, &a.op, a.price).await;
-                    let _ = mark_alert_triggered(pool, a.id).await;
-                    fired += 1;
-                }
-            }
-            None => eprintln!("价格预警：{} 快照拉取失败，跳过", a.symbol),
-        }
-    }
-    Ok(fired)
 }

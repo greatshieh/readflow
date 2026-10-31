@@ -14,7 +14,7 @@
  */
 
 /** 一条被切分出来的片段 */
-export interface RefSegment {
+interface RefSegment {
   /** `text` = 普通文本；`ref` = 引用编号 */
   type: 'text' | 'ref'
   /** 文本内容，或引用编号的字符串形式 */
@@ -32,7 +32,7 @@ const REF_PATTERN = /\[(\d{1,3})\]/g
  * @param text - 原始文本
  * @returns 片段数组；没有任何编号时返回单个 `text` 片段
  */
-export function splitRefText(text: string): RefSegment[] {
+function splitRefText(text: string): RefSegment[] {
   const out: RefSegment[] = []
   let last = 0
   for (const m of text.matchAll(REF_PATTERN)) {

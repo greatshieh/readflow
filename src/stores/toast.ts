@@ -22,7 +22,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
 /** 提示上的动作按钮 */
-export interface ToastAction {
+interface ToastAction {
   /** 按钮文案，如"撤销" */
   label: string
   /** 点击后执行的回调；执行完提示即关闭 */
@@ -30,7 +30,7 @@ export interface ToastAction {
 }
 
 /** 一条提示的展示数据 */
-export interface ToastItem {
+interface ToastItem {
   /** 自增 ID，兼作列表 key */
   id: number
   /** 正文文案 */
@@ -42,7 +42,7 @@ export interface ToastItem {
 }
 
 /** `show()` 的可选参数 */
-export interface ToastOptions {
+interface ToastOptions {
   /** 停留时长（毫秒），默认 4000 */
   duration?: number
   /** 挂载的动作按钮 */

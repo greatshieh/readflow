@@ -119,14 +119,3 @@ export function mergeEffectiveEventTypes(
   }
   return out
 }
-
-/**
- * 从生效事件类型列表中取某值的显示标签；未知类型原样返回（兼容 legacy 数据）
- *
- * @param list - 生效事件类型列表
- * @param type - 事件类型枚举值
- * @returns 中文标签或原值
- */
-export function eventTypeLabelFrom(list: EventTypeItem[], type: string): string {
-  return list.find((i) => i.value === type)?.label ?? type
-}

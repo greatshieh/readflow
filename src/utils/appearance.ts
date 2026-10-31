@@ -19,7 +19,7 @@
  */
 
 /** 从 settings store 读取外观设置所需的最小接口（避免整包依赖 store 类型） */
-export interface AppearanceSettings {
+interface AppearanceSettings {
   /** 按键读取设置值；缺失返回 undefined */
   getSetting(key: string): string | undefined
 }

@@ -23,7 +23,7 @@ export type PeriodKind = 'daily' | 'weekly' | 'monthly'
 export type WindowMode = 'natural' | 'custom'
 
 /** 一个时间窗口：`start` 含、`end` 不含 */
-export interface PeriodRange {
+interface PeriodRange {
   /** 起点（含） */
   start: Date
   /** 终点（不含） */
@@ -39,7 +39,7 @@ const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '�
  * @param d - 任意时刻
  * @returns 同一天的本地零点（新对象，不改原值）
  */
-export function startOfLocalDay(d: Date): Date {
+function startOfLocalDay(d: Date): Date {
   const out = new Date(d.getTime())
   out.setHours(0, 0, 0, 0)
   return out
@@ -51,7 +51,7 @@ export function startOfLocalDay(d: Date): Date {
  * @param d - 任意时刻
  * @returns 本周一本地零点
  */
-export function weekStart(d: Date): Date {
+function weekStart(d: Date): Date {
   const day = startOfLocalDay(d)
   // getDay()：周日 0、周一 1 …… 周六 6 → 回退天数为 (day + 6) % 7
   const back = (day.getDay() + 6) % 7

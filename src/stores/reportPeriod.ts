@@ -73,7 +73,7 @@ export interface PeriodDetail {
 }
 
 /** 来源上下文：从某份报告的第 n 条引用跳到文章后，正文栏据此显示返回条 */
-export interface SourceContext {
+interface SourceContext {
   /** 来源报告 ID */
   reportId: number
   /** 来源报告的展示名（如「10月30日 · 日报」） */
@@ -83,7 +83,7 @@ export interface SourceContext {
 }
 
 /** 生成阶段（与后端 `report:progress` 的 stage 取值对应） */
-export type GenStage = 'collect' | 'cluster' | 'compose' | 'sources'
+type GenStage = 'collect' | 'cluster' | 'compose' | 'sources'
 
 /** 阶段中文文案 */
 const STAGE_LABELS: Record<GenStage, string> = {

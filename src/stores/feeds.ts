@@ -80,7 +80,7 @@ interface FeedUpdatedPayload {
 }
 
 /** 按来源自动分组的整理结果（与 Rust 端 `grouping::GroupResult` 对应） */
-export interface AutoGroupResult {
+interface AutoGroupResult {
   /** 本次新建的分组数量（复用已有分组不计入） */
   created_folders: number
   /** 本次被归入分组的订阅源数量 */

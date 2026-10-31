@@ -2,7 +2,7 @@
 //!
 //! # 职责
 //! 本模块负责调用外部大模型服务，为文章生成两类产物：
-//! - [`generate_summary`]：生成 100 字以内的中文摘要
+//! - [`generate_summary_custom`]：按调用方给定的 prompt 生成中文摘要
 //! - [`translate_article`]：把文章翻译为目标语言
 //!
 //! 两者都会把结果**写回 `articles` 表**（这是本模块唯一的副作用），
@@ -191,7 +191,7 @@ pub struct AIProvider {
 
 /// 生成文章摘要（使用自定义 prompt）
 ///
-/// 与 [`generate_summary`] 的差别仅在 prompt 由调用方传入而非内置：
+/// 与内置默认相比，差别只在 prompt 由调用方传入而非写死在模块里：
 /// 这样 Feed 级别的"配方系统"才能在不修改 ai.rs 内部默认行为的前提下，
 /// 为特定订阅源注入个性化指令。
 ///
@@ -206,7 +206,10 @@ pub struct AIProvider {
 /// 生成的摘要文本（已写回数据库）
 ///
 /// # 错误
-/// 与 [`generate_summary`] 完全一致
+/// - `Article not found`：文章不存在
+/// - 网络不可达 / DNS 失败 / 连接被拒等 reqwest 错误
+/// - 响应体不符合 [`ChatResponse`] / [`StreamChunk`] 结构时的反序列化错误
+/// - 回写数据库的 sqlx 错误
 pub async fn generate_summary_custom(
     pool: &SqlitePool,
     article_id: i64,
@@ -237,96 +240,6 @@ pub async fn generate_summary_custom(
 
     Ok(summary)
 }
-
-/// 生成文章摘要
-///
-/// 读取文章原文，交由大模型生成 100 字以内的中文摘要，并把结果写回数据库。
-///
-/// # 副作用
-/// 成功后会执行 `UPDATE articles SET has_ai_summary = 1, ai_summary = ?, ai_model = ?`，
-/// 即"生成即落库"。这一设计使摘要结果可被缓存复用：下次打开同一篇文章时，
-/// 前端看到 `has_ai_summary` 为真即可直接展示，无需再次付费调用接口。
-///
-/// # 参数
-/// * `pool` - 数据库连接池
-/// * `article_id` - 文章 ID
-/// * `provider` - AI 提供商配置（端点、密钥、模型）
-/// * `on_delta` - 流式增量回调；界面需要"边写边看"时传入事件发射闭包，
-///   不需要中间态的场景（测试、后台任务）传 `&noop` 即可
-///
-/// # 返回值
-/// 模型生成的摘要文本
-///
-/// # 错误
-/// - `Article not found`：文章不存在
-/// - 网络不可达 / DNS 失败 / 连接被拒等 reqwest 错误
-/// - 响应体不符合 [`ChatResponse`] / [`StreamChunk`] 结构时的反序列化错误
-/// - 回写数据库的 sqlx 错误
-#[allow(dead_code)]
-pub async fn generate_summary(
-    pool: &SqlitePool,
-    article_id: i64,
-    provider: &AIProvider,
-    on_delta: DeltaSink<'_>,
-) -> Result<String, String> {
-    // 用 LIMIT 1 而非 fetch_optional 的完整表扫描语义，命中主键后即刻返回
-    // 取不到文章时直接短路为英文错误串前端按原样展示（此处保持既有文案不变）
-    // 获取文章内容
-    let article = sqlx::query_as::<_, crate::db::Article>(
-        "SELECT * FROM articles WHERE id = ? LIMIT 1"
-    )
-    .bind(article_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    let article = article.ok_or("Article not found")?;
-    // 摘要与正文拼在一起送模型：RSS 的 description 常常已是凝练摘要，
-    // 正文才是主体，两者互补可以让模型同时掌握背景与细节。
-    // 关键：入库的 content 是 HTML，直接送模型既浪费 token 又会让翻译把标签打乱，
-    // 因此先 html_to_text 剥成纯文本；模型拿到的就是干净的语义内容。
-    let raw = format!("{}\n\n{}", article.summary, article.content);
-    let content = html_to_text(&raw);
-
-    // 构建提示词
-    //
-    // prompt 设计要点：
-    // 1) 前置任务描述（"生成摘要"）再放正文，符合指令跟随类模型的习惯，
-    //    也让模型在读到长正文前先明确目标；
-    // 2) 显式给出长度约束"100 字以内"——不设上限时模型倾向输出冗长段落，
-    //    而阅读器列表页空间有限，需要短摘要；
-    // 3) "简洁明了、突出核心内容"约束风格，抑制模型复述原文导语；
-    // 4) 用 \n\n 把指令与正文分隔，降低正文被误认为指令的一部分的概率。
-    let prompt = format!(
-        "请为以下文章生成一段100字以内的摘要，要求简洁明了，突出核心内容：\n\n{}",
-        content
-    );
-
-    // 发送请求：走流式，边收边回调。
-    // 状态码校验、SSE 解析、非流式回退、空结果拦截全部收敛在 chat_stream 内部，
-    // 摘要 / 翻译 / 简报 / 提取四条链路共用同一份实现，行为不可能再各自漂移。
-    let summary = chat_stream(provider, &prompt, None, on_delta).await?;
-
-    // 更新数据库
-    //
-    // 写回时机选择在"拿到结果之后、返回给前端之前"同步完成：
-    // 保证命令返回时结果已持久化，前端随后的刷新不会读到旧值。
-    // has_ai_summary 与 ai_summary 冗余存储（前者供列表页快速判断，
-    // 避免为了判定是否存在摘要而读取大文本字段）。
-    // ai_model 记录生成所用模型，便于事后溯源与"换模型后重生成"的判断。
-    sqlx::query(
-        "UPDATE articles SET has_ai_summary = 1, ai_summary = ?, ai_model = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-    )
-    .bind(&summary)
-    .bind(&provider.model)
-    .bind(article_id)
-    .execute(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    Ok(summary)
-}
-
 /// 翻译文章内容
 ///
 /// 读取文章原文，交由大模型翻译成目标语言，并把译文写回数据库。
@@ -348,7 +261,7 @@ pub async fn generate_summary(
 ///
 /// # 错误
 /// - `Article not found`：文章不存在
-/// - 网络层错误、响应反序列化错误、回写数据库错误（同 [`generate_summary`]）
+/// - 网络层错误、响应反序列化错误、回写数据库错误（与摘要链路同一套错误面）
 pub async fn translate_article(
     pool: &SqlitePool,
     article_id: i64,
@@ -447,7 +360,7 @@ fn build_endpoint(base: &str) -> String {
 /// 流式增量回调
 ///
 /// 每收到**一批**新增文本调用一次（不是每个 token 一次，见 [`DELTA_FLUSH_CHARS`]）。
-/// 用 `dyn` 而非泛型参数：`generate_summary` / `translate_article` 是对外 API，
+/// 用 `dyn` 而非泛型参数：`generate_summary_custom` / `translate_article` 是对外 API，
 /// 加类型参数会迫使所有调用方携带生命周期标注，而这里并无为每种回调单态化的必要。
 /// `Send + Sync` 是硬要求——回调要跨 `await` 点持有，且会被克隆进 Tauri 的事件发射路径。
 pub type DeltaSink<'a> = &'a (dyn Fn(&str) + Send + Sync);
@@ -902,7 +815,7 @@ pub(crate) fn html_to_text(html: &str) -> String {
 /// 本函数**不回写数据库**，仅返回模型生成的文本——调用方自行决定持久化策略。
 ///
 /// # 参数
-/// * `pool` - 数据库连接池（目前未使用，保留以与 [`generate_summary`] 签名对齐，
+/// * `pool` - 数据库连接池（目前未使用，保留以与 [`generate_summary_custom`] 签名对齐，
 ///           未来可在 prompt 构建阶段读取历史对话或上下文时用到）
 /// * `provider` - AI 提供商配置（端点、密钥、模型）
 /// * `prompt` - 发送给模型的完整提示词

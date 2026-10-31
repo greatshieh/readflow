@@ -60,7 +60,7 @@ const YOUTUBE_PATTERNS: readonly RegExp[] = [
  * @param url - 文章链接（RSS `link` 字段原样值，未经任何净化）
  * @returns 11 位视频 ID；不属受信形态时返回 `null`
  */
-export function extractYouTubeId(url: string): string | null {
+function extractYouTubeId(url: string): string | null {
   const trimmed = url.trim()
   if (!trimmed) return null
   for (const pattern of YOUTUBE_PATTERNS) {

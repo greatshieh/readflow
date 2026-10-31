@@ -29,7 +29,7 @@ const VAR_REF = /var\(\s*(--[A-Za-z0-9_-]+)/g
  * @param css - CSS 原文
  * @returns 变量名数组（含前导 `--`）
  */
-export function collectVarNames(css: string): string[] {
+function collectVarNames(css: string): string[] {
   const out = new Set<string>()
   for (const m of css.matchAll(VAR_REF)) out.add(m[1])
   return [...out]
@@ -64,7 +64,7 @@ function resolveValue(name: string, table: Map<string, string>): string {
  * @param names - 需要定义的变量名
  * @returns CSS 声明块；一个变量都取不到时返回空串
  */
-export function buildRootVars(names: string[]): string {
+function buildRootVars(names: string[]): string {
   const style = getComputedStyle(document.documentElement)
   const table = new Map<string, string>()
   for (const name of names) table.set(name, style.getPropertyValue(name))

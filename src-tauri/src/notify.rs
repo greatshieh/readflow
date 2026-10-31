@@ -114,21 +114,6 @@ pub async fn send(pool: &SqlitePool, title: &str, body: &str) {
     }
 }
 
-/// 发送一条价格预警通知
-///
-/// 复用 [`send`] 的全局开关 / 窗口离开守卫，保证与既有事件预警一致的行为。
-///
-/// # 参数
-/// * `pool` - 数据库连接池（读通知开关）
-/// * `symbol` - 证券代码
-/// * `price` - 当前价
-/// * `op` - 比较运算符（>`/`<`/`>=`/`<=`）
-/// * `target` - 触发阈值
-pub async fn notify_price_alert(pool: &SqlitePool, symbol: &str, price: f64, op: &str, target: f64) {
-    let body = format!("{} 现价 {:.2} 已{} {:.2}", symbol, price, op, target);
-    send(pool, "ReadFlow · 价格预警", &body).await;
-}
-
 /// 发送一条自动化任务的执行结果通知
 ///
 /// 把"成功 / 失败"映射成标题措辞，正文直接用执行器给出的人类可读描述

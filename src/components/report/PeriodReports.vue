@@ -85,17 +85,6 @@
         </button>
       </div>
 
-      <!-- 一次性迁移提示：存量库升级后旧的两个「研究报告」任务被停用，
-           用户会以为"我的日报怎么不来了"。读的是迁移写入的 settings 标记，
-           点「知道了」即清空，之后不再出现。 -->
-      <div v-if="showSwitchNotice" class="rp-notice">
-        <span>
-          原来的「每日研究报告 / 每周研究报告」已停用，由这里的时间周期报告接管。
-          想继续用旧格式，可在「设置 → 自动化」重新启用。
-        </span>
-        <button class="btn btn-ghost" type="button" @click="dismissNotice">知道了</button>
-      </div>
-
       <!-- 自定义区间：只在切到自定义口径时展开，不常驻占位 -->
       <div v-if="store.windowMode === 'custom'" class="range-row">
         <label>
@@ -176,7 +165,6 @@ import { useReportPeriodStore, type PeriodSummary, type PeriodSource } from '@/s
 import { useArticlesStore } from '@/stores/articles'
 import { useUiStore } from '@/stores/ui'
 import { useToastStore } from '@/stores/toast'
-import { useSettingsStore } from '@/stores/settings'
 import { periodKindLabel, type PeriodKind } from '@/utils/periodWindow'
 import type { ExportTarget } from '@/utils/reportExport'
 import PeriodReportCard from './PeriodReportCard.vue'
@@ -197,7 +185,6 @@ const store = useReportPeriodStore()
 const articlesStore = useArticlesStore()
 const uiStore = useUiStore()
 const toast = useToastStore()
-const settingsStore = useSettingsStore()
 
 /** 三个粒度 */
 const GRAINS: { value: PeriodKind; label: string }[] = [
@@ -303,26 +290,6 @@ function toggleCustom() {
   store.setWindowMode(store.windowMode === 'natural' ? 'custom' : 'natural')
 }
 
-/** 迁移提示键（由 `db::migrate_period_report_tasks` 写入） */
-const SWITCH_NOTICE_KEY = 'period_report_switch_notice'
-
-/** 是否需要展示"旧任务已停用"的一次性提示 */
-const showSwitchNotice = computed(
-  () => settingsStore.getSetting(SWITCH_NOTICE_KEY) === '1',
-)
-
-/**
- * 关掉一次性提示
- *
- * 写空串而不是"删键"：`settings_set` 只有 upsert 语义，没有删除命令，
- * 而空串与"没写过"在读取侧等价（判断条件是 `=== '1'`）。
- */
-async function dismissNotice() {
-  await settingsStore.setSetting(SWITCH_NOTICE_KEY, '').catch(() => {
-    // 写失败只影响"下次还会再提示一次"，不值得打断阅读
-  })
-}
-
 /**
  * 生成当前窗口的报告
  *
@@ -397,8 +364,6 @@ async function onDelete() {
  *
  * 反序会触发 `BaseModal` 的焦点归还 → 焦点落到订阅栏按钮上 → 再选中文章，
  * 键盘用户会看到焦点闪两下。
- *
- * @param source - 被点开的引用源
  */
 async function onOpenArticle(source: PeriodSource) {
   if (source.articleId === null) {
@@ -611,25 +576,8 @@ onMounted(() => {
   color: var(--text-tertiary);
 }
 
-/* ── 一次性迁移提示 ─────────────────────────────────────────────────── */
-.rp-notice {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  padding: 9px 12px;
-  border: 1px solid color-mix(in srgb, var(--primary) 35%, var(--border));
-  border-radius: var(--r-md);
-  background: var(--primary-soft);
-  color: var(--text-primary);
-  font-size: var(--fs-modal-label);
-  line-height: var(--lh-modal-label);
-}
-.rp-notice > span {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-/* ── 空态 ───────────────────────────────────────────────────────────── */.rp-empty {
+/* ── 空态 ───────────────────────────────────────────────────────────── */
+.rp-empty {
   border: 1px dashed var(--border);
   border-radius: var(--r-lg);
   padding: var(--sp-4);

@@ -394,7 +394,7 @@ export interface AiStreamPayload {
 }
 
 /** 对话角色：用户提问 / 模型回答 */
-export type ChatRole = 'user' | 'assistant'
+type ChatRole = 'user' | 'assistant'
 
 /**
  * 一条文章追问问答

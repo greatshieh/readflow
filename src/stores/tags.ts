@@ -32,7 +32,7 @@ import { useArticlesStore } from './articles'
  * 色值只在 CSS 里定义一处，日后调整主题或替换色板无需迁移数据。
  */
 export const TAG_COLORS = ['green', 'indigo', 'amber', 'red', 'sky', 'violet', 'slate'] as const
-export type TagColor = (typeof TAG_COLORS)[number]
+type TagColor = (typeof TAG_COLORS)[number]
 
 /**
  * 把标签颜色名转成可直接写进样式的 CSS 变量引用
