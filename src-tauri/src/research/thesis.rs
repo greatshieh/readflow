@@ -497,6 +497,18 @@ pub async fn update(pool: &SqlitePool, id: i64, patch: ThesisPatch) -> Result<()
 pub async fn delete(pool: &SqlitePool, id: i64) -> Result<(), String> {
     // 显式删子表：PRAGMA foreign_keys 未开启时 ON DELETE CASCADE 不生效，
     // 会留下一堆孤儿证据（项目已在 report_sources 上踩过同一个坑）
+    //
+    // 顺序是"子表的子表 → 子表 → 主表"，三级都不能反：`thesis_evidence_source`
+    // 靠 `thesis_evidence.id` 定位，一旦证据行先被删掉，这条 IN 子查询就查不到
+    // 任何行，孤儿行永远留下且**不报错**。
+    sqlx::query(
+        "DELETE FROM thesis_evidence_source \
+         WHERE evidence_id IN (SELECT id FROM thesis_evidence WHERE thesis_id = ?)",
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("删除证据来源失败：{e}"))?;
     sqlx::query("DELETE FROM thesis_evidence WHERE thesis_id = ?")
         .bind(id)
         .execute(pool)
@@ -535,7 +547,14 @@ pub async fn add_evidence(pool: &SqlitePool, input: NewEvidence) -> Result<i64, 
     get_thesis(pool, input.thesis_id).await?;
 
     let (snapshot, article_id) = load_snapshot(pool, &kind, input.ref_id).await?;
-    let _ = article_id;
+
+    // 来源身份在**挂载那一刻**定格。文章会被清理（判据是 `published_at` 而非抓取时间），
+    // 一被清理，事件/高亮随之级联消失，"谁说的、哪天说的"就永久丢失且不可回填。
+    // 所以这里必须留一份独立拷贝，而不只是记一个 ref_id。
+    let identity = match article_id {
+        Some(aid) => load_source_identity(pool, aid).await?,
+        None => None,
+    };
 
     // 同一论点下同一来源：改立场/备注（用户改主意是正常行为，不该报错）
     let existing: Option<i64> = sqlx::query_scalar(
@@ -559,6 +578,9 @@ pub async fn add_evidence(pool: &SqlitePool, input: NewEvidence) -> Result<i64, 
             .map_err(|e| format!("更新证据失败：{e}"))?;
         // 证据变了，论点"最近动过"的时间要跟着走（列表按 updated_at 排序）
         touch(pool, input.thesis_id).await?;
+        // 老证据可能还没有 source 行（本表建出来之前挂的），`INSERT OR IGNORE` 顺手补齐；
+        // 已有行时**不覆盖**——来源身份记的是"我当时从哪看到的"，不该随改立场而重写。
+        write_source_identity(pool, eid, article_id, &identity).await?;
         return Ok(eid);
     }
 
@@ -576,7 +598,88 @@ pub async fn add_evidence(pool: &SqlitePool, input: NewEvidence) -> Result<i64, 
     .await
     .map_err(|e| format!("挂载证据失败：{e}"))?;
     touch(pool, input.thesis_id).await?;
+    write_source_identity(pool, id, article_id, &identity).await?;
     Ok(id)
+}
+
+/// 读取一篇文章的来源身份（媒体名 + 发布日期）
+///
+/// `source_name` 取值优先级：`feeds.name`（订阅源即媒体）→ `articles.author` → 空串。
+/// 用 `NULLIF(...,'')` 而不是裸 `COALESCE`：空串也该跳到下一档（`feeds.name` 为空的
+/// 脏数据是存在的）。`LEFT JOIN feeds` 是为了"文章还在但 feed 行缺失"时不报错。
+///
+/// # 参数
+/// * `article_id` - 文章 ID
+///
+/// # 返回
+/// `Some((来源名, 发布日期))`；文章已不存在时 `None`。
+/// `published_at` 为空串表示该文章没有发布时间（这类文章在清理时天然被保留）。
+///
+/// # 错误
+/// 查询失败时返回错误信息
+async fn load_source_identity(
+    pool: &SqlitePool,
+    article_id: i64,
+) -> Result<Option<(String, String)>, String> {
+    let row = sqlx::query(
+        "SELECT COALESCE(NULLIF(f.name, ''), NULLIF(a.author, ''), '') AS source_name, \
+                COALESCE(a.published_at, '') AS published_at \
+         FROM articles a LEFT JOIN feeds f ON f.id = a.feed_id \
+         WHERE a.id = ?",
+    )
+    .bind(article_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("读取文章来源失败：{e}"))?;
+    Ok(row.map(|r| {
+        let name: String = r.get("source_name");
+        let published: String = r.get("published_at");
+        (name, published)
+    }))
+}
+
+/// 写一行证据来源身份（幂等，不覆盖已有行）
+///
+/// 用 `INSERT OR IGNORE` 而非 `REPLACE`，理由有二：
+/// 1. **不覆盖**——来源身份是"我当时从哪看到的"，用户把立场从支持改成反驳，
+///    不该连带改写来源；
+/// 2. **自动补齐**——"证据行存在但没有 source 行"的情况不需要额外判断分支。
+///
+/// 文章查不到时（`identity` 为 `None`）仍要写行，只是 `article_id` 写 NULL、
+/// 两个文本列写空串（状态②）。**不能跳过**：跳过会让它永远停在"待回填"，
+/// 每次启动都白扫一遍，且无法区分"没跑过"与"跑过但当时就丢了"。
+///
+/// # 参数
+/// * `evidence_id` - 证据行 ID
+/// * `article_id` - `load_snapshot` 给出的文章 ID（可空）
+/// * `identity` - `load_source_identity` 的结果
+///
+/// # 错误
+/// 写入失败时返回错误信息——**不吞**。吞掉错误的后果是"表建了但一直是空的"，
+/// 而表面上一切正常。
+async fn write_source_identity(
+    pool: &SqlitePool,
+    evidence_id: i64,
+    article_id: Option<i64>,
+    identity: &Option<(String, String)>,
+) -> Result<(), String> {
+    // 查不到来源 ⇒ 连 article_id 也写 NULL：状态②的定义就是"行在、源没"
+    let (aid, name, published) = match identity {
+        Some((n, p)) => (article_id, n.as_str(), p.as_str()),
+        None => (None, "", ""),
+    };
+    sqlx::query(
+        "INSERT OR IGNORE INTO thesis_evidence_source \
+         (evidence_id, article_id, source_name, published_at) VALUES (?, ?, ?, ?)",
+    )
+    .bind(evidence_id)
+    .bind(aid)
+    .bind(name)
+    .bind(published)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("记录证据来源失败：{e}"))?;
+    Ok(())
 }
 
 /// 摘掉一条证据
@@ -587,6 +690,14 @@ pub async fn remove_evidence(pool: &SqlitePool, evidence_id: i64) -> Result<(), 
             .fetch_optional(pool)
             .await
             .map_err(|e| format!("查询证据失败：{e}"))?;
+    // 先删子表的子表：PRAGMA foreign_keys 未开启，ON DELETE CASCADE 不生效。
+    // 顺序不能反 —— 先把 thesis_evidence 行删了，就再也找不到对应的来源行了，
+    // 孤儿行会静默累积（不报错、不占界面，只在库变大时才被发现）。
+    sqlx::query("DELETE FROM thesis_evidence_source WHERE evidence_id = ?")
+        .bind(evidence_id)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("移除证据来源失败：{e}"))?;
     sqlx::query("DELETE FROM thesis_evidence WHERE id = ?")
         .bind(evidence_id)
         .execute(pool)
@@ -725,9 +836,22 @@ mod tests {
         .execute(&pool)
         .await
         .expect("建实体表失败");
+        // 订阅源与文章的列按**真实 schema** 给全：TASK-00 起 `load_source_identity`
+        // 要 JOIN feeds 并读 author / published_at。缺列不会报错，只会静默取到空串
+        // ——那正是"测试全绿但来源身份全是空"的来源。
         sqlx::query(
-            "CREATE TABLE articles (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, \
-             summary TEXT DEFAULT '', content TEXT DEFAULT '')",
+            "CREATE TABLE feeds (id INTEGER PRIMARY KEY AUTOINCREMENT, \
+             name TEXT NOT NULL, url TEXT NOT NULL UNIQUE)",
+        )
+        .execute(&pool)
+        .await
+        .expect("建订阅源表失败");
+        sqlx::query(
+            "CREATE TABLE articles (id INTEGER PRIMARY KEY AUTOINCREMENT, \
+             feed_id INTEGER NOT NULL DEFAULT 0, guid TEXT NOT NULL DEFAULT '', \
+             link TEXT NOT NULL DEFAULT '', title TEXT NOT NULL, \
+             summary TEXT DEFAULT '', content TEXT DEFAULT '', \
+             author TEXT DEFAULT '', published_at DATETIME)",
         )
         .execute(&pool)
         .await
@@ -766,6 +890,12 @@ mod tests {
                 id INTEGER PRIMARY KEY AUTOINCREMENT, thesis_id INTEGER NOT NULL, field TEXT NOT NULL,
                 from_value TEXT NOT NULL DEFAULT '', to_value TEXT NOT NULL DEFAULT '',
                 reason TEXT NOT NULL DEFAULT '', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)"#,
+            // 证据来源身份（TASK-00）。字段与 db.rs::create_tables 里的定义必须一致，
+            // 这里能保留手抄是因为本模块的测试只需要论点族；一旦本表结构变更，两处同改。
+            r#"CREATE TABLE thesis_evidence_source (
+                evidence_id INTEGER PRIMARY KEY, article_id INTEGER,
+                source_name TEXT NOT NULL DEFAULT '', published_at TEXT NOT NULL DEFAULT '',
+                captured_at DATETIME DEFAULT CURRENT_TIMESTAMP)"#,
         ] {
             sqlx::query(ddl).execute(&pool).await.expect("建论点表失败");
         }
@@ -774,6 +904,31 @@ mod tests {
 
     /// 插入一个实体与一篇文章，返回 (entity_id, article_id)
     async fn seed(pool: &SqlitePool) -> (i64, i64) {
+        let (eid, aid, _) = seed_with_source(pool, "", "", "").await;
+        (eid, aid)
+    }
+
+    /// 插入一个订阅源 + 一篇带来源身份的文章 + 一个实体
+    ///
+    /// @param feed_name - 订阅源名（媒体名来源的第一档）
+    /// @param author - 作者（`feeds.name` 为空时才会被取到）
+    /// @param published_at - 发布日期，空串表示没有发布时间
+    /// @returns `(entity_id, article_id, feed_id)`
+    async fn seed_with_source(
+        pool: &SqlitePool,
+        feed_name: &str,
+        author: &str,
+        published_at: &str,
+    ) -> (i64, i64, i64) {
+        // feeds.url 有 UNIQUE 约束，同一测试里可能建多个源，靠序号区分
+        static FEED_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = FEED_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let feed_id: i64 = sqlx::query_scalar("INSERT INTO feeds (name, url) VALUES (?, ?) RETURNING id")
+            .bind(feed_name)
+            .bind(format!("https://example.com/feed-{seq}"))
+            .fetch_one(pool)
+            .await
+            .expect("插订阅源失败");
         let eid: i64 = sqlx::query_scalar(
             "INSERT INTO entities (name, entity_type) VALUES ('宁德时代', 'company') RETURNING id",
         )
@@ -781,12 +936,17 @@ mod tests {
         .await
         .expect("插实体失败");
         let aid: i64 = sqlx::query_scalar(
-            "INSERT INTO articles (title, summary) VALUES ('储能出货超预期', 'Q3 出货 22GWh') RETURNING id",
+            "INSERT INTO articles (feed_id, guid, link, title, summary, author, published_at) \
+             VALUES (?, 'g1', 'https://example.com/a1', '储能出货超预期', 'Q3 出货 22GWh', ?, ?) \
+             RETURNING id",
         )
+        .bind(feed_id)
+        .bind(author)
+        .bind(published_at)
         .fetch_one(pool)
         .await
         .expect("插文章失败");
-        (eid, aid)
+        (eid, aid, feed_id)
     }
 
     #[tokio::test]
@@ -1094,5 +1254,158 @@ mod tests {
         for key in ["refId", "snapshotText", "articleId", "articleTitle"] {
             assert!(v.get(key).is_some(), "缺字段 {key}");
         }
+    }
+
+    // ─── TASK-00：证据来源身份 ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn add_evidence_writes_source_snapshot() {
+        let pool = test_pool().await;
+        let (eid, aid, _) = seed_with_source(&pool, "财新", "张三", "2026-10-28").await;
+        let id = create(&pool, NewThesis { statement: "判断".into(), entity_id: eid, confidence: None })
+            .await
+            .expect("新建失败");
+        add_evidence(
+            &pool,
+            NewEvidence { thesis_id: id, kind: "article".into(), ref_id: aid, stance: "support".into(), note: None },
+        )
+        .await
+        .expect("挂证据失败");
+
+        let row = sqlx::query(
+            "SELECT article_id, source_name, published_at, captured_at FROM thesis_evidence_source",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("来源行应存在");
+
+        assert_eq!(row.get::<i64, _>("article_id"), aid, "应记下文章 ID");
+        assert_eq!(
+            row.get::<String, _>("source_name"),
+            "财新",
+            "订阅源名优先于作者（feed 名才是媒体）"
+        );
+        assert!(
+            row.get::<String, _>("published_at").contains("2026-10-28"),
+            "发布日期要快照下来"
+        );
+        assert!(
+            row.get::<Option<String>, _>("captured_at").is_some(),
+            "captured_at 不该为空"
+        );
+    }
+
+    #[tokio::test]
+    async fn source_snapshot_survives_source_deleted() {
+        let pool = test_pool().await;
+        let (eid, aid, _) = seed_with_source(&pool, "财新", "张三", "2026-10-28").await;
+        let id = create(&pool, NewThesis { statement: "判断".into(), entity_id: eid, confidence: None })
+            .await
+            .expect("新建失败");
+        add_evidence(
+            &pool,
+            NewEvidence { thesis_id: id, kind: "article".into(), ref_id: aid, stance: "support".into(), note: None },
+        )
+        .await
+        .expect("挂证据失败");
+
+        // 文章被保留策略清理（`thesis_evidence.ref_id` 故意不建外键，证据行留着）
+        sqlx::query("DELETE FROM articles WHERE id = ?")
+            .bind(aid)
+            .execute(&pool)
+            .await
+            .expect("删文章失败");
+
+        let row = sqlx::query("SELECT article_id, source_name FROM thesis_evidence_source")
+            .fetch_one(&pool)
+            .await
+            .expect("来源行必须还在——它的全部价值就是文章没了它还在");
+        assert_eq!(
+            row.get::<i64, _>("article_id"),
+            aid,
+            "article_id 是快照，不该跟着文章消失"
+        );
+        assert_eq!(
+            row.get::<String, _>("source_name"),
+            "财新",
+            "来源名更要留住：snapshot_text 保住了说什么，这张表保住谁说的"
+        );
+    }
+
+    #[tokio::test]
+    async fn re_attaching_same_source_keeps_original_identity() {
+        let pool = test_pool().await;
+        let (eid, aid, _) = seed_with_source(&pool, "财新", "张三", "2026-10-28").await;
+        let id = create(&pool, NewThesis { statement: "判断".into(), entity_id: eid, confidence: None })
+            .await
+            .expect("新建失败");
+        add_evidence(
+            &pool,
+            NewEvidence { thesis_id: id, kind: "article".into(), ref_id: aid, stance: "support".into(), note: None },
+        )
+        .await
+        .expect("首次挂载失败");
+        // 打一个可识别的旧时间戳：CURRENT_TIMESTAMP 的秒级精度会让"被覆盖成新值"
+        // 与"压根没动"看起来一样，测不出 INSERT OR IGNORE 与 REPLACE 的区别
+        sqlx::query("UPDATE thesis_evidence_source SET captured_at = '2000-01-01 00:00:00'")
+            .execute(&pool)
+            .await
+            .expect("打旧时间戳失败");
+
+        // 改立场：走到 add_evidence 的 UPDATE 分支
+        add_evidence(
+            &pool,
+            NewEvidence { thesis_id: id, kind: "article".into(), ref_id: aid, stance: "oppose".into(), note: None },
+        )
+        .await
+        .expect("改立场失败");
+
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM thesis_evidence_source")
+            .fetch_one(&pool)
+            .await
+            .expect("统计失败");
+        assert_eq!(n, 1, "改立场不该多出一行");
+        let captured: String = sqlx::query_scalar("SELECT captured_at FROM thesis_evidence_source")
+            .fetch_one(&pool)
+            .await
+            .expect("读时间失败");
+        assert_eq!(
+            captured, "2000-01-01 00:00:00",
+            "来源身份在首次挂载时定格：它记的是「我当时从哪看到的」，不随立场改写"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_removes_evidence_source_rows() {
+        let pool = test_pool().await;
+        let (eid, aid1, _) = seed_with_source(&pool, "财新", "张三", "2026-10-28").await;
+        let (_, aid2, _) = seed_with_source(&pool, "路透", "李四", "2026-10-29").await;
+        let id = create(&pool, NewThesis { statement: "判断".into(), entity_id: eid, confidence: None })
+            .await
+            .expect("新建失败");
+        for aid in [aid1, aid2] {
+            add_evidence(
+                &pool,
+                NewEvidence { thesis_id: id, kind: "article".into(), ref_id: aid, stance: "support".into(), note: None },
+            )
+            .await
+            .expect("挂证据失败");
+        }
+
+        delete(&pool, id).await.expect("删除失败");
+
+        let ev: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM thesis_evidence")
+            .fetch_one(&pool)
+            .await
+            .expect("统计证据失败");
+        let src: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM thesis_evidence_source")
+            .fetch_one(&pool)
+            .await
+            .expect("统计来源失败");
+        assert_eq!(ev, 0, "证据应被清空");
+        assert_eq!(
+            src, 0,
+            "来源行也必须清掉：PRAGMA foreign_keys 未开启，CASCADE 不生效，只能显式删"
+        );
     }
 }

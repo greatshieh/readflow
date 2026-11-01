@@ -2540,6 +2540,50 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
         .execute(pool)
         .await?;
 
+    // ─── 证据的来源身份（TASK-00） ──────────────────────────────────────────
+    //
+    // 为什么必须单独一张表、且必须现在建：
+    //   `research_events` / `highlights` 对 `articles` 都是 ON DELETE CASCADE，
+    //   而清理判据是 **published_at**（不是抓取时间），豁免只有「收藏 / 未读
+    //   （keep_unread 默认开）/ published_at 为空」三种（见 cleanup_old_articles）。
+    //   文章一被清理，事件与高亮级联消失，"谁说的、哪天说的"就永久丢失，且**不可回填**。
+    //
+    // ⚠️ 故意**不**对 `articles` 建外键：它的全部价值就是"文章没了它还在"。
+    //    这与 `thesis_evidence.ref_id` 不建外键是同一条理由，别"修正"它。
+    // ⚠️ 对 `thesis_evidence` 建了外键，但删除**不依赖** CASCADE —— 本项目
+    //    PRAGMA foreign_keys 未开启，必须走显式删（见 thesis::delete /
+    //    thesis::remove_evidence），且顺序是"先删子表的子表"。
+    //
+    // 三种状态靠「行是否存在」+「article_id 是否为空」共同表达，不可用同一个 NULL 混同：
+    //   ① article_id 有值              → 已记录，有源可回跳
+    //   ② 行存在但 article_id 为 NULL → 记录过，但当时源已失联（数据丢了，不是没跑过）
+    //   ③ 行不存在                     → 还没回填（待办，下次启动重试）
+    // 三者之和恒等于 thesis_evidence 行数；诊断 SQL 见 research/review/mod.rs。
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS thesis_evidence_source (
+            evidence_id INTEGER PRIMARY KEY,                -- 1:1 指向 thesis_evidence.id
+            article_id INTEGER,                             -- 可空：见上②
+            source_name TEXT NOT NULL DEFAULT '',           -- 哪家：COALESCE(feeds.name, articles.author, '')
+            published_at TEXT NOT NULL DEFAULT '',          -- 哪天发布；缺失留空（不猜）
+            captured_at DATETIME DEFAULT CURRENT_TIMESTAMP  -- 何时记下（区分"发布"与"我记下"）
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+    // 按文章反查"还有哪些证据依赖它"（阶段二 H3 按 article_id 去重走它）
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_evidence_source_article ON thesis_evidence_source(article_id)",
+    )
+    .execute(pool)
+    .await?;
+    // 按媒体聚合（阶段四分歧度用）。本轮只写不读，但建表时一次成型比事后补便宜，
+    // 且 `CREATE INDEX IF NOT EXISTS` 对存量库零风险。
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_evidence_source_name ON thesis_evidence_source(source_name)",
+    )
+    .execute(pool)
+    .await?;
+
     // ─── 周期报告「本期值得跟进」（P4） ─────────────────────────────────────
     //
     // 为什么不给 report_periods 加一列存 JSON：

@@ -23,6 +23,7 @@ pub mod extract;
 pub mod normalize;
 pub mod period;
 pub mod report;
+pub mod review;
 pub mod thesis;
 
 use std::collections::HashSet;
