@@ -1135,8 +1135,12 @@ fn render_report_summary(period: &str, rows: &[EventWithContext]) -> String {
 
 /// `body` 块：按实体分组的事件列表
 ///
-/// 无事件时返回提示 callout —— 仍留在 `body` 块内，这样"从有事件变成无事件"是一次
-/// 正常的块内替换，不会把用户写在块外的批注牵扯进来。
+/// 无事件时返回提示 callout，**仍然产出一个 `body` 块**，不做成"条件产出"。
+///
+/// 这跟 `obsidian.rs` 里 `summary` / `translation` 的条件产出是**故意不同**的，别统一：
+/// 那两块是"有才有意义"的可选内容，没有就该从文件里消失（投影会删掉不再产出的块）；
+/// 而"本期无动态"是这个报告的一种**正常状态**，不是内容缺失——写一句提示比让正文
+/// 区域凭空少一块更诚实，也让跨期归档对比时骨架稳定。
 fn render_report_body(rows: &[EventWithContext]) -> String {
     if rows.is_empty() {
         return "> [!info] 本期无动态\n> 时间窗口内没有已提取的研究事件。\n".to_string();

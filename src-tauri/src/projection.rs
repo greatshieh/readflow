@@ -90,9 +90,19 @@ pub enum ProjectOutcome {
     Merged {
         /// 命中并就地替换的块数
         replaced: usize,
-        /// 旧文件里没有、已追加到末尾的块数
+        /// 旧文件里没有、已按文档顺序插入的块数
         appended: usize,
+        /// 文档不再产出、已从文件里移除的块数
+        removed: usize,
     },
+}
+
+/// 一次合并的块级明细（内部用，最终装进 [`ProjectOutcome::Merged`]）
+#[derive(Debug, Default, Clone, Copy)]
+struct MergeCounts {
+    replaced: usize,
+    appended: usize,
+    removed: usize,
 }
 
 /// 把一份带标记的完整文档投影到 `path`
@@ -140,10 +150,13 @@ pub fn project_document(path: &Path, doc: &str) -> Result<ProjectOutcome, String
         ));
     }
 
-    let (merged, replaced, appended) =
-        merge_into_existing(&existing, doc_frontmatter, &doc_blocks, path)?;
+    let (merged, counts) = merge_into_existing(&existing, doc_frontmatter, &doc_blocks, path)?;
     atomic_write(path, &merged)?;
-    Ok(ProjectOutcome::Merged { replaced, appended })
+    Ok(ProjectOutcome::Merged {
+        replaced: counts.replaced,
+        appended: counts.appended,
+        removed: counts.removed,
+    })
 }
 
 /// 拼装一份带标记的完整文档
@@ -214,6 +227,10 @@ struct BlockSpan {
     begin_end: usize,
     /// 结束标记所在行的行首字节下标（块内内容的终点）
     end_start: usize,
+    /// 结束标记所在行**之后**的字节下标（下一个字节的起点）
+    ///
+    /// 删除整块时要连两行标记一起删，所以需要这个右边界；只替换时用不到。
+    end_end: usize,
 }
 
 /// 扫描文本里所有配对的标记块
@@ -253,6 +270,7 @@ fn find_blocks(text: &str) -> Result<Vec<BlockSpan>, String> {
                         begin_start,
                         begin_end,
                         end_start: line_start,
+                        end_end: offset,
                     });
                 }
                 Some((begin_name, ..)) => {
@@ -348,25 +366,31 @@ fn parse_doc_blocks(body: &str) -> Result<Vec<(String, &str)>, String> {
 
 /// 把生成的文档合并进已存在的文件
 ///
-/// 规则：
+/// 规则（`doc` 是"这份文件**应该**长什么样"的完整声明，所以既有增也有减）：
 /// - **先校验身份**：旧文件 frontmatter 里的 `readflow_id` 与本次要写的不一致时直接
 ///   报错（见 [`assert_same_identity`]）；
 /// - 生成的块在旧文件里能找到 → **只替换 begin 与 end 两行之间的内容**，标记行本身
 ///   保留原样（用户可能调整过缩进或行尾，不必纠正）；
-/// - 找不到 → 追加到文件末尾（前面空一行）。这是**升级路径**：老版本写出的文件缺少
-///   新版本才有的块，追加才能补上，否则功能一升级就卡在旧格式上；
-/// - 同名块在旧文件里出现多次 → 只替换**第一对**，其余原样保留（很可能是用户自己
-///   复制的副本，删了就是删用户的东西）；
+/// - 找不到 → 按**文档顺序**插到它在 `doc` 里的前一个块之后，而不是一律追加到末尾。
+///   否则「块被移除过、后来又重新产出」（关掉译文开关再打开）会让它跑到文件最后，
+///   排版和 `doc` 声明的顺序对不上；
+/// - 旧文件里有、`doc` 里已不产出的块 → **连两行标记一起删掉**。这是"投影"的另一半：
+///   只加不减的话，用户关掉「导出时带译文」再导出，笔记里那段旧译文会永远留着，
+///   看起来就像开关没生效；
+/// - 同名块在旧文件里出现多次 → 只处理**第一对**（替换或删除），其余原样保留——很可能
+///   是用户自己复制的副本，动了就是动用户的东西；
 /// - frontmatter 按 key 合并（见 [`merge_frontmatter`]）。
+///
+/// 块外的字节（块间空隙、文件末尾）在任何分支下都逐字节保留。
 ///
 /// # 参数
 /// * `existing` - 旧文件全文
 /// * `doc_frontmatter` - 生成文档的 frontmatter 内文
-/// * `doc_blocks` - 生成文档的块
+/// * `doc_blocks` - 生成文档的块，顺序即目标顺序
 /// * `path` - 目标路径（仅用于报错时指认文件）
 ///
 /// # 返回值
-/// `(合并后的全文, 替换块数, 追加块数)`
+/// `(合并后的全文, 块级明细)`
 ///
 /// # 错误
 /// 旧文件的标记不配对，或两边的 `readflow_id` 不一致时返回错误
@@ -375,39 +399,62 @@ fn merge_into_existing(
     doc_frontmatter: &str,
     doc_blocks: &[(String, &str)],
     path: &Path,
-) -> Result<(String, usize, usize), String> {
+) -> Result<(String, MergeCounts), String> {
     let (existing_frontmatter, existing_body) = split_frontmatter(existing);
     assert_same_identity(existing_frontmatter.unwrap_or(""), doc_frontmatter, path)?;
     let existing_spans = find_blocks(existing_body)?;
 
-    let mut plans: Vec<(&BlockSpan, &str)> = Vec::new();
-    let mut missing: Vec<(&str, &str)> = Vec::new();
-    for (name, inner) in doc_blocks {
-        match existing_spans.iter().find(|s| &s.name == name) {
-            Some(span) => plans.push((span, inner)),
-            None => missing.push((name.as_str(), inner)),
+    let mut body = String::with_capacity(existing_body.len() + 1024);
+    let mut counts = MergeCounts::default();
+    // doc 里每个块是否已经写出去过：决定"替换"还是"这个同名的第二份该原样留着"
+    let mut emitted = vec![false; doc_blocks.len()];
+    // 旧文件里块外文本的游标
+    let mut cursor = 0usize;
+
+    for span in &existing_spans {
+        // 先把这一块之前的块外文本原样搬过来
+        body.push_str(&existing_body[cursor..span.begin_start]);
+        cursor = span.end_end;
+
+        match doc_blocks.iter().position(|(name, _)| name == &span.name) {
+            Some(idx) if !emitted[idx] => {
+                // 之前的新块先按 doc 顺序补上，保证相对顺序等于 doc
+                for i in 0..idx {
+                    if !emitted[i] {
+                        append_block(&mut body, &doc_blocks[i].0, doc_blocks[i].1);
+                        emitted[i] = true;
+                        counts.appended += 1;
+                    }
+                }
+                // 连标记行一起写：`cursor` 已经跳过旧块的标记与内容，这里要重建完整块
+                body.push_str(&render_block(&doc_blocks[idx].0, doc_blocks[idx].1));
+                emitted[idx] = true;
+                counts.replaced += 1;
+            }
+            Some(_) => {
+                // 同名的第二份：原样保留，连标记一起搬回
+                body.push_str(&existing_body[span.begin_start..span.end_end]);
+            }
+            None => {
+                // doc 不再产出这个块 → 删除（块外文本已在上面搬走）
+                counts.removed += 1;
+            }
         }
     }
-    // 就地替换必须按旧文件中的先后顺序推进游标，否则后面所有切片都会错位
-    plans.sort_by_key(|(span, _)| span.begin_start);
-
-    let mut body = String::with_capacity(existing_body.len() + 1024);
-    let mut cursor = 0usize;
-    for (span, inner) in &plans {
-        body.push_str(&existing_body[cursor..span.begin_end]);
-        body.push_str(inner);
-        cursor = span.end_start;
-    }
-    // 尾部原样带走：最后一个块之后用户写的东西也属于用户
+    // 最后一个块之后的内容（用户写在文件末尾的东西）
     body.push_str(&existing_body[cursor..]);
 
-    for (name, inner) in &missing {
-        append_block(&mut body, name, inner);
+    // 旧文件里一个都没有的块，按 doc 顺序追加
+    for (i, (name, inner)) in doc_blocks.iter().enumerate() {
+        if !emitted[i] {
+            append_block(&mut body, name, inner);
+            counts.appended += 1;
+        }
     }
 
     let frontmatter = merge_frontmatter(existing_frontmatter, doc_frontmatter);
     let merged = format!("---\n{}---\n{}", frontmatter, body);
-    Ok((merged, plans.len(), missing.len()))
+    Ok((merged, counts))
 }
 
 /// 校验两份 frontmatter 描述的是同一个对象
@@ -690,7 +737,8 @@ mod tests {
             outcome,
             ProjectOutcome::Merged {
                 replaced: 2,
-                appended: 0
+                appended: 0,
+                removed: 0
             }
         );
 
@@ -732,7 +780,8 @@ mod tests {
             outcome,
             ProjectOutcome::Merged {
                 replaced: 2,
-                appended: 1
+                appended: 1,
+                removed: 0
             }
         );
 
@@ -741,6 +790,135 @@ mod tests {
         assert!(
             after.contains("> [!summary] 覆盖近 1 天"),
             "追加的块必须带内容：{after}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 边界三之三：文档不再产出的块必须从文件里消失，块外内容照旧不动
+    ///
+    /// 真实触发路径：用户关掉「导出时带译文」再导出、或文章的 AI 摘要被清空后再导出。
+    /// 只加不减的话，过期摘要/译文会永久留在笔记里，表现为"开关好像没有生效"。
+    #[test]
+    fn removes_block_no_longer_produced() {
+        let dir = temp_dir("remove");
+        let path = dir.join("文章笔记.md");
+        let fm = "readflow_id: article:42\n";
+        let v1 = assemble(
+            fm,
+            &[
+                ("header", "# 标题\n"),
+                ("summary", "> [!abstract] AI 摘要\n> 旧的摘要内容\n"),
+                ("content", "## 原文\n\n正文一段。\n"),
+            ],
+        );
+        project_document(&path, &v1).expect("首次投影失败");
+
+        // 用户在两块之间写一句自己的话
+        let old = std::fs::read_to_string(&path).expect("读回失败");
+        std::fs::write(
+            &path,
+            old.replace(
+                "<!-- readflow:end:header -->\n",
+                "<!-- readflow:end:header -->\n\n我的批注：这段要核实。\n",
+            ),
+        )
+        .expect("写回夹具失败");
+
+        // 摘要不再产出
+        let v2 = assemble(
+            fm,
+            &[
+                ("header", "# 标题\n"),
+                ("content", "## 原文\n\n正文一段更新了。\n"),
+            ],
+        );
+        let outcome = project_document(&path, &v2).expect("二次投影失败");
+        assert_eq!(
+            outcome,
+            ProjectOutcome::Merged {
+                replaced: 2,
+                appended: 0,
+                removed: 1
+            }
+        );
+
+        let after = std::fs::read_to_string(&path).expect("读回失败");
+        assert!(
+            !after.contains("旧的摘要内容"),
+            "已不产出的块内容不应残留：{after}"
+        );
+        assert!(
+            !after.contains("<!-- readflow:begin:summary -->"),
+            "标记行也要一并删掉：{after}"
+        );
+        assert!(
+            after.contains("我的批注：这段要核实。"),
+            "块外批注必须原样保留：{after}"
+        );
+        assert!(after.contains("正文一段更新了。"), "其它块应正常更新：{after}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 边界三之四：块被删除后重新产出，要回到它在文档里的位置，而不是文件末尾
+    ///
+    /// 真实触发路径：用户关掉译文开关 → 再打开。若一律追加到末尾，笔记的段落顺序
+    /// 会与文档声明的顺序不一致（摘要跑到译文后面）。
+    #[test]
+    fn reappearing_block_goes_back_to_its_position() {
+        let dir = temp_dir("reappear");
+        let path = dir.join("文章笔记.md");
+        let fm = "readflow_id: article:42\n";
+        let v1 = assemble(
+            fm,
+            &[
+                ("header", "# 标题\n"),
+                ("summary", "> [!abstract] 摘要\n"),
+                ("content", "## 原文\n\n正文。\n"),
+            ],
+        );
+        project_document(&path, &v1).expect("首次投影失败");
+
+        // 摘要消失
+        let v2 = assemble(
+            fm,
+            &[
+                ("header", "# 标题\n"),
+                ("content", "## 原文\n\n正文。\n"),
+            ],
+        );
+        project_document(&path, &v2).expect("二次投影失败");
+
+        // 摘要又回来了
+        let v3 = assemble(
+            fm,
+            &[
+                ("header", "# 标题\n"),
+                ("summary", "> [!abstract] 新摘要\n"),
+                ("content", "## 原文\n\n正文。\n"),
+            ],
+        );
+        let outcome = project_document(&path, &v3).expect("三次投影失败");
+        assert_eq!(
+            outcome,
+            ProjectOutcome::Merged {
+                replaced: 2,
+                appended: 1,
+                removed: 0
+            }
+        );
+
+        let after = std::fs::read_to_string(&path).expect("读回失败");
+        let i_summary = after
+            .find("<!-- readflow:begin:summary -->")
+            .expect("摘要块应重新出现");
+        let i_content = after
+            .find("<!-- readflow:begin:content -->")
+            .expect("正文块应存在");
+        assert!(
+            i_summary < i_content,
+            "重新出现的块必须回到文档声明的顺序（摘要应在正文之前），实际：{after}"
         );
 
         std::fs::remove_dir_all(&dir).ok();
@@ -830,7 +1008,8 @@ mod tests {
             outcome,
             ProjectOutcome::Merged {
                 replaced: 1,
-                appended: 1
+                appended: 1,
+                removed: 0
             }
         );
 
@@ -902,7 +1081,8 @@ mod tests {
             outcome,
             ProjectOutcome::Merged {
                 replaced: 2,
-                appended: 0
+                appended: 0,
+                removed: 0
             }
         );
         assert_eq!(
