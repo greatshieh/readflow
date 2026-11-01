@@ -184,12 +184,21 @@ backdrop-filter 又使 position:fixed 退化为 absolute —— 两者叠加会
           实体关系图
         </button>
         <!-- 智能推荐流：切到主屏右区卡片流（保留订阅栏），与文章阅读互斥的又一种主屏内容。
-             与快捷键 R 是同一动作的两个入口。 -->
+             与快捷键 T 是同一动作的两个入口。 -->
         <button class="dropdown-item" @click="showRecommendView">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M3 12h4l3 8 4-16 3 8h4"></path>
           </svg>
           智能推荐
+        </button>
+        <!-- 复盘页：切到主屏整页（保留订阅栏），与快捷键 W 是同一动作的两个入口。
+             与图/推荐不同的是它有会话状态：离开页面不等于结束会话（PRD-05 §4.1）。 -->
+        <button class="dropdown-item" @click="showReviewView">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 12a9 9 0 1 0 3-6.7"></path>
+            <path d="M3 4v5h5"></path>
+          </svg>
+          复盘
         </button>
         <!-- 阅读洞察：打开聚合看板（全库指标 + 阅读趋势），纯前端可视化 -->
         <button class="dropdown-item" @click="showInsights = true; showMoreMenu = false">
@@ -762,6 +771,22 @@ function showGraphView() {
 function showRecommendView() {
   showMoreMenu.value = false
   uiStore.toggleRecommendView()
+}
+
+/**
+ * 切换主屏复盘页（开 / 关）
+ *
+ * 「···更多」菜单的入口：与全局 `W` 键是同一动作的两个入口，
+ * 故统一委托 `uiStore.toggleReviewView()`。它**不打开弹窗**——视图切换立即生效。
+ *
+ * 与图/推荐有一处语义差异，别照抄它们：复盘页有会话状态，
+ * 离开页面**不等于**结束会话（PRD-05 §4.1）。所以这里只切视图，不碰任何复盘数据。
+ *
+ * @returns 无返回值；副作用为 uiStore.mainView 翻转、收起「更多」菜单
+ */
+function showReviewView() {
+  showMoreMenu.value = false
+  uiStore.toggleReviewView()
 }
 
 /**

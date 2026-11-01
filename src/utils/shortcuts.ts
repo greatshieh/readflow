@@ -69,6 +69,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { keys: ['f'], display: 'F', label: '专注阅读模式开关', group: '视图' },
   { keys: ['d'], display: 'D', label: '实体关系图开关', group: '视图' },
   { keys: ['t'], display: 'T', label: '智能推荐开关', group: '视图' },
+  { keys: ['w'], display: 'W', label: '复盘开关', group: '视图' },
 
   // ---- 应用 ----
   { keys: [','], display: ',', label: '打开设置', group: '应用' },

@@ -19,12 +19,14 @@
       <!-- 订阅栏 ↔ 右侧内容区 之间的可拖拽分隔条（对齐 Folo 的 PanelSplitter）；
            关系图视图下订阅栏右侧不再分列，分隔条随之隐藏 -->
       <div v-if="uiStore.mainView === 'articles'" class="col-resizer" :class="{ active: resizing === 'feed' }" @mousedown="startResize('feed', $event)" title="拖拽调整订阅栏宽度"></div>
-      <!-- 主屏内容三选一：文章阅读（中栏列表 + 右栏正文）、实体关系图（全屏）、智能推荐流（右区卡片流）。
-           互斥由 uiStore.mainView 驱动；关系图入口为「···更多」菜单与 D 键，推荐流入口为「···更多」菜单与 T 键。
+      <!-- 主屏内容四选一：文章阅读（中栏列表 + 右栏正文）、实体关系图（全屏）、智能推荐流（右区卡片流）、
+           复盘页（右区整页）。互斥由 uiStore.mainView 驱动；关系图入口为「···更多」菜单与 D 键，
+           推荐流入口为「···更多」菜单与 T 键，复盘入口为「···更多」菜单与 W 键。
            实体仪表盘为弹窗（点实体后弹出），不在此处渲染。
-           推荐流视图保留订阅栏（区别于关系图的全屏），故不在 main-recommend 下隐藏订阅栏 -->
+           推荐流与复盘页都保留订阅栏（区别于关系图的全屏），故不在对应 class 下隐藏订阅栏 -->
       <GraphView v-if="uiStore.mainView === 'graph'" />
       <RecommendView v-else-if="uiStore.mainView === 'recommend'" />
+      <ReviewView v-else-if="uiStore.mainView === 'review'" />
       <template v-else>
         <!-- 中：文章列表栏（ArticleColumn，顶部固定操作条：当前源 / 搜索 / 仅未读 / 书签 / 刷新当前源 / 全部已读） -->
         <ArticleColumn />
@@ -89,6 +91,7 @@ import ArticleColumn from './components/ArticleColumn.vue'
 import ContentColumn from './components/ContentColumn.vue'
 import GraphView from './components/GraphView.vue'
 import RecommendView from './components/RecommendView.vue'
+import ReviewView from './components/review/ReviewView.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import ShortcutsModal from './components/ShortcutsModal.vue'
 import EntityDashboardModal from './components/EntityDashboardModal.vue'
@@ -387,6 +390,7 @@ const ACTIONS: Record<string, () => void> = {
   f: () => uiStore.toggleFocusMode(),
   d: () => uiStore.toggleGraphView(),
   t: () => uiStore.toggleRecommendView(),
+  w: () => uiStore.toggleReviewView(),
   // ---- 应用 ----
   ',': () => {
     showSettings.value = true
@@ -486,8 +490,13 @@ function handleBackToReport(e: KeyboardEvent): boolean {
  */
 function handleKeydown(e: KeyboardEvent) {
   // Esc 退出全屏视图放在最前：不涉及修饰键冲突，且应当在任何情况下可用。
-  // 优先级：专注模式 > 关系图 / 推荐流（任何非文章视图） > 否则交给后续逻辑（弹窗自行处理 Esc）。
-  // mainView 非 articles 即视为"需要退出的视图"，统一回到 articles（setMainView 类型已含 recommend）。
+  // 优先级：专注模式 > 关系图 / 推荐流 / 复盘页（任何非文章视图） > 否则交给后续逻辑（弹窗自行处理 Esc）。
+  // mainView 非 articles 即视为"需要退出的视图"，统一回到 articles。
+  //
+  // ⚠ 对复盘页来说，"退出视图"**不等于"结束会话"**：复盘是有进行状态的（见 PRD-05 §4.1），
+  // Esc 只把人带离页面，会话数据必须留在 store 里，下次按 W 回来还能接着看。
+  // 所以这里只 setMainView，**不要**顺手清任何复盘状态——那会把"按 Esc 看一眼别处"
+  // 变成"这次复盘作废"。
   if (e.key === 'Escape') {
     if (uiStore.focusMode) {
       uiStore.setFocusMode(false)

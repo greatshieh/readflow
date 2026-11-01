@@ -23,6 +23,15 @@
 import { acceptHMRUpdate, defineStore } from 'pinia'
 import { ref } from 'vue'
 
+/**
+ * 主屏视图标识
+ *
+ * 独立导出而不是内联在 `ref<>` 里：`App.vue` 的渲染分支、`setMainView` 的形参、
+ * 快捷键动作都要用同一份联合类型。内联的写法会出现"改了 ref 忘了改形参"的漏改，
+ * 而 TS 只在实参处报错、不在定义处提醒。新增视图时这里是唯一真源。
+ */
+export type MainView = 'articles' | 'graph' | 'recommend' | 'review'
+
 export const useUiStore = defineStore('ui', () => {
   /**
    * 专注阅读模式开关
@@ -32,19 +41,27 @@ export const useUiStore = defineStore('ui', () => {
    */
   const focusMode = ref(false)
 
-  /** 主屏内容类型：articles = 文章列表 + 正文（默认三栏）；graph = 实体关系图（全屏）；recommend = 智能推荐卡片流（保留订阅栏）。实体仪表盘为弹窗，不在此枚举内 */
-  const mainView = ref<'articles' | 'graph' | 'recommend'>('articles')
+  /**
+   * 主屏内容类型：
+   * - `articles` 文章列表 + 正文（默认三栏）
+   * - `graph` 实体关系图（全屏）
+   * - `recommend` 智能推荐卡片流（保留订阅栏）
+   * - `review` 复盘页（保留订阅栏）
+   * 实体仪表盘为弹窗，不在此枚举内。
+   */
+  const mainView = ref<MainView>('articles')
 
   /**
    * 切换主屏内容类型
    *
-   * 由关系图的两个入口（侧栏「更多」菜单、全局 `D` 键）、推荐流入口
-   * （侧栏「更多」菜单、全局 `T` 键）与主屏图视图的「返回文章」按钮调用。
+   * 由关系图的入口（侧栏「更多」菜单、全局 `D` 键）、推荐流入口
+   * （侧栏「更多」菜单、全局 `T` 键）、复盘页入口（同上二者，快捷键 `W`）
+   * 与主屏各视图的「返回文章」按钮调用。
    *
-   * @param view - 目标视图：'articles' 回到阅读，'graph' 进入关系图，'recommend' 进入智能推荐流
+   * @param view - 目标视图
    * @returns 无返回值；副作用为覆盖 mainView，App.vue 据此切换渲染的栏组件
    */
-  function setMainView(view: 'articles' | 'graph' | 'recommend') {
+  function setMainView(view: MainView) {
     mainView.value = view
   }
 
@@ -103,6 +120,23 @@ export const useUiStore = defineStore('ui', () => {
   }
 
   /**
+   * 在「复盘页」与「文章阅读」之间切换主屏内容
+   *
+   * # 为什么不复用上面两个的写法
+   * `toggleGraphView` / `toggleRecommendView` 是"二元 toggle"：不在自己那一支时
+   * 一律落到 `articles`。对它们没问题（图/推荐都是"看一眼就走"），但复盘页有会话状态，
+   * 从关系图或推荐流按 `W` 应当**直接进复盘**，而不是先绕回文章栏再进——
+   * 绕一下会让用户看到一次多余的画面闪动，且"我明明在图上按的 W"这个预期落空。
+   *
+   * 所以这里写"真 toggle"：在复盘就回文章，不在复盘就进复盘。
+   *
+   * @returns 无返回值；副作用为翻转 mainView（review ↔ articles，其余情况进 review）
+   */
+  function toggleReviewView() {
+    mainView.value = mainView.value === 'review' ? 'articles' : 'review'
+  }
+
+  /**
    * 切换专注模式
    *
    * 用于正文区域的专注按钮点击：在"正常 / 专注"两种布局间来回切换。
@@ -146,7 +180,7 @@ export const useUiStore = defineStore('ui', () => {
     localStorage.setItem(ARTICLE_W_KEY, String(w))
   }
 
-  return { focusMode, toggleFocusMode, setFocusMode, mainView, setMainView, toggleGraphView, toggleRecommendView, entityDashboardOpen, entityDashboardId, openEntityDashboard, closeEntityDashboard, feedColWidth, articleColWidth, setFeedColWidth, setArticleColWidth }
+  return { focusMode, toggleFocusMode, setFocusMode, mainView, setMainView, toggleGraphView, toggleRecommendView, toggleReviewView, entityDashboardOpen, entityDashboardId, openEntityDashboard, closeEntityDashboard, feedColWidth, articleColWidth, setFeedColWidth, setArticleColWidth }
 })
 
 // 开发期热更新：用新定义重建 Pinia 实例。
