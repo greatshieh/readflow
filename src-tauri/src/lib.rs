@@ -263,6 +263,16 @@ pub fn run() {
                             eprintln!("回填证据来源身份失败: {}", e);
                         }
 
+                        // 回填笔记全文索引（阶段四）。建表只建空索引，
+                        // 所以升级后第一次启动要把存量高亮 / 论点 / 证据搬进去；
+                        // 之后索引非空即跳过，不在每次启动都重新分词一遍。
+                        // 失败只记日志：搜不到是降级，不该拦住用户打开应用。
+                        match research::search::backfill_note_index(&pool).await {
+                            Ok(0) => {}
+                            Ok(n) => eprintln!("已重建 {} 个笔记索引", n),
+                            Err(e) => eprintln!("回填笔记索引失败: {}", e),
+                        }
+
                         // 一次性数据修复：补齐历史上"名称为 URL"的订阅源标题。
                         // 早期版本的"添加订阅源"在用户未填名称时直接把 URL 存为 name，
                         // 这里在后台静默抓取真实 channel 标题并回写；失败则保持原样。
@@ -498,6 +508,9 @@ pub fn run() {
             coverage_upsert,
             coverage_remove,
             coverage_dossier,
+            // 检索与分歧（阶段四）
+            notes_search,
+            thesis_divergence,
             // 行情/财务数据层（金融升级 Phase 1）
             market_link_symbol,
             market_get_state,
@@ -3162,6 +3175,49 @@ async fn coverage_remove(entity_id: i64) -> Result<(), String> {
 async fn coverage_dossier(entity_id: i64) -> Result<research::coverage::Dossier, String> {
     let pool = db_pool().await.map_err(|e| e.to_string())?;
     research::coverage::dossier(&pool, entity_id).await
+}
+
+/// 统一检索自己写的三类东西（高亮 / 论点 / 证据快照）
+///
+/// 不含文章：文章走既有的 `articles_search`（命令面板第一阶段已用它），
+/// 这里只补"我写的东西"。也不含事件——`research_events` 随文章级联删除，
+/// 30 天保留策略下不承诺可检索（ROADMAP §1.4 已划界）。
+///
+/// # 参数
+/// * `query` - 关键词（至少 2 个字符，trigram 分词的下限）
+/// * `limit` - 每类上限，缺省 12
+///
+/// # 返回值
+/// 命中列表（高亮 → 论点 → 证据），每条带"被挂在哪个论点下"
+///
+/// # 错误
+/// 查询失败
+#[tauri::command]
+async fn notes_search(
+    query: String,
+    limit: Option<i64>,
+) -> Result<Vec<research::search::NoteHit>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::search::search_notes(&pool, &query, limit).await
+}
+
+/// 统计一条判断的证据来自几家不同来源
+///
+/// 回答的是「这条事实是不是只有一家在说」。按**来源名去重**而不是按证据条数：
+/// 5 条证据全来自同一家媒体不是互证，是同一句话说了五遍。
+///
+/// # 参数
+/// * `thesis_id` - 论点 ID
+///
+/// # 返回值
+/// `{ supportSources, opposeSources, sources, unrecorded }`
+///
+/// # 错误
+/// 查询失败
+#[tauri::command]
+async fn thesis_divergence(thesis_id: i64) -> Result<research::search::Divergence, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::search::evidence_divergence(&pool, thesis_id).await
 }
 
 /// 为单个实体重抽历史事件：对库内文本命中该实体的文章逐篇补抽 AI 事件

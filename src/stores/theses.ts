@@ -76,6 +76,23 @@ export interface ThesisDetail {
   revisions: Revision[]
 }
 
+/**
+ * 一条判断的证据来水构成（与 Rust `Divergence` 对齐）
+ *
+ * 侧别分开计数是刻意的：3 家支持 + 1 家反对不能被说成"4 家互证"。
+ */
+export interface Divergence {
+  thesisId: number
+  /** 支持证据来自几家不同来源 */
+  supportSources: number
+  /** 反对证据来自几家不同来源 */
+  opposeSources: number
+  /** 去重后的来源名 */
+  sources: string[]
+  /** 没有来源记录的证据条数（TASK-00 之前挂的老证据） */
+  unrecorded: number
+}
+
 /** 新建论点的入参 */
 interface NewThesisInput {
   statement: string
@@ -132,6 +149,14 @@ export const useThesesStore = defineStore('theses', () => {
   const detailLoading = ref(false)
   /** 最近一次错误（供界面提示） */
   const error = ref('')
+
+  /**
+   * 按论点 ID 缓存的分歧度（来源构成）
+   *
+   * 缓存而不是每次进详情都取：对比两条判断的证据强度是常见动作，
+   * 来回切换时不该各等一次往返。键是论点 ID，删除/新增证据后重取覆盖。
+   */
+  const divergenceById = ref<Record<number, Divergence>>({})
 
   /** 顶层统计：用于列表页头部"3 个论点需要跟进"这类提示 */
   const stats = computed(() => {
@@ -204,7 +229,13 @@ export const useThesesStore = defineStore('theses', () => {
    */
   async function refreshCurrent() {
     const id = detail.value?.thesis.id
-    if (id != null) await openThesis(id)
+    if (id != null) {
+      await openThesis(id)
+      // 证据变了，来源构成跟着变。放在这里而不是让组件各自记得重取：
+      // addEvidence / removeEvidence / update 全都汇到本函数，
+      // 漏一处就是"加了证据但顶部那行还写着 1 家"
+      await loadDivergence(id)
+    }
     await loadList()
   }
 
@@ -302,6 +333,30 @@ export const useThesesStore = defineStore('theses', () => {
     return invoke<Array<[number, EvidenceStance]>>('thesis_evidence_of', { kind, refId })
   }
 
+  /**
+   * 一条判断的证据来水构成（按来源名去重）
+   *
+   * # 为什么按论点 ID 缓存成 map
+   * 这个数只在详情页顶部显示一行，但详情页打开、加证据、摘证据都会变。
+   * 缓存成 map 而不是单个值，是为了切回上一条判断时不用重新请求——
+   * 那是最常见的动作（对比两条判断的证据强度）。
+   *
+   * @param thesisId - 论点 ID
+   * @returns 分歧度（失败时返回 null，界面不显示这一行即可，不打断阅读）
+   */
+  async function loadDivergence(thesisId: number): Promise<Divergence | null> {
+    try {
+      const d = await invoke<Divergence>('thesis_divergence', { thesisId })
+      divergenceById.value = { ...divergenceById.value, [thesisId]: d }
+      return d
+    } catch (e) {
+      // 统计失败是"少一行信息"，不是错误：不写 error、不弹 toast，
+      // 否则用户会在详情页看到一个与自己的动作无关的红字
+      console.error('统计来源分歧失败:', e)
+      return null
+    }
+  }
+
   return {
     list,
     filterStatus,
@@ -321,6 +376,8 @@ export const useThesesStore = defineStore('theses', () => {
     addEvidence,
     removeEvidence,
     evidenceOf,
+    divergenceById,
+    loadDivergence,
   }
 })
 

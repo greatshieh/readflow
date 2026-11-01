@@ -2812,6 +2812,107 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
     .execute(pool)
     .await?;
 
+    // ─── 笔记索引（阶段四：统一检索自己写的东西） ──────────────────────────
+    //
+    // 三张外部内容 FTS（`content='表'`）而不是合成一张：外部内容表只能挂一张源表，
+    // 三源合一就必须手工维护同步，而"手工维护"意味着每条写入路径都要记得更新索引——
+    // 漏一条不报错，只表现为"这段文字搜不到"。用触发器把正确性交给数据库。
+    //
+    // 分词器同 `articles_fts`：`trigram`。默认 unicode61 会把整句中文当一词，
+    // 搜"储能"什么都搜不到。代价是查询词至少 2 字符。
+    //
+    // **不建触发器替代方案**：本项目的铁律是不写迁移代码，所以这里全靠
+    // `CREATE ... IF NOT EXISTS` + 启动时的空索引重建（`search::backfill_note_index`）。
+    sqlx::query(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS highlights_fts USING fts5(\
+         text, content='highlights', content_rowid='id', tokenize='trigram')",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS highlights_fts_ai AFTER INSERT ON highlights BEGIN \
+         INSERT INTO highlights_fts(rowid, text) VALUES (new.id, new.text); END;",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS highlights_fts_ad AFTER DELETE ON highlights BEGIN \
+         INSERT INTO highlights_fts(highlights_fts, rowid, text) \
+         VALUES ('delete', old.id, old.text); END;",
+    )
+    .execute(pool)
+    .await?;
+    // 限定 `UPDATE OF text`：高亮上还有 note/color 等字段，裸 UPDATE 触发器会让
+    // 每次改颜色都白跑一遍全文重分词（与 articles_fts_au 同一个教训）
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS highlights_fts_au AFTER UPDATE OF text ON highlights BEGIN \
+         INSERT INTO highlights_fts(highlights_fts, rowid, text) \
+         VALUES ('delete', old.id, old.text); \
+         INSERT INTO highlights_fts(rowid, text) VALUES (new.id, new.text); END;",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS theses_fts USING fts5(\
+         statement, content='theses', content_rowid='id', tokenize='trigram')",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS theses_fts_ai AFTER INSERT ON theses BEGIN \
+         INSERT INTO theses_fts(rowid, statement) VALUES (new.id, new.statement); END;",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS theses_fts_ad AFTER DELETE ON theses BEGIN \
+         INSERT INTO theses_fts(theses_fts, rowid, statement) \
+         VALUES ('delete', old.id, old.statement); END;",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS theses_fts_au AFTER UPDATE OF statement ON theses BEGIN \
+         INSERT INTO theses_fts(theses_fts, rowid, statement) \
+         VALUES ('delete', old.id, old.statement); \
+         INSERT INTO theses_fts(rowid, statement) VALUES (new.id, new.statement); END;",
+    )
+    .execute(pool)
+    .await?;
+
+    // 证据索引包含快照正文与备注两列：备注里常常写着"这条为什么算反证"，
+    // 搜不到它等于把用户自己写的理由藏起来了
+    sqlx::query(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS thesis_evidence_fts USING fts5(\
+         snapshot_text, note, content='thesis_evidence', content_rowid='id', tokenize='trigram')",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS thesis_evidence_fts_ai AFTER INSERT ON thesis_evidence BEGIN \
+         INSERT INTO thesis_evidence_fts(rowid, snapshot_text, note) \
+         VALUES (new.id, new.snapshot_text, new.note); END;",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS thesis_evidence_fts_ad AFTER DELETE ON thesis_evidence BEGIN \
+         INSERT INTO thesis_evidence_fts(thesis_evidence_fts, rowid, snapshot_text, note) \
+         VALUES ('delete', old.id, old.snapshot_text, old.note); END;",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS thesis_evidence_fts_au AFTER UPDATE OF snapshot_text, note ON thesis_evidence BEGIN \
+         INSERT INTO thesis_evidence_fts(thesis_evidence_fts, rowid, snapshot_text, note) \
+         VALUES ('delete', old.id, old.snapshot_text, old.note); \
+         INSERT INTO thesis_evidence_fts(rowid, snapshot_text, note) \
+         VALUES (new.id, new.snapshot_text, new.note); END;",
+    )
+    .execute(pool)
+    .await?;
+
     // 全部表结构与索引已在上方按最终形态一次性定义完毕（CREATE ... IF NOT EXISTS）。
     // 设计约定：项目未发布，schema 演进采取"改定义 + 重置开发库"的方式，
     // 不引入运行时补列（ALTER TABLE）等补丁式迁移，保证建表语句即完整真相。

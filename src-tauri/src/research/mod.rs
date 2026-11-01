@@ -17,6 +17,7 @@
 //! - [`thesis`]：论点台账——用户自己的判断、证据挂接（支持/反驳）、变更留痕
 //! - [`review`]：周复盘——判据、健康度规则、会话与提醒
 //! - [`coverage`]：覆盖范围与组装——我盯哪些标的、为什么盯、把判断拼成一页
+//! - [`search`]：统一检索自己写的东西，以及一条判断的来水构成（分歧度）
 //!
 //! 本模块同时承载自动化任务的**统一执行器**（[`run_task_once`]）：
 //! cron 调度与手动触发共用同一条执行路径，运行结果统一回写任务行。
@@ -27,6 +28,7 @@ pub mod normalize;
 pub mod period;
 pub mod report;
 pub mod review;
+pub mod search;
 pub mod thesis;
 
 use std::collections::HashSet;

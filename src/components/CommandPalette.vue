@@ -13,7 +13,7 @@
           class="pal"
           role="dialog"
           aria-modal="true"
-          aria-label="搜索文章"
+          aria-label="搜索文章、判断与证据"
           @mousemove="onMouseMove"
         >
           <!-- 输入行：放大镜 + 输入框 + 当前检索模式标签 -->
@@ -48,29 +48,48 @@
               </span>
             </div>
             <p v-else-if="results.length === 0" class="pal-empty">
-              {{ keyword.trim() ? `没有匹配「${keyword.trim()}」的文章` : '输入关键词开始搜索' }}
+              {{ keyword.trim() ? `没有匹配「${keyword.trim()}」的文章或判断` : '输入关键词开始搜索' }}
             </p>
             <ul v-else class="pal-list">
               <li
-                v-for="(a, i) in results"
-                :key="a.id"
+                v-for="(item, i) in results"
+                :key="rowKey(item, i)"
                 class="pal-row"
                 :class="{ on: i === index }"
                 @mouseenter="onRowEnter(i)"
                 @click="jump"
               >
-                <span class="pal-av" :style="avStyle(a.feed_id)">
-                  {{ feedInitial(a.feed_id) }}
-                </span>
-                <span class="pal-main">
-                  <!-- 标题与摘要均按命中词切分高亮：命中位置是用户判断"是不是这篇"的依据 -->
-                  <span class="pal-title" v-html="mark(a.title, keyword.trim())"></span>
-                  <span class="pal-snippet" v-html="mark(snippet(a), keyword.trim())"></span>
-                </span>
-                <span class="pal-side">
-                  <span class="pal-feed">{{ feedName(a.feed_id) }}</span>
-                  <span class="pal-time">{{ formatDistance(a.published_at) }}</span>
-                </span>
+                <!-- 文章行：与新增笔记行共处一条 ↑↓ 序列，所以用同一个 <li>，
+                     只是内部换形状。分成两个 v-for 会得到两个下标空间。 -->
+                <template v-if="item.kind === 'article'">
+                  <span class="pal-av" :style="avStyle(item.article.feed_id)">
+                    {{ feedInitial(item.article.feed_id) }}
+                  </span>
+                  <span class="pal-main">
+                    <!-- 标题与摘要均按命中词切分高亮：命中位置是用户判断"是不是这篇"的依据 -->
+                    <span class="pal-title" v-html="mark(item.article.title, keyword.trim())"></span>
+                    <span class="pal-snippet" v-html="mark(snippet(item.article), keyword.trim())"></span>
+                  </span>
+                  <span class="pal-side">
+                    <span class="pal-feed">{{ feedName(item.article.feed_id) }}</span>
+                    <span class="pal-time">{{ formatDistance(item.article.published_at) }}</span>
+                  </span>
+                </template>
+                <!-- 笔记行：色块里放类型首字，右侧标类型。不用打字高亮（v-html）
+                     是因为这里展示的是用户自己写的句子，逐字切标意义不大，
+                     而"挂在哪个判断下"才是他判断该不该点进去的依据。 -->
+                <template v-else>
+                  <span class="pal-av note" :class="item.note.kind">
+                    {{ noteKindLabel(item.note.kind).slice(0, 1) }}
+                  </span>
+                  <span class="pal-main">
+                    <span class="pal-title">{{ item.note.text || item.note.thesisStatement }}</span>
+                    <span class="pal-snippet">{{ noteSub(item.note) }}</span>
+                  </span>
+                  <span class="pal-side">
+                    <span class="pal-feed">{{ noteKindLabel(item.note.kind) }}</span>
+                  </span>
+                </template>
               </li>
             </ul>
           </div>
@@ -127,7 +146,30 @@ import { invoke } from '@tauri-apps/api/core'
 import { useArticlesStore } from '@/stores/articles'
 import { useFeedsStore } from '@/stores/feeds'
 import { formatDistance } from '@/utils/format'
+import { requestThesisOpen } from '@/utils/thesisJump'
 import type { Article } from '@/types'
+
+/** 笔记类命中（与 Rust `research::search::NoteHit` 对齐，出参为 camelCase） */
+interface NoteHit {
+  kind: 'highlight' | 'thesis' | 'evidence'
+  refId: number
+  /** 归属论点；高亮可能还没挂到任何论点，此时为 null */
+  thesisId: number | null
+  thesisStatement: string
+  text: string
+  meta: string
+}
+
+/**
+ * 结果行：文章与笔记共用同一条 ↑↓ 序列
+ *
+ * 用带标签的并集而不是两个数组：键盘选择、确保可见、hover 高亮都建立在
+ * "一个下标对应一行"上。两个数组就要维护两套下标与两套边界判断，
+ * 而"按了一次下键跨过两个列表的缝"这种边界恰恰最容易写错。
+ */
+type PalItem =
+  | { kind: 'article'; article: Article }
+  | { kind: 'note'; note: NoteHit }
 
 /** 面板是否打开 */
 const open = ref(false)
@@ -159,7 +201,7 @@ const keyword = ref('')
  */
 let lastKeyword = ''
 /** 检索结果 */
-const results = ref<Article[]>([])
+const results = ref<PalItem[]>([])
 /** 当前高亮项下标 */
 const index = ref(0)
 /** 是否正在检索：用于区分"没有结果"与"还没查完" */
@@ -179,8 +221,8 @@ const listRef = ref<HTMLElement | null>(null)
 const articlesStore = useArticlesStore()
 const feedsStore = useFeedsStore()
 
-/** 无输入时的占位文案：把两种检索都说清楚，用户不必猜 */
-const placeholder = computed(() => '搜索标题与全文…')
+/** 无输入时的占位文案：把能搜的东西都说清楚，用户不必猜 */
+const placeholder = computed(() => '搜索文章、判断与证据…')
 
 /**
  * 检索结果上限
@@ -189,6 +231,15 @@ const placeholder = computed(() => '搜索标题与全文…')
  * 反而拖慢后端返回。
  */
 const LIMIT = 30
+
+/**
+ * 笔记类命中每类取多少条
+ *
+ * 比文章少一个数量级：笔记是用户自己写的东西，同一个词命中的条数天然少；
+ * 给到 8 条足够覆盖"我是不是写过这条"，再多就会把文章结果挤出可视区——
+ * 而文章仍然是这个面板的主要用途（找那篇文章）。
+ */
+const NOTE_LIMIT = 8
 
 /**
  * 在途请求的序号
@@ -392,21 +443,30 @@ async function runSearch(q: string) {
     a.title.toLowerCase().includes(lower),
   )
   if (titleHits.length > 0) {
-    results.value = titleHits.slice(0, LIMIT)
+    results.value = titleHits.slice(0, LIMIT).map(articleItem)
     mode.value = 'title'
     index.value = 0
-    // 此处无需复位 loading：入口已清零，且本分支不发请求，全文段的 finally 也够不着。
+    // 笔记命中异步补在后面，**不阻塞**标题结果：标题命中是同步可得的，
+    // 为一次额外往返把整列压住会让面板看起来变慢了。
+    // 这里确实有一次 invoke 在途而 loading 仍为 false——与"loading ⟺ 有请求在途"
+    // 的旧不变式不同，是有意的：已有结果可看时，骨架屏比结果本身更碍事。
+    void fetchNoteItems(q, seq).then((notes) => {
+      if (notes.length > 0) results.value = [...results.value, ...notes]
+    })
     return
   }
 
   // 第二段：标题无命中才搜全文（FTS5，含正文与摘要）。
-  // 全函数唯一把 loading 置 true 的地方——与入口的复位严格配对。
   loading.value = true
   try {
     const hits = await invoke<Article[]>('articles_search', { query: q, limit: LIMIT })
     // 序号已过期说明用户又改了输入，丢弃这次结果
     if (seq !== reqSeq) return
-    results.value = hits
+    const notes = await fetchNoteItems(q, seq)
+    if (seq !== reqSeq) return
+    // 文章在前、笔记在后：这个面板的主要用途仍然是"找那篇文章"，
+    // 自己写的判断排在它后面（但可见——这是新增的那一类结果）。
+    results.value = [...hits.map(articleItem), ...notes]
     mode.value = 'full'
     index.value = 0
   } catch (e) {
@@ -418,6 +478,83 @@ async function runSearch(q: string) {
   } finally {
     if (seq === reqSeq) loading.value = false
   }
+}
+
+/**
+ * 把文章包成结果行
+ *
+ * @param article - 文章
+ * @returns 带标签的结果行
+ */
+function articleItem(article: Article): PalItem {
+  return { kind: 'article', article }
+}
+
+/**
+ * 检索用户自己写的东西（高亮 / 论点 / 证据快照）
+ *
+ * # 为什么失败只记日志不抛
+ * 面板是高频入口，一次笔记检索失败不该把**已经拿到的文章结果**一起清掉。
+ * 返回空数组＝"这一类没命中"，用户仍能正常找文章。
+ *
+ * # 为什么带 seq 而不是让调用方判断
+ * 序号校验必须发生在这里：`await` 回来时调用方可能已被新的检索覆盖，
+ * 而"把过期的笔记拼到新结果后面"比"少几条结果"难查得多。
+ *
+ * @param q - 已 trim 的关键词
+ * @param seq - 本轮请求序号
+ * @returns 笔记结果行（过期或失败时为空数组）
+ */
+async function fetchNoteItems(q: string, seq: number): Promise<PalItem[]> {
+  try {
+    const notes = await invoke<NoteHit[]>('notes_search', { query: q, limit: NOTE_LIMIT })
+    if (seq !== reqSeq) return []
+    return notes.map(note => ({ kind: 'note' as const, note }))
+  } catch (e) {
+    console.error('命令面板笔记检索失败:', e)
+    return []
+  }
+}
+
+/** 笔记命中类型的中文名（左侧色块里的一个字 + 右侧的类型标签） */
+function noteKindLabel(kind: NoteHit['kind']): string {
+  if (kind === 'thesis') return '判断'
+  if (kind === 'evidence') return '证据'
+  return '高亮'
+}
+
+/**
+ * 笔记命中行的第二行文字
+ *
+ * 三种命中的"我为什么该点它"不同：
+ * - 判断：它挂在哪个标的下（实体名）；
+ * - 高亮 / 证据：它被挂在哪条判断下——这正是 ROADMAP 要求的
+ *   "每条结果标注被挂在哪个论点下"。
+ *
+ * @param n - 笔记命中
+ * @returns 一行说明文字
+ */
+function noteSub(n: NoteHit): string {
+  if (n.kind === 'thesis') return n.meta || '判断'
+  const owner = n.thesisStatement.trim()
+  if (!owner) return `${n.meta} · 还没挂到任何判断`
+  return `${n.meta} · 挂在「${owner}」`
+}
+
+/**
+ * 结果行的稳定 key
+ *
+ * 文章与笔记的 ID 空间各自独立，直接拼在一起会让 `a-12` 与 `n-12` 撞——
+ * 用类型前缀分开，避免上一轮的行被复用成另一种类型（hover 高亮会串）。
+ *
+ * @param item - 结果行
+ * @param i - 下标（仅在高亮/证据同 ID 重复时兜底）
+ * @returns 唯一 key
+ */
+function rowKey(item: PalItem, i: number): string {
+  return item.kind === 'article'
+    ? `a-${item.article.id}`
+    : `n-${item.note.kind}-${item.note.refId}-${i}`
 }
 
 /** 关键词变化 → 防抖后检索。150ms 足够消掉连续击键，又不会有明显迟滞 */
@@ -663,14 +800,28 @@ async function waitForItem(attr: string, itemClass: string, timeoutMs = 1200): P
  * @returns 无返回值；副作用为记下本次检索词、写 store、关闭面板、派发定位事件
  */
 async function jump() {
-  const a = results.value[index.value]
-  if (!a) return
+  const item = results.value[index.value]
+  if (!item) return
   // 记住本次用的检索词，供下次唤起沿用。必须落在 close() 之前：
   // close() 只是 open=false，但它代表"这次交互结束了"——语义上先记账再收摊。
   // 空词不记：无关键词的跳转（理论上进不到这里）不该污染下次唤起的起点。
   const used = keyword.value.trim()
   if (used) lastKeyword = used
   close()
+
+  // 笔记命中：落到「研究工作台 → 论点 → 那一条」。
+  //
+  // 这里不能直接切页签：工作台弹窗的打开状态由 `FeedPanel` 持有，本组件
+  // 唯一能用的通道是 `open-research` 事件；而工作台打开时固定落报告页签。
+  // 故先把落点写进待决意图，由它在确定打开的那一刻取走（见 `utils/thesisJump`）。
+  // thesisId 为 null 的高亮还没有归属判断：只切论点页签，不打开任何详情。
+  if (item.kind === 'note') {
+    requestThesisOpen(item.note.thesisId)
+    window.dispatchEvent(new CustomEvent('open-research'))
+    return
+  }
+
+  const a = item.article
 
   // ① 先切到该文所属的订阅源 —— 不切的话，两栏都停在当前范围，
   //    目标条目根本不在列表里，后续定位自然无从谈起。
@@ -871,6 +1022,22 @@ onUnmounted(() => {
   box-shadow: var(--ring-inset);
   background-size: cover;          /* 有 icon 时由内联 backgroundImage 铺满 */
   background-position: center;
+}
+/* 笔记类结果没有订阅源图标，用类型色块区分：判断=主色、证据=语义色、高亮=中性。
+   颜色在这里是"分类标记"而不是装饰，所以三种必须明显不同——
+   否则用户在一条混排列表里分不清哪行是文章、哪行是自己写的东西。 */
+.pal-av.note {
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  box-shadow: none;
+}
+.pal-av.note.evidence {
+  color: var(--tone-indigo);
+  background: color-mix(in srgb, var(--tone-indigo) 14%, transparent);
+}
+.pal-av.note.highlight {
+  color: var(--text-secondary);
+  background: var(--fill-secondary);
 }
 .pal-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .pal-title {

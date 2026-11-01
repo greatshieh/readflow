@@ -104,6 +104,7 @@ import { useEntitiesStore } from '@/stores/entities'
 import { useUiStore } from '@/stores/ui'
 import { useReportPeriodStore, FocusReportError } from '@/stores/reportPeriod'
 import { useThesesStore } from '@/stores/theses'
+import { consumeThesisOpen } from '@/utils/thesisJump'
 import { useArticlesStore } from '@/stores/articles'
 import { useToastStore } from '@/stores/toast'
 
@@ -163,6 +164,15 @@ watch(
       reportStore.setSegment('period')
     }
 
+    // 命令面板点了「判断 / 证据」命中：落到论点页签并打开那一条。
+    // 与上面的报告意图同构，也必须在 await 之前把页签切好——
+    // 晚一步的话用户先看到报告列表再"跳"过去，闪一下。
+    // 与报告二选一：一次打开只有一个落点，同时来两个时报告优先（它是显式返回动作）。
+    const pendingThesis = pending === null ? consumeThesisOpen() : null
+    if (pendingThesis !== null) {
+      tab.value = 'theses'
+    }
+
     if (entitiesStore.entities.length === 0) {
       await entitiesStore.loadEntities()
     }
@@ -204,6 +214,15 @@ watch(
         reportStore.closeReport()
         toast.show(e instanceof Error ? e.message : '该报告已不存在')
       }
+    }
+
+    // ── ③ 命令面板要落到的判断（页签已在 ① 切好）──
+    // 放在全部 await 之后：列表与实体已就绪，`openThesis` 拉详情的成功率最高，
+    // 且此时页签可见，详情一渲染就有布局盒（不会量出 0 高度）
+    // thesisId 为 null 表示"只切页签"（取自一条还没挂到任何论点的高亮），
+    // 此时不打开任何详情——用 0 去打开会打一条查询不存在的记录
+    if (pendingThesis !== null && pendingThesis.thesisId !== null) {
+      void thesesStore.openThesis(pendingThesis.thesisId)
     }
   },
   // immediate：组件若在 `open=true` 的状态下挂载（外壳改成 v-if 就会发生），

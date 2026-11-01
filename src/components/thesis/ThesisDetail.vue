@@ -103,6 +103,11 @@
     </p>
 
     <div class="td-body">
+      <!-- 来源分歧：这一行回答"这条判断是不是只有一家在说"。
+           放在证据分区之前——先让用户知道证据的独立性，再看证据本身，
+           否则读到 5 条支持证据时会先形成一个"证据很足"的印象，
+           再看那句"只有 1 家来源"就已经晚了。 -->
+      <DivergenceBadge :thesis-id="t.id" />
       <!-- ═══ 证据分区：反驳 → 存疑 → 支持 ═══
            `shouldShow` 的取舍：完全还没有证据时，只保留「反驳」这一节的空态
            （它本身就是那句"这不是好消息，而是还没找"，是引导不是占位）；
@@ -214,6 +219,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import BaseModal from '@/components/BaseModal.vue'
+import DivergenceBadge from './DivergenceBadge.vue'
 import {
   useThesesStore,
   KIND_LABEL,
