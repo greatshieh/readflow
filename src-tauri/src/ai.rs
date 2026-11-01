@@ -50,34 +50,32 @@ use std::time::Duration;
 /// 又不会让"半开连接"演变成命令永久挂起。
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// 建立连接的超时（DNS + TCP + TLS）
-///
-/// 明显短于总超时：连不上就应当尽快失败，把时间预算留给真正在跑的推理。
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+// 建立连接的超时（DNS + TCP + TLS）不再在本模块单独定义：
+// 它已随代理支持一起收进 `crate::net`，由所有链路共用同一个值。
+// 本模块只保留**总超时**这一项与 AI 场景相关的差异。
 
-/// 全局共享的 HTTP 客户端
+/// 全局共享的 HTTP 客户端缓存槽
 ///
 /// `reqwest::Client` 内部持有连接池，每次调用都新建等于每轮请求都重做 TLS 握手；
-/// 用 `OnceLock` 惰性构建并复用。
-static CLIENT: OnceLock<Client> = OnceLock::new();
+/// 用缓存槽惰性构建并复用。
+///
+/// 这里刻意**不用 `OnceLock`**：代理是运行期可变的设置项，`OnceLock` 一旦写入就
+/// 换不掉，会导致"改了代理设置，AI 请求仍走老线路"。改用 [`crate::net::ClientSlot`]
+/// 后与抓取链路共享同一套失效重建逻辑（超时档各自独立，见下方常量）。
+static CLIENT: crate::net::ClientSlot = crate::net::ClientSlot::new();
 
-/// 取共享的 AI HTTP 客户端（首次调用时构建）
+/// 取共享的 AI HTTP 客户端（首次调用时构建，代理变更后自动重建）
 ///
 /// # 返回值
-/// 带超时配置的客户端引用。构建失败时退化为不带超时的默认客户端并打印日志——
+/// 带超时配置的客户端。构建失败时退化为不带超时的默认客户端并打印日志——
 /// 构建失败只可能源于不合法的 TLS 后端配置，此时任何请求都会立刻失败并回传可读错误，
 /// 不值得为此让所有 AI 命令都改成 `Result` 返回。
-fn client() -> &'static Client {
-    CLIENT.get_or_init(|| {
-        Client::builder()
-            .timeout(REQUEST_TIMEOUT)
-            .connect_timeout(CONNECT_TIMEOUT)
-            .build()
-            .unwrap_or_else(|e| {
-                eprintln!("构建 AI HTTP 客户端失败，退化为默认客户端: {}", e);
-                Client::new()
-            })
-    })
+///
+/// # 为什么复用 `net` 而不在本模块自己建
+/// 代理配置只有一处真源（`net::proxy_url`）。AI 请求若绕过它，用户会遇到
+/// "订阅能抓、摘要报错"这种半通不通的状态，比两边都不通更难理解。
+fn client() -> Client {
+    crate::net::shared(&CLIENT, REQUEST_TIMEOUT)
 }
 
 /// AI 聊天补全请求体

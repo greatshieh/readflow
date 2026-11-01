@@ -118,7 +118,7 @@ pub async fn fetch_feed(url: &str) -> Result<ParsedFeed, String> {
         .header("User-Agent", "ReadFlow/1.0 (RSS Reader)")
         .send()
         .await
-        .map_err(|e| format!("请求失败: {}", e))?;
+        .map_err(|e| classify_network_error(e.is_timeout(), e.is_connect(), &e.to_string()))?;
 
     // status / headers 必须在 text() 消费 resp 之前取出
     let status = resp.status();
@@ -129,7 +129,13 @@ pub async fn fetch_feed(url: &str) -> Result<ParsedFeed, String> {
         .unwrap_or("")
         .to_string();
 
-    let body = resp.text().await.map_err(|e| format!("读取响应失败: {}", e))?;
+    // 读 body 失败与"发请求失败"是两种情形：连接已建立、状态码也拿到了，
+    // 是传输过程中断（大文件、长响应、对端提前关闭）。分开说，用户才知道
+    // 该换网络还是该认为源本身有问题。
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("已连上但响应内容读取中断：{}", e))?;
 
     // 非 2xx：先报状态码与原因，再附响应体片段——限流页 / 实例错误页 / 需登录
     // 都会走到这里，没有状态码的话错误信息完全无法定位
@@ -154,6 +160,86 @@ pub async fn fetch_feed(url: &str) -> Result<ParsedFeed, String> {
     }
 
     Ok(parsed)
+}
+
+/// 把 reqwest 的连接级错误翻译成用户能据此采取行动的话
+///
+/// # 参数
+/// * `is_timeout` - `reqwest::Error::is_timeout()`，任何阶段的超时
+/// * `is_connect` - `reqwest::Error::is_connect()`，DNS / TCP / TLS 阶段就失败了
+/// * `raw` - 原始错误文本（`reqwest::Error` 的 Display，含底层 hyper / TLS 原因）
+///
+/// # 返回值
+/// 可直接展示在"失败原因"里的说明，末尾保留原始错误，便于回报问题时对得上号。
+///
+/// # 为什么要按字符串再分一层
+/// `is_connect()` 把「域名解析不了」「端口没人监听」「TLS 被掐断」全归成一类，
+/// 但这三种的下一步动作完全不同：换 DNS / 查端口 / 配代理。只给布尔标记的话
+/// 只能得到一句"连接失败"，用户没有任何可执行动作。
+///
+/// 尤其 `unexpected EOF`：那是 TCP 已通、TLS 握手被对端掐断，成因基本只有两种
+/// ——网络路径不通（要代理），或 TLS ClientHello 指纹被 WAF 识别（也要代理）。
+/// 「浏览器能打开、应用打不开」正是这一条的典型症状，故文案直接把用户引到代理设置。
+///
+/// # 为什么连接超时不算"请求超时"
+/// 连接阶段的超时同时满足 `is_connect` 与 `is_timeout`。若按超时优先处理，
+/// 用户会看到"请求超时"而拿不到"可能需要代理"的提示——恰恰是最需要的那半句。
+fn classify_network_error(is_timeout: bool, is_connect: bool, raw: &str) -> String {
+    let lower = raw.to_ascii_lowercase();
+
+    if is_connect {
+        if lower.contains("timed out") || lower.contains("timeout") {
+            return format!(
+                "连接超时：无法在限定时间内建立到该站点的连接。\
+                 若浏览器能打开而应用不能，通常是当前网络需要代理——可在「设置 → 通用 → 网络代理」填写后重试。（原始错误：{}）",
+                raw
+            );
+        }
+        if lower.contains("unexpected eof")
+            || lower.contains("connection reset")
+            || lower.contains("broken pipe")
+            || lower.contains("tls")
+            || lower.contains("handshake")
+        {
+            return format!(
+                "连接被中断（TLS 握手阶段）：连接已建立，但在握手过程中被对端切断。\
+                 若浏览器能打开而应用不能，通常是需要走代理——可在「设置 → 通用 → 网络代理」填写后重试。（原始错误：{}）",
+                raw
+            );
+        }
+        if lower.contains("dns")
+            || lower.contains("name or service")
+            || lower.contains("failed to lookup")
+        {
+            return format!(
+                "域名解析失败：当前网络找不到该站点（DNS 不可用或被污染）。\
+                 可更换 DNS，或在「设置 → 通用 → 网络代理」配置代理后重试。（原始错误：{}）",
+                raw
+            );
+        }
+        if lower.contains("connection refused") {
+            return format!(
+                "连接被拒绝：该地址上没有服务在监听，请核对地址与端口是否正确。（原始错误：{}）",
+                raw
+            );
+        }
+        return format!(
+            "无法建立连接：目标站点在当前网络下不可达。\
+             可在「设置 → 通用 → 网络代理」配置代理后重试。（原始错误：{}）",
+            raw
+        );
+    }
+
+    if is_timeout {
+        return format!(
+            "请求超时：对端在限定时间内没有响应（该源站较慢，或被中间设备拦截）。（原始错误：{}）",
+            raw
+        );
+    }
+
+    // 其余错误（重定向策略、编码、协议层）照原样透出：它们不是网络可达性问题，
+    // 编一句人话反而会盖掉真正有用的原始信息。
+    format!("请求失败：{}", raw)
 }
 
 /// 构造非 2xx 响应的错误信息
@@ -865,6 +951,63 @@ pub async fn store_items(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `unexpected EOF` 是"TCP 通了、TLS 被掐断"，必须把用户引到代理设置
+    ///
+    /// 这是用户实际报过的那条错误（forbes.com）。文案里若不出现「代理」二字，
+    /// 用户只会以为源坏了，而这一类的成因几乎都在网络路径上。
+    #[test]
+    fn tls_eof_points_at_proxy_setting() {
+        let msg = classify_network_error(
+            false,
+            true,
+            "error trying to connect: unexpected EOF",
+        );
+        assert!(msg.contains("握手"), "应点明发生在握手阶段: {msg}");
+        assert!(msg.contains("代理"), "应给出可执行动作（代理）: {msg}");
+        assert!(msg.contains("unexpected EOF"), "应保留原始错误便于排查: {msg}");
+    }
+
+    /// 连接阶段的超时也是"连不上"，不能只说"请求超时"而丢掉代理提示
+    ///
+    /// 连接超时同时满足 is_connect 与 is_timeout，按超时优先会把最需要的半句吃掉。
+    #[test]
+    fn connect_timeout_still_mentions_proxy() {
+        let msg = classify_network_error(
+            true,
+            true,
+            "error trying to connect: connection timed out",
+        );
+        assert!(msg.contains("连接超时"), "应区分于请求超时: {msg}");
+        assert!(msg.contains("代理"), "连接超时同样要提示代理: {msg}");
+    }
+
+    /// 只在总超时里失败（连接已建立）时，不硬塞代理建议
+    #[test]
+    fn plain_request_timeout_has_no_proxy_advice() {
+        let msg = classify_network_error(true, false, "operation timed out");
+        assert!(msg.contains("请求超时"), "{msg}");
+        assert!(!msg.contains("代理"), "连接已建立时误导用户去配代理是错的: {msg}");
+    }
+
+    /// DNS 失败与"端口没人监听"要给出不同动作，否则等于没说
+    #[test]
+    fn dns_and_refused_are_told_apart() {
+        let dns = classify_network_error(false, true, "dns error: failed to lookup address");
+        assert!(dns.contains("域名解析"), "{dns}");
+
+        let refused = classify_network_error(false, true, "error trying to connect: connection refused");
+        assert!(refused.contains("没有服务在监听"), "{refused}");
+        assert!(!refused.contains("代理"), "端口填错时提代理是噪音: {refused}");
+    }
+
+    /// 认不出的错误原样透出，不编造解释
+    #[test]
+    fn unknown_error_is_passed_through() {
+        let msg = classify_network_error(false, false, "builder error: bad header value");
+        assert!(msg.starts_with("请求失败："), "{msg}");
+        assert!(msg.contains("bad header value"), "{msg}");
+    }
 
     /// Twitter 源的原生视频：video 标签、src 与 controls 都应保留
     /// （RSSHub twitter 路由的实际产物形态，见函数文档）

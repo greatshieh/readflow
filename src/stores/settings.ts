@@ -61,19 +61,21 @@ export const useSettingsStore = defineStore('settings', () => {
    *
    * @param key - 设置键（如 `ai_openai_url`、`theme`），与 Rust 侧主键一致
    * @param value - 设置值（原始字符串；复杂结构请调用方先 `JSON.stringify`）
-   * @returns 无返回值；副作用为更新 store 中 `settings` 对应项（不存在则追加）
+   * @returns 实际落库的值。多数情况等于 `value`，但后端会归一化个别键
+   *          （`proxy_url` 会补全协议前缀），缓存按返回值写才不会与库不一致
    * @throws 后端 `settings_set` 命令失败时 reject，此时本地缓存不会被修改
    */
-  async function setSetting(key: string, value: string) {
+  async function setSetting(key: string, value: string): Promise<string> {
     // 参数名 key / value 与 Rust 端 snake_case 形参同名，无需 camelCase 转换
-    await invoke<void>('settings_set', { key, value })
+    const stored = await invoke<string>('settings_set', { key, value })
     const setting = settings.value.find(s => s.key === key)
     if (setting) {
-      setting.value = value
+      setting.value = stored
     } else {
       // 新增项：后端已写入成功，这里补进缓存以免下次渲染取不到
-      settings.value.push({ key, value })
+      settings.value.push({ key, value: stored })
     }
+    return stored
   }
 
   /**

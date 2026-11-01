@@ -111,7 +111,9 @@ watch(
  */
 async function saveObsidian() {
   try {
-    const tasks: Promise<void>[] = [
+    // Promise<unknown> 而非 Promise<void>：setSetting 现在返回"实际落库的值"
+    // （个别键会被后端归一化），这里只是并发提交、不关心返回值。
+    const tasks: Promise<unknown>[] = [
       settingsStore.setSetting('obsidian_vault_path', vaultPath.value.trim()),
       // 导出目录留空时写入默认 ReadFlow，避免后端反复判断默认
       settingsStore.setSetting(

@@ -48,7 +48,15 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "chrono", "macros"] }
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+# socks：让 `Proxy::all("socks5://...")` 可用（reqwest 默认只认 http/https 代理）。
+# 用户常把代理软件暴露成 SOCKS5 端口，缺这个特性时填 socks5 地址会直接报解析失败。
+#
+# 注意：这里**没有**关掉默认特性，因此 reqwest 的 default-tls（OpenSSL）与 rustls
+# 会被同时编进来，运行时实际走的是 default-tls（代码里没有 `.use_rustls_tls()`）。
+# 这不是笔误——保持 OpenSSL 才能吃到系统证书库，企业环境装了自签根证书才能通。
+# 代价是二进制里多一份用不上的 rustls，属于已知的取舍，不要为此顺手改成
+# `default-features = false`（会让系统证书失效，反而更难排查）。
+reqwest = { version = "0.11", features = ["json", "rustls-tls", "socks"] }
 chrono = { version = "0.4", features = ["serde"] }
 url = "2.5"
 rss = "2.0"

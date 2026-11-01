@@ -245,6 +245,21 @@ pub fn run() {
                             *global_pool = Some(pool.clone());
                         }
 
+                        // 代理配置必须在任何网络请求之前生效：后台刷新紧接着就会
+                        // 开始抓源，晚一步读就意味着第一轮全走直连（在需要代理的
+                        // 网络下，那一轮的结果是一屏"连接失败"）。
+                        // 读失败或值非法都只记日志、按直连跑：代理是增益项，
+                        // 不该让一项配置拦住整个启动。
+                        match Setting::get(&pool, "proxy_url").await {
+                            Ok(Some(v)) if !v.trim().is_empty() => {
+                                if let Err(e) = net::set_proxy(&v) {
+                                    eprintln!("代理设置无效，已按直连处理: {}", e);
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(e) => eprintln!("读取代理设置失败，按直连处理: {}", e),
+                        }
+
                         // 收尾上次运行残留的「生成中」周期报告。
                         // 强杀应用会留下 status='generating' 的行，进程内的兜底拿不到，
                         // 只能在启动阶段统一标成失败，否则列表里会挂一个永不完成的条目。
@@ -1847,16 +1862,36 @@ async fn settings_get_all() -> Result<Vec<Setting>, String> {
 /// * `key` - 设置键
 /// * `value` - 设置值（原始字符串；复杂结构请由前端先序列化为 JSON 文本）
 ///
+/// # 返回值
+/// 实际落库的值。绝大多数情况与入参相同，但 `proxy_url` 会被归一化
+/// （补全协议前缀），调用方应当用这个返回值回填本地缓存，否则界面显示的
+/// 和库里存的是两份不一致的字符串，下次重启会"自己变了"。
+///
 /// # 错误
-/// 数据库写入失败时返回错误信息
+/// 数据库写入失败、或 `proxy_url` 格式不合法时返回错误信息
 ///
 /// # 注意
 /// 底层走 UPSERT，同一 key 重复写入是幂等的更新而非插入。
 /// 由于值不加校验，API Key 等敏感项也以明文落库。
+///
+/// `proxy_url` 是唯一的例外，见下方注释——它写错会让全部网络请求一起失败。
 #[tauri::command]
-async fn settings_set(key: String, value: String) -> Result<(), String> {
+async fn settings_set(key: String, value: String) -> Result<String, String> {
     let pool = db_pool().await.map_err(|e| e.to_string())?;
-    Setting::set(&pool, &key, &value).await
+
+    // 代理地址先校验、再落库、最后才切换生效值。
+    // 顺序是刻意的：写错的地址一旦进了库，下次启动会让**所有**订阅源、AI 请求、
+    // 行情同步一起走一个连不上的代理，表现成"应用整体断网"——比不配代理难排查
+    // 得多。落库存归一化后的值（补全协议前缀），否则下次回填会与用户输入不一致。
+    if key == "proxy_url" {
+        let normalized = net::normalize_proxy(&value)?;
+        Setting::set(&pool, &key, &normalized).await?;
+        net::set_proxy(&normalized)?;
+        return Ok(normalized);
+    }
+
+    Setting::set(&pool, &key, &value).await?;
+    Ok(value)
 }
 
 /// 获取全库数据统计

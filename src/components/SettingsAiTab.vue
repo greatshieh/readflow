@@ -166,7 +166,9 @@ async function saveAi() {
   saving.value = true
   saved.value = false
   try {
-    const tasks: Promise<void>[] = [
+    // Promise<unknown> 而非 Promise<void>：setSetting 现在返回"实际落库的值"
+    // （个别键会被后端归一化），这里只是并发提交、不关心返回值。
+    const tasks: Promise<unknown>[] = [
       settingsStore.setSetting('ai_agnes_model', model.value.trim()),
       settingsStore.setSetting('ai_agnes_url', baseUrl.value.trim()),
       settingsStore.setSetting('ai_summary_enabled', summaryEnabled.value ? '1' : '0'),

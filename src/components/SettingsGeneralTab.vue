@@ -51,6 +51,25 @@
       </p>
     </div>
 
+    <!-- 网络代理：写入 settings.proxy_url，留空为直连。
+         为什么必须做成应用内设置：桌面端读不到 macOS / Windows 的"系统代理"，
+         reqwest 只认 HTTP_PROXY / HTTPS_PROXY 这类**环境变量**，而从图标启动的
+         App 连环境变量都继承不到。于是「浏览器能打开、应用报连接被中断」——
+         应用其实是在直连，被网络路径掐掉了。 -->
+    <div class="form-group">
+      <label class="form-label">网络代理</label>
+      <input
+        class="form-input"
+        v-model="proxyUrl"
+        placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
+      />
+      <p class="form-hint">
+        留空为直连。支持 http:// 与 socks5://（省略协议按 http:// 处理）；本机地址始终直连。
+        保存后立即作用于订阅抓取、RSSHub 探测与 AI 请求，无需重启。
+        符合「浏览器能打开、这里却报连接被中断或超时」的源，填上代理即可。
+      </p>
+    </div>
+
     <div class="divider"></div>
 
     <!-- 金融数据源：新浪免 token 默认（实时快照/价格预警）；Tushare / 东财按设置凭据启用 -->
@@ -373,6 +392,14 @@ async function loadFonts() {
 }
 /** RSSHub 实例地址（添加订阅时路由自动拼接此前缀） */
 const rsshubUrl = ref('')
+/**
+ * 网络代理地址（settings.proxy_url）
+ *
+ * 留空 = 直连。校验与归一化都在 Rust 侧（`net::normalize_proxy`）：
+ * 写错的地址一旦存进库，下次启动会让所有网络请求一起失败，
+ * 表现成"应用整体断网"，必须挡在保存这一步。
+ */
+const proxyUrl = ref('')
 /** 金融数据源凭据（仅存本机；新浪免 token 默认，Tushare/东财可选配置） */
 const tushareToken = ref('')
 const emApiKey = ref('')
@@ -543,6 +570,9 @@ watch(
     void loadFonts()
     // RSSHub 实例地址（缺省官方实例）
     rsshubUrl.value = settingsStore.getSetting('rsshub_base_url') || 'https://rsshub.app'
+    // 网络代理：缺省为空（直连）。不设默认值——擅自猜一个常见端口
+    // （7890/1080）比什么都不设更容易让用户误以为已经配好了
+    proxyUrl.value = settingsStore.getSetting('proxy_url') || ''
     // 金融数据源凭据：Tushare / 东财（新浪免 token，无需配置；留空即未启用对应深度数据）
     tushareToken.value = settingsStore.getSetting('tushare_token') || ''
     emApiKey.value = settingsStore.getSetting('emapi_key') || ''
@@ -608,6 +638,12 @@ async function handleAutoGroup() {
  */
 async function saveGeneral() {
   try {
+    // 代理单独先存：它是本页唯一会被后端校验的项（协议不支持 / 地址非法）。
+    // 若混在 Promise.all 里，一个拼错的代理地址会让"其它项已写入、页面却报失败"，
+    // 用户重试时也分不清到底哪一项没存上。先存它，失败就整体不发生。
+    // 返回值是后端归一化后的地址（例如补上了 http://），回填输入框让用户看到实际生效值。
+    proxyUrl.value = await settingsStore.setSetting('proxy_url', proxyUrl.value.trim())
+
     await Promise.all([
       settingsStore.setSetting('refresh_interval_minutes', refreshInterval.value),
       settingsStore.setSetting('font_size', fontSize.value),
@@ -638,9 +674,13 @@ async function saveGeneral() {
     schedule(() => (savedGeneral.value = ''), 2000)
   } catch (e) {
     console.error('保存常规设置失败:', e)
+    // Tauri 的 invoke 失败时 reject 的是**后端返回的字符串**而不是 Error，
+    // 所以这里不能用 `e instanceof Error` 判——那样会把真正的原因（比如
+    // "不支持的代理协议 ftp"）丢成一句没用的"请重试"。
+    const reason = e instanceof Error ? e.message : String(e ?? '')
     await modalStore.showAlert({
       title: '保存失败',
-      message: '常规设置保存失败，请重试',
+      message: reason ? `常规设置保存失败：${reason}` : '常规设置保存失败，请重试',
     })
   }
 }
