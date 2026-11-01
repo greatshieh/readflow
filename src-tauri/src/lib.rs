@@ -744,7 +744,10 @@ async fn feeds_update(
 ///
 /// 容忍两种输入形态：
 /// - **完整 `http(s)://` 地址**：原样返回。用户给的就是最终地址，
-///   因此既不补前缀，也不做实例探测（哪怕它指向的是某个 RSSHub 实例）；
+///   因此既不补前缀，也不替换实例（哪怕它指向的是某个 RSSHub 实例）。
+///   但仍会向**该地址所在的实例**确认一次这条路由跑不跑得动，见
+///   [`rsshub::reject_unusable_route`]——"直接粘官网示例里的完整地址"是最常见的
+///   添加方式，不覆盖它等于漏掉大多数情况；
 /// - **裸路由**（如 `/bilibili/user/video/xx`）：交给 [`rsshub::resolve`]
 ///   按候选清单探测出可用实例，再拼成完整 URL。
 ///
@@ -758,19 +761,32 @@ async fn feeds_update(
 /// 规范化后的完整 URL
 ///
 /// # 副作用
-/// 裸路由场景下会发起实例探测请求（带进程内缓存，通常只探测一次），
-/// 并在选中实例与当前设置不同时把结果写回 `rsshub_base_url`——
-/// 这样「设置 → 常规」里显示的实例就是实际在用的那个，不必让用户自己排查。
+/// - 完整 URL 且落在已知 RSSHub 实例上时，发起一次路由探测；
+/// - 裸路由场景下会发起实例探测请求（带进程内缓存，通常只探测一次），
+///   并在选中实例与当前设置不同时把结果写回 `rsshub_base_url`——
+///   这样「设置 → 常规」里显示的实例就是实际在用的那个，不必让用户自己排查。
 ///
 /// # 错误
-/// 输入为空时返回错误信息。注意：**"未配置实例地址"不再是错误**，
-/// 缺省时会回退到官方实例 `rsshub.app`。
+/// - 输入为空；
+/// - **路由本身跑不了**：实例明确回答"这条路由不可用"
+///   （需要浏览器渲染 / 路由不存在）。这类问题换实例也一样，
+///   让订阅落库只会变成一个永远抓不到内容的空源，所以当场拒绝并给出原因。
+///   注意：**"未配置实例地址"不是错误**，缺省时会回退到官方实例 `rsshub.app`；
+///   **"实例探测不通"也不是错误**——那往往只是本地断网，拒绝添加反而挡住用户。
 async fn normalize_feed_url(pool: &sqlx::SqlitePool, url: &str) -> Result<String, String> {
     let url = url.trim();
     if url.is_empty() {
         return Err("订阅链接不能为空".to_string());
     }
+
+    // 实例地址：键缺失或为空都视为未配置，由 rsshub 回退到官方实例。
+    // 两条分支都要用它（完整 URL 需要用来自定义实例的识别），故提前读取。
+    let configured = Setting::get(pool, "rsshub_base_url")
+        .await?
+        .unwrap_or_default();
+
     if url.starts_with("http://") || url.starts_with("https://") {
+        rsshub::reject_unusable_route(url, &configured).await?;
         return Ok(url.to_string());
     }
 
@@ -781,11 +797,7 @@ async fn normalize_feed_url(pool: &sqlx::SqlitePool, url: &str) -> Result<String
         format!("/{}", url)
     };
 
-    // 实例地址：键缺失或为空都视为未配置，由 rsshub 回退到官方实例
-    let configured = Setting::get(pool, "rsshub_base_url")
-        .await?
-        .unwrap_or_default();
-    let instance = rsshub::resolve(&configured, &route).await;
+    let instance = rsshub::resolve(&configured, &route).await?;
 
     // 探测结果与设置不一致时写回（如官方实例掉线后自动切到了备选实例）。
     // 写回失败不影响本次拼接——实例已经选好了，只是设置页的显示会滞后，故只记日志。
