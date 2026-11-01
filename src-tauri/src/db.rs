@@ -2584,6 +2584,103 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
     .execute(pool)
     .await?;
 
+    // ─── 周复盘（阶段二） ───────────────────────────────────────────────────
+    //
+    // 四张表全是新表，对存量库零风险。产品口径：**一个论点至多一条判据**，
+    // 用 `UNIQUE(thesis_id)` 在存储层强制，不靠应用层自觉。
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS thesis_falsifiers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            thesis_id INTEGER NOT NULL UNIQUE,      -- 一对一；UNIQUE 即索引
+            statement TEXT NOT NULL,                -- ① 判据句（必填）
+            window_kind TEXT NOT NULL,              -- ② 检验窗口形态：date / cycle
+            due_at DATETIME,                        --    window_kind='date' 时有值
+            every_n_days INTEGER,                   --    window_kind='cycle' 时有值（滚动周期）
+            keywords TEXT NOT NULL DEFAULT '[]',    -- ③ 检验线索：JSON 数组，0–3 个
+            event_type TEXT NOT NULL DEFAULT '',    --    线索限定事件类型，'' = 不限
+            entity_id INTEGER,                      --    线索实体（默认继承论点，可改）
+            verdict TEXT NOT NULL DEFAULT 'pending',-- pending / verified / refuted / unclear
+            verdict_evidence_id INTEGER,            -- 触发结论的证据行（故意不建外键）
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (thesis_id) REFERENCES theses(id) ON DELETE CASCADE
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_falsifiers_due ON thesis_falsifiers(window_kind, due_at)")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_falsifiers_entity ON thesis_falsifiers(entity_id)")
+        .execute(pool)
+        .await?;
+
+    // 复盘会话：一次复盘一行。计数列**一个都不存** —— 处理几条、改几条全部由
+    // items 聚合得出，少存一份就少一处不一致。
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS thesis_reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            finished_at DATETIME,                   -- NULL = 进行中（允许中断后继续）
+            summary TEXT NOT NULL DEFAULT ''        -- 结束时写的一句话摘要
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_reviews_open ON thesis_reviews(finished_at)")
+        .execute(pool)
+        .await?;
+
+    // 复盘处置：一次会话 × 一个论点 = 一行**最终**处置。
+    //
+    // 这张表是"看了没改"的唯一载体：`thesis::update()` 在 `sets.is_empty()` 时
+    // 直接 return、不写任何行，所以"无变化"在 thesis_revisions 里完全不可表达。
+    // 没有这张表，跳过 = 无痕，"我复查过但判断没变"这件事就永远说不出来。
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS thesis_review_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            review_id INTEGER NOT NULL,
+            thesis_id INTEGER NOT NULL,
+            action TEXT NOT NULL,                   -- unchanged/confidence/status/falsifier/evidence
+            reason TEXT NOT NULL DEFAULT '',        -- 用户填的理由（unchanged 也允许写）
+            from_value TEXT NOT NULL DEFAULT '',
+            to_value TEXT NOT NULL DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            -- 一次会话里一条论点只留**最终**处置：先挂证据再改置信，最终态记"改置信"。
+            -- 证据本身仍在 thesis_evidence 与 thesis_revisions 里可查，不丢信息。
+            UNIQUE(review_id, thesis_id),
+            FOREIGN KEY (review_id) REFERENCES thesis_reviews(id) ON DELETE CASCADE
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_review_items_thesis ON thesis_review_items(thesis_id, created_at DESC)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_review_items_review ON thesis_review_items(review_id)")
+        .execute(pool)
+        .await?;
+
+    // 提醒状态：一个论点一行，只记"系统最后一次吵他是什么时候"。
+    // ⚠️ 与"上次复盘时间"是两个时间戳，**不合并**：漏提醒时前者要重算，
+    //    而后者是事实，不该被提醒逻辑改写。
+    // 主键是 (thesis_id, kind) 而非 thesis_id：表还没建，多一列成本为零，
+    // 换来阶段三能区分"该复盘了 / 判据到期了"，省掉一次小表重建。本轮只写 'review'。
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS thesis_reminders (
+            thesis_id INTEGER NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'review',    -- review / falsifier_due（后者本轮不写）
+            last_reminded_at DATETIME NOT NULL,
+            remind_count INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (thesis_id, kind),
+            FOREIGN KEY (thesis_id) REFERENCES theses(id) ON DELETE CASCADE
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+
     // ─── 周期报告「本期值得跟进」（P4） ─────────────────────────────────────
     //
     // 为什么不给 report_periods 加一列存 JSON：

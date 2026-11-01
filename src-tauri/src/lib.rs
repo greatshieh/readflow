@@ -486,6 +486,13 @@ pub fn run() {
             thesis_add_evidence,
             thesis_remove_evidence,
             thesis_evidence_of,
+            // 周复盘（阶段二）
+            thesis_falsifier_save,
+            thesis_falsifier_clear,
+            thesis_review_overview,
+            thesis_review_start,
+            thesis_review_mark,
+            thesis_review_finish,
             // 行情/财务数据层（金融升级 Phase 1）
             market_link_symbol,
             market_get_state,
@@ -3038,6 +3045,53 @@ async fn thesis_remove_evidence(evidence_id: i64) -> Result<(), String> {
 async fn thesis_evidence_of(kind: String, ref_id: i64) -> Result<Vec<(i64, String)>, String> {
     let pool = db_pool().await.map_err(|e| e.to_string())?;
     research::thesis::evidence_theses_of(&pool, &kind, ref_id).await
+}
+
+// ─── 周复盘（阶段二）──────────────────────────────────────────────────────────
+//
+// 入参结构体的内层字段一律 snake_case（前端手写 thesis_id / window_kind），
+// 出参结构体一律 camelCase。这套不对称约定见 review/mod.rs 的注释。
+
+/// 保存判据（一个论点至多一条，已有则覆盖），返回判据行 ID
+#[tauri::command]
+async fn thesis_falsifier_save(input: research::review::FalsifierInput) -> Result<i64, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::review::falsifier_save(&pool, input).await
+}
+
+/// 清空判据（幂等）
+#[tauri::command]
+async fn thesis_falsifier_clear(thesis_id: i64, reason: Option<String>) -> Result<(), String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::review::falsifier_clear(&pool, thesis_id, reason).await
+}
+
+/// 四区总览。**必须先 `thesis_review_start`**，否则拿不到会话、已处置集合错位
+#[tauri::command]
+async fn thesis_review_overview() -> Result<research::review::ReviewOverview, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::review::overview(&pool).await
+}
+
+/// 开始（或继续）一次复盘会话。幂等：有进行中的会话就返回它
+#[tauri::command]
+async fn thesis_review_start() -> Result<research::review::ReviewSession, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::review::start_session(&pool).await
+}
+
+/// 记录一次复盘处置
+#[tauri::command]
+async fn thesis_review_mark(input: research::review::ReviewMarkInput) -> Result<(), String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::review::mark(&pool, input).await
+}
+
+/// 结束复盘，返回摘要（幂等：重复调用读回既有摘要，不覆盖）
+#[tauri::command]
+async fn thesis_review_finish(review_id: i64) -> Result<research::review::ReviewSummary, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::review::finish(&pool, review_id).await
 }
 
 /// 为单个实体重抽历史事件：对库内文本命中该实体的文章逐篇补抽 AI 事件
