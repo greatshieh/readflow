@@ -819,7 +819,7 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 .rf-btn:hover:not(:disabled) {
-  background: var(--primary-fg);
+  background: var(--primary-tint);
 }
 .rf-btn:focus-visible {
   outline: 2px solid var(--primary);
@@ -897,7 +897,7 @@ onBeforeUnmount(() => {
   outline-offset: -2px;
 }
 .ref-item.flash {
-  background: var(--primary-fg);
+  background: var(--primary-tint);
   border-color: var(--primary);
 }
 .ref-no {
@@ -954,7 +954,7 @@ onBeforeUnmount(() => {
   height: 12px;
 }
 .ref-open:hover {
-  background: var(--primary-fg);
+  background: var(--primary-tint);
   color: var(--primary);
 }
 .ref-open:focus-visible {

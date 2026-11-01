@@ -61,11 +61,11 @@ defineProps<{
   padding: var(--sp-5) 22px;
   /* 主色浅底 + 主色半透明叠层：随"主题色"设置自动换色，取代原先硬编码的紫色方案。
      原先是"纯白 → 极浅主色"的渐变，平均值几乎等于白色、看不出底色，
-     故改为以 --primary-soft 作实心底、再叠一层 --primary-fg（主色约 10% 不透明度），
+     故改为以 --primary-soft 作实心底、再叠一层 --primary-tint（主色约 10% 不透明度），
      色感明确但不抢正文；135° 渐变只保留极轻微的深浅过渡。 */
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0) 100%),
-    linear-gradient(135deg, var(--primary-fg), var(--primary-fg)),
+    linear-gradient(135deg, var(--primary-tint), var(--primary-tint)),
     var(--primary-soft);
   border: 1px solid var(--border);
   border-radius: var(--r-xl);
@@ -76,7 +76,7 @@ html[data-theme="dark"] .summary-card {
   /* 暗色下不再叠白色高光（会让卡片显脏），只保留"浅底 + 主色叠层"两层，
      与浅色主题保持同样的色感强度 */
   background:
-    linear-gradient(135deg, var(--primary-fg), var(--primary-fg)),
+    linear-gradient(135deg, var(--primary-tint), var(--primary-tint)),
     var(--primary-soft);
   border-color: var(--border);
   box-shadow: none;

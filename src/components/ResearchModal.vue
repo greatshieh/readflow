@@ -378,7 +378,7 @@ function onGotoReview() {
     color var(--m-tap) var(--m-ease-out);
 }
 .side-tab:hover { background: var(--fill); color: var(--text-primary); }
-.side-tab.active { background: var(--primary-fg); color: var(--primary); font-weight: 500; }
+.side-tab.active { background: var(--primary-tint); color: var(--primary); font-weight: 500; }
 /* 页签上的"有待处理反证"提示点。
    不用数字：这个数只是"该去看一眼"的信号，具体几条在列表里更清楚，
    而左列只有 148px，挂数字会把页签文字挤到换行。 */

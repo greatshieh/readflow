@@ -310,7 +310,7 @@ watch(() => props.open, async (val) => {
   font-size: var(--fs-md);
   font-weight: 600;
   color: var(--primary);
-  background: var(--primary-fg);
+  background: var(--primary-tint);
   padding: var(--sp-1) var(--sp-15);
   border-radius: var(--r-sm);
 }

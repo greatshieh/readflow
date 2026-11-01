@@ -496,7 +496,7 @@ onMounted(() => {
   gap: var(--sp-2);
   margin: 0 var(--sp-5) var(--sp-15);
   padding: var(--sp-15) var(--sp-3);
-  background: var(--primary-fg);
+  background: var(--primary-tint);
   border-radius: var(--r-md);
   flex-wrap: wrap;
 }
@@ -977,7 +977,7 @@ onMounted(() => {
 .btn-primary {
   border: 1px solid var(--primary);
   background: var(--primary);
-  color: var(--primary-fg);
+  color: var(--tone-fg);
 }
 .btn-primary:disabled {
   opacity: 0.5;

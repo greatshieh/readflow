@@ -8,10 +8,10 @@
     <div class="dm-bar">
       <span class="m-title">{{ titleText }}</span>
       <span class="spacer"></span>
-      <button class="btn-default btn-sm" type="button" @click="copyMarkdown" :disabled="!dossier">
+      <button class="btn btn-default btn-sm" type="button" @click="copyMarkdown" :disabled="!dossier">
         复制 Markdown
       </button>
-      <button class="btn-default btn-sm" type="button" @click="saveAs" :disabled="!dossier">
+      <button class="btn btn-default btn-sm" type="button" @click="saveAs" :disabled="!dossier">
         另存为 .md
       </button>
       <button class="dm-x" type="button" aria-label="关闭" @click="emit('close')">

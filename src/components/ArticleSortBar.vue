@@ -113,7 +113,7 @@ const SORT_OPTIONS: { key: ArticleSortKey; label: string }[] = [
 }
 .sort-btn:hover { background: var(--fill); color: var(--text-primary); border-color: var(--border); }
 .sort-btn.active {
-  background: var(--primary-fg);
+  background: var(--primary-tint);
   color: var(--primary);
   border-color: var(--primary);
   font-weight: 500;

@@ -676,7 +676,7 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
   font-weight: 600;
   line-height: var(--lh-modal-section);
   color: var(--primary);
-  background: var(--primary-fg);
+  background: var(--primary-tint);
   padding: var(--sp-1) var(--sp-15);
   border-radius: var(--r-sm);
 }

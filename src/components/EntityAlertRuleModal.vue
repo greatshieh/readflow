@@ -339,7 +339,7 @@ async function handleSave() {
 .arm-chip.on {
   border-color: var(--primary);
   color: var(--primary);
-  background: var(--primary-fg);
+  background: var(--primary-tint);
 }
 .arm-input {
   height: 34px;

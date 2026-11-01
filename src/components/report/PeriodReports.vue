@@ -664,7 +664,7 @@ onMounted(() => {
   height: 18px;
   border-radius: 50%;
   flex-shrink: 0;
-  border: 2px solid var(--primary-fg);
+  border: 2px solid var(--primary-tint);
   border-top-color: var(--primary);
   animation: rp-spin 900ms linear infinite;
 }

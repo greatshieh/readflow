@@ -1021,7 +1021,7 @@ onUnmounted(() => {
 }
 .ai-status.error {
   color: var(--primary);
-  background: var(--primary-fg);
+  background: var(--primary-tint);
   border: 1px solid var(--primary);
   border-radius: var(--r-sm);
   padding: var(--sp-05) var(--sp-15);
@@ -1068,7 +1068,7 @@ onUnmounted(() => {
 .content-body :deep(h5), .content-body :deep(h6) { font-size: var(--fs-sm); font-weight: 500; margin: var(--sp-3) 0 var(--sp-05); color: var(--text-secondary); }
 .content-body :deep(strong), .content-body :deep(b) { font-weight: 600; color: var(--text-primary); }
 .content-body :deep(em), .content-body :deep(i) { font-style: italic; }
-.content-body :deep(a) { color: var(--primary); text-decoration: none; border-bottom: 1px solid var(--primary-fg); }
+.content-body :deep(a) { color: var(--primary); text-decoration: none; border-bottom: 1px solid var(--primary-tint); }
 .content-body :deep(a:hover) { border-bottom-color: var(--primary); }
 .content-body :deep(ul), .content-body :deep(ol) { margin: 0 0 var(--sp-35); padding-left: 22px; }
 .content-body :deep(li) { margin-bottom: var(--sp-05); }
@@ -1181,7 +1181,7 @@ onUnmounted(() => {
   font-family: inherit;
   transition: background 0.15s;
 }
-.empty-action:hover { background: var(--primary-fg); }
+.empty-action:hover { background: var(--primary-tint); }
 .empty-action svg { width: 14px; height: 14px; flex-shrink: 0; }
 
 /* 移动端：正文占满 */
@@ -1221,7 +1221,7 @@ onUnmounted(() => {
   /* 常驻可聚焦：键盘 Tab 到它时要有可见焦点环，不能只靠 hover */
   outline: none;
 }
-.palette-thesis:hover { background: var(--primary-fg); }
+.palette-thesis:hover { background: var(--primary-tint); }
 .palette-thesis:focus-visible {
   box-shadow: 0 0 0 2px var(--primary);
 }

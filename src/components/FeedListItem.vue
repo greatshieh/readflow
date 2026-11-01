@@ -217,7 +217,7 @@ function hideBrokenIcon(e: Event) {
   object-fit: cover;
 }
 .feed-item.unread .feed-item-avatar {
-  background: var(--primary-fg);
+  background: var(--primary-tint);
   color: var(--primary);
 }
 

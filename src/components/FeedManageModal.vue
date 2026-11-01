@@ -289,7 +289,7 @@ async function handleSaveAi() {
 /* 错误提示 */
 .manage-msg {
   color: var(--primary);
-  background: var(--primary-fg);
+  background: var(--primary-tint);
   /* 这是失败原因，用户要读懂才知道怎么改 —— 属于正文，不是元信息 */
   font-size: var(--fs-modal-body);
   line-height: var(--lh-modal-body);

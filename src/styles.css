@@ -9,11 +9,16 @@
   /* ── 主色 ────────────────────────────────────────────────
      全局唯一紫罗兰，不提供预设选择；明暗两套取值直接在此定义。
      四件套语义：primary=主色；primary-hover=深一档；
-     primary-soft=极浅底色（选中态 / 徽标底）；primary-fg=半透明叠色（选区 / 悬浮高亮） */
+     primary-soft=极浅底色（选中态 / 徽标底）；primary-tint=半透明叠色（选区 / 悬浮高亮）
+
+     陷阱：primary-tint 是**10% 透明的主色**，只能当 background / border 用。
+     它的旧名是 --primary-fg，名字里的 "fg" 曾诱导三处把它写成 `color:`——
+     结果是紫底上放一层 10% 透明的紫字，文字近乎不可见。
+     实心主色块上的文字色一律用 --tone-fg。 */
   --primary: #7c6ff0;
   --primary-hover: #5b4fe0;
   --primary-soft: #f0eeff;
-  --primary-fg: rgba(124, 111, 240, 0.1);
+  --primary-tint: rgba(124, 111, 240, 0.1);
 
   /* ── 色调板（彩色标记的唯一色值来源）──
      徽章、类型标签、状态点这些"传达状态而非品牌"的元素此前各自写死 hex，
@@ -328,7 +333,7 @@ html[data-theme="dark"] {
   --primary: #8e83f5;
   --primary-hover: #7c6ff0;
   --primary-soft: #241f3a;
-  --primary-fg: rgba(142, 131, 245, 0.16);
+  --primary-tint: rgba(142, 131, 245, 0.16);
   /* 危险色：暗底上需要更高明度才够对比，底色相应提高透明度 */
   --danger: #ff6369;
   --danger-fg: rgba(255, 99, 105, 0.16);
@@ -1047,7 +1052,7 @@ select:focus-visible {
 }
 
 ::selection {
-  background: var(--primary-fg);
+  background: var(--primary-tint);
 }
 
 /* Responsive Layout */
@@ -1447,7 +1452,7 @@ select:focus-visible {
   padding: 0 var(--sp-1);
   border-radius: var(--r-pill);
   background: var(--primary);
-  color: var(--primary-fg);
+  color: var(--tone-fg);
   font-size: var(--fs-xs);
   font-weight: 700;
   line-height: 18px;

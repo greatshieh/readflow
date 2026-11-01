@@ -368,7 +368,7 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
 .toggle-btn.active {
   border-color: var(--primary);
   color: var(--primary);
-  background: var(--primary-fg);
+  background: var(--primary-tint);
 }
 .toggle-btn:hover {
   border-color: var(--primary);
@@ -406,7 +406,7 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
     color var(--m-tap) var(--m-ease-out);
 }
 .alert-btn:hover {
-  background: var(--primary-fg);
+  background: var(--primary-tint);
   color: var(--primary);
 }
 .add-entity {
@@ -481,7 +481,7 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
   padding: 0 var(--sp-35);
   border: 1px solid var(--primary);
   border-radius: var(--r-md);
-  background: var(--primary-fg);
+  background: var(--primary-tint);
   color: var(--primary);
   font-size: var(--fs-modal-label);
   cursor: pointer;

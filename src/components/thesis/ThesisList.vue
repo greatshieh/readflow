@@ -25,11 +25,27 @@
         <span class="spacer"></span>
         <!-- 复盘入口放在论点列表，不放在设置里：用户会想到"回头看一眼"的时刻，
              正是他盯着这张表的时候。复盘是独立主屏视图（不在弹窗里），
-             故这里只抛意图，由外壳负责关弹窗 + 切视图。 -->
-        <button class="btn-default" type="button" title="按 W 随时进入复盘" @click="emit('goto-review')">
+             故这里只抛意图，由外壳负责关弹窗 + 切视图。
+
+             这两个按钮一律走全局 .btn 族（基类 + 修饰类 + 尺寸档），
+             不在本文件另写一套——本组件曾经自带一份 .btn-primary/.btn-ghost，
+             结果「本周复盘」用的 .btn-default 落进了没有基类的空档，
+             退化成浏览器原生控件（方角、系统内边距），而「+ 新论点」命中的
+             私有定义又把 --primary-tint 当文字色，紫底上的紫字几乎看不见。 -->
+        <button
+          class="btn btn-default btn-sm"
+          type="button"
+          title="按 W 随时进入复盘"
+          @click="emit('goto-review')"
+        >
           本周复盘
         </button>
-        <button class="btn-primary" type="button" :disabled="entities.entities.length === 0" @click="openCreate">
+        <button
+          class="btn btn-primary btn-sm"
+          type="button"
+          :disabled="entities.entities.length === 0"
+          @click="openCreate"
+        >
           + 新论点
         </button>
       </div>
@@ -123,8 +139,13 @@
         </div>
         <p v-if="createError" class="cf-error">{{ createError }}</p>
         <div class="cf-foot">
-          <button class="btn-ghost" type="button" @click="createOpen = false">取消</button>
-          <button class="btn-primary" type="button" :disabled="!canCreate || creating" @click="submitCreate">
+          <button class="btn btn-default" type="button" @click="createOpen = false">取消</button>
+          <button
+            class="btn btn-primary"
+            type="button"
+            :disabled="!canCreate || creating"
+            @click="submitCreate"
+          >
             {{ creating ? '创建中…' : '创建论点' }}
           </button>
         </div>
@@ -542,38 +563,5 @@ onMounted(() => {
   justify-content: flex-end;
   gap: var(--sp-2);
   margin-top: var(--sp-1);
-}
-.btn-primary,
-.btn-ghost {
-  height: 30px;
-  padding: 0 14px;
-  border-radius: var(--r-md);
-  font-family: inherit;
-  font-size: var(--fs-modal-label);
-  font-weight: 500;
-  cursor: pointer;
-}
-.btn-primary {
-  border: 1px solid var(--primary);
-  background: var(--primary);
-  color: var(--primary-fg);
-}
-.btn-primary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.btn-ghost {
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text-secondary);
-}
-.btn-ghost:hover {
-  background: var(--fill);
-  color: var(--text-primary);
-}
-.btn-primary:focus-visible,
-.btn-ghost:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 1px;
 }
 </style>

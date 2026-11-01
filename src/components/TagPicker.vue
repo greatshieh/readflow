@@ -313,7 +313,7 @@ async function removeTag(t: Tag) {
   cursor: pointer;
 }
 .tp-tab:hover { color: var(--text-primary); }
-.tp-tab.active { background: var(--primary-fg); color: var(--primary); font-weight: 600; }
+.tp-tab.active { background: var(--primary-tint); color: var(--primary); font-weight: 600; }
 .tp-close {
   border: none;
   background: none;
@@ -375,7 +375,7 @@ async function removeTag(t: Tag) {
   background: var(--surface);
 }
 .tp-check svg { width: 10px; height: 10px; }
-.tp-row.on .tp-check { border-color: var(--primary); background: var(--primary-fg); }
+.tp-row.on .tp-check { border-color: var(--primary); background: var(--primary-tint); }
 .tp-count {
   margin-left: auto;
   font-size: var(--fs-xs);

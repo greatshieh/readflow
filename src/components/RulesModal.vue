@@ -32,8 +32,8 @@
           <div class="rule-ops">
             <!-- 行内小按钮走全局按钮体系的 mini 档；删除用「弱危险」变体
                  （默认中性、悬浮才透红），避免整列常显红字造成视觉噪音 -->
-            <button class="btn-mini" @click="editRule(r)">编辑</button>
-            <button class="btn-mini btn-danger-text" @click="removeRule(r)">删除</button>
+            <button class="btn btn-mini" @click="editRule(r)">编辑</button>
+            <button class="btn btn-mini btn-danger-text" @click="removeRule(r)">删除</button>
           </div>
         </div>
       </div>
@@ -450,7 +450,7 @@ function actionText(r: FilterRule): string {
 .manage-close:hover { color: var(--text-primary); }
 .manage-msg {
   color: var(--primary);
-  background: var(--primary-fg);
+  background: var(--primary-tint);
   /* 失败原因，用户要读懂才知道怎么改 —— 属于正文 */
   font-size: var(--fs-modal-body);
   line-height: var(--lh-modal-body);

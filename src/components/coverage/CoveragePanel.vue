@@ -10,7 +10,7 @@
         <span v-if="store.rows.length > 0" class="cv-count">{{ store.rows.length }} 个标的</span>
         <span class="cv-spacer"></span>
         <button
-          class="btn-primary btn-sm"
+          class="btn btn-primary btn-sm"
           type="button"
           :disabled="availableOptions.length === 0"
           :title="availableOptions.length === 0 ? '所有实体都已在覆盖清单里' : '把标的加入覆盖'"
@@ -30,7 +30,7 @@
       <div class="cv-add-row">
         <AppSelect v-model="newEntityId" :options="availableOptions" placeholder="选择标的" />
         <AppSelect v-model="newTier" :options="TIER_OPTIONS" width="120px" />
-        <button class="btn-primary btn-sm" type="button" :disabled="newEntityId === ''" @click="submitAdd">
+        <button class="btn btn-primary btn-sm" type="button" :disabled="newEntityId === ''" @click="submitAdd">
           加入
         </button>
       </div>
@@ -55,13 +55,13 @@
           <span class="cv-name">{{ r.entityName }}</span>
           <span class="cv-meta">{{ metaText(r) }}</span>
           <span class="cv-spacer"></span>
-          <button class="btn-default btn-sm" type="button" @click="startEdit(r)">
+          <button class="btn btn-default btn-sm" type="button" @click="startEdit(r)">
             {{ editingId === r.entityId ? '收起' : '编辑' }}
           </button>
-          <button class="btn-default btn-sm" type="button" @click="openDossier(r.entityId)">
+          <button class="btn btn-default btn-sm" type="button" @click="openDossier(r.entityId)">
             生成一页
           </button>
-          <button class="btn-default btn-sm cv-danger" type="button" @click="removeRow(r)">移出</button>
+          <button class="btn btn-default btn-sm cv-danger" type="button" @click="removeRow(r)">移出</button>
         </div>
 
         <p v-if="r.reason" class="cv-line"><b>为什么盯</b>{{ r.reason }}</p>
@@ -98,8 +98,8 @@
           <div class="cv-edit-actions">
             <span v-if="saveError" class="cv-edit-error">{{ saveError }}</span>
             <span class="cv-spacer"></span>
-            <button class="btn-default btn-sm" type="button" @click="editingId = null">取消</button>
-            <button class="btn-primary btn-sm" type="button" :disabled="saving" @click="submitEdit(r)">
+            <button class="btn btn-default btn-sm" type="button" @click="editingId = null">取消</button>
+            <button class="btn btn-primary btn-sm" type="button" :disabled="saving" @click="submitEdit(r)">
               {{ saving ? '保存中…' : '保存' }}
             </button>
           </div>
