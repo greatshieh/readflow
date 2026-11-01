@@ -127,6 +127,9 @@ pub async fn run_task_once(
         // 周期报告任务：按自然周期汇总**全部文章**（不区分研究实体），
         // 与上面两个事件驱动的旧任务完全独立
         "period_report" => period::run_period_task(pool, &task.config).await,
+        // 论点复盘：不发报表、不调模型，只判断"这一周有没有值得提醒的判断"。
+        // 它自己决定发不发通知，因此下面那条通用「任务完成」回执对它关闭。
+        "thesis_review" => review::remind::run_review_task(pool).await,
         other => TaskOutcome::Failed(format!("未知任务类型: {}", other)),
     };
 
@@ -142,10 +145,17 @@ pub async fn run_task_once(
     // 「未配置」刻意不发——配置缺失会在每个 cron 周期重复刷屏，
     // 这类引导信息留在任务健康度面板里看即可。
     // 通知内部自带三重门（窗口聚焦 / 开关关闭都会静默跳过），这里无需判断。
-    match &outcome {
-        TaskOutcome::Success(m) => crate::notify::task_result(pool, &task.name, true, m).await,
-        TaskOutcome::Failed(m) => crate::notify::task_result(pool, &task.name, false, m).await,
-        TaskOutcome::Unconfigured(_) => {}
+    //
+    // ⚠ `thesis_review` 必须排除在这条通用回执之外：它自己决定发不发通知
+    // （安静态时一条都不发）。若放它进来，每 7 天会先弹一条"任务完成：每周论点复盘"，
+    // 再（或不）弹复盘提醒——安静态设计当场作废，而且这条噪音受系统通知总开关管，
+    // 不受复盘子开关管，用户关不掉。这一处漏了不会报错，只会表现为"说好的安静呢"。
+    if task.task_type != "thesis_review" {
+        match &outcome {
+            TaskOutcome::Success(m) => crate::notify::task_result(pool, &task.name, true, m).await,
+            TaskOutcome::Failed(m) => crate::notify::task_result(pool, &task.name, false, m).await,
+            TaskOutcome::Unconfigured(_) => {}
+        }
     }
 
     match outcome {

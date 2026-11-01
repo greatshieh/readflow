@@ -1774,14 +1774,18 @@ async fn seed_default_settings(pool: &SqlitePool) -> Result<(), String> {
 
 /// 种子化默认自动化任务（仅当任务表为空时写入，绝不覆盖用户已有任务）
 ///
-/// 种子化四个默认任务：
+/// 种子化五个默认任务：
 /// - 智能提取（启用）：夜间批量提取，执行器 Phase A 已就绪；
 /// - 周期日报（启用）：每天 08:00 汇总**全部文章**生成日报，开箱即用；
 /// - 每日研究报告（**停用**）：事件驱动的旧格式日报，与新周期日报撞车，
 ///   默认关掉但**不删除**——旧链路「原来的研究报告不动」，用户随时可在设置里重新启用；
-/// - 周报（默认停用，channel=obsidian）：需用户先配置 Vault 路径再启用。
+/// - 周报（默认停用，channel=obsidian）：需用户先配置 Vault 路径再启用；
+/// - 每周论点复盘（启用）：周一 09:00 只判断有没有该复查的判断，
+///   有料才发通知、无料彻底安静（执行器在 `research::review::remind`）。
 ///
 /// 只在任务表为空时写入：已有任务的库直接返回，不覆盖用户改过的配置。
+/// **因此存量库不会补种**——复盘任务在「设置 → 自动化」里的人类可建入口
+/// 是必需的，不是可选的。
 ///
 /// # 参数
 /// * `pool` - 数据库连接池
@@ -1866,6 +1870,22 @@ async fn seed_default_tasks(pool: &SqlitePool) -> Result<(), String> {
     .bind("weekly_report")
     .bind("0 0 8 * * 1")
     .bind(weekly_config.to_string())
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // 每周论点复盘：周一 09:00 检查"该复查 / 结构有偏"的判断，**只在有料时提醒**。
+    // config 为空对象：执行器不读任何配置（口径全在 `review::remind` 里写死）。
+    // 通用「任务完成」回执已在 `run_task_once` 里对 `thesis_review` 关闭，
+    // 否则每周会多一条"任务完成：每周论点复盘"，把安静态设计冲掉。
+    sqlx::query(
+        "INSERT INTO automation_tasks (name, task_type, cron_expr, config, enabled) \
+         VALUES (?, ?, ?, ?, 1)",
+    )
+    .bind("每周论点复盘")
+    .bind("thesis_review")
+    .bind("0 0 9 * * 1")
+    .bind("{}")
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;

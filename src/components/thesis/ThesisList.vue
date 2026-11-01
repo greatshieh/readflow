@@ -23,6 +23,12 @@
           {{ f.label }}
         </button>
         <span class="spacer"></span>
+        <!-- 复盘入口放在论点列表，不放在设置里：用户会想到"回头看一眼"的时刻，
+             正是他盯着这张表的时候。复盘是独立主屏视图（不在弹窗里），
+             故这里只抛意图，由外壳负责关弹窗 + 切视图。 -->
+        <button class="btn-default" type="button" title="按 W 随时进入复盘" @click="emit('goto-review')">
+          本周复盘
+        </button>
         <button class="btn-primary" type="button" :disabled="entities.entities.length === 0" @click="openCreate">
           + 新论点
         </button>
@@ -146,6 +152,17 @@ import { useThesesStore, STATUS_META, type ThesisStatus } from '@/stores/theses'
 
 const store = useThesesStore()
 const entities = useEntitiesStore()
+
+/**
+ * 向外交互
+ *
+ * `goto-review` 只表达"用户想复盘"，不在这里直接改 `uiStore.mainView`：
+ * 列表在弹窗里，切视图之前必须先把弹窗关掉，而"关弹窗"是外壳的能力。
+ * 子组件越权改全局视图会留下一个"模态开着但主屏已经换了"的中间态。
+ */
+const emit = defineEmits<{
+  (e: 'goto-review'): void
+}>()
 
 /** 状态筛选档位。`activeOnly` 是默认：归档的与已推翻的平时不用占视线 */
 const STATUS_FILTERS: Array<{ value: ThesisStatus | 'all' | 'activeOnly'; label: string }> = [

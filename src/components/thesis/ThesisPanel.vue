@@ -11,7 +11,7 @@
     @open-article="onOpenArticle"
     @deleted="onDeleted"
   />
-  <ThesisList v-else />
+  <ThesisList v-else @goto-review="emit('goto-review')" />
 </template>
 
 <script setup lang="ts">
@@ -41,6 +41,8 @@ const store = useThesesStore()
 const emit = defineEmits<{
   /** 需要打开原文：交给外壳决定是关弹窗跳主屏，还是就地预览 */
   (e: 'open-article', articleId: number): void
+  /** 请求进入复盘页：透传自列表，由外壳负责关弹窗 + 切主屏视图 */
+  (e: 'goto-review'): void
 }>()
 
 /**

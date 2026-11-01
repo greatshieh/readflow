@@ -115,6 +115,18 @@
       <AppSwitch v-model="eventAlertEnabled" label="事件预警" />
     </div>
 
+    <!-- 复盘提醒：写入 settings.thesis_review_reminder_enabled，缺省开启。
+         与「系统通知」总开关是两级：总开关关掉则一律不发；这里只控制复盘那一条。
+         关掉后不会消耗 7 天去重窗口（见 research/review/remind.rs 的 disabled 分支），
+         重新打开即可马上恢复提醒。 -->
+    <div class="setting">
+      <div class="setting-info">
+        <h4>复盘提醒</h4>
+        <p>每周一次检查有没有该复查的判断；只在<strong>有判据到期或结构明显有偏</strong>时发一条汇总通知，没有则完全安静</p>
+      </div>
+      <AppSwitch v-model="reviewReminderEnabled" label="复盘提醒" />
+    </div>
+
     <!-- 事件类型分类：预设领域多选（无默认、可多选取并集）+ 自定义类型增删。
          启用领域写入 settings.enabled_event_domains（JSON 数组）；自定义类型落库 custom_event_types 表。
          二者并集即 AI 抽取事件时可用的"事件类型"枚举（详见 research::extract::effective_event_types）。 -->
@@ -371,6 +383,8 @@ const keepUnread = ref(true)
     const notifyEnabled = ref(true)
     /** 事件预警开关：缺省开启，落库为 settings.event_alert_enabled（"1" / "0"） */
     const eventAlertEnabled = ref(true)
+    /** 复盘提醒开关：缺省开启，落库为 settings.thesis_review_reminder_enabled（"1" / "0"） */
+    const reviewReminderEnabled = ref(true)
 /** 关闭到托盘开关：缺省开启，落库为 settings.close_to_tray（"1" / "0"） */
 const closeToTray = ref(true)
 /** 按来源自动分组开关：缺省开启，落库为 settings.auto_group_by_source（"0" 为关） */
@@ -539,6 +553,8 @@ watch(
     notifyEnabled.value = settingsStore.getSetting('notify_enabled') !== '0'
     // 事件预警：缺省开启，只有显式存过 "0" 才算关闭（与 Rust 侧 notify.rs 判据一致）
     eventAlertEnabled.value = settingsStore.getSetting('event_alert_enabled') !== '0'
+    // 复盘提醒：缺省开启，只有显式存过 "0" 才算关闭（与 Rust 侧 review/remind.rs 判据一致）
+    reviewReminderEnabled.value = settingsStore.getSetting('thesis_review_reminder_enabled') !== '0'
     // 关闭到托盘：缺省开启，只有显式存过 "0" 才算关闭（与 Rust 侧 win_close 判据一致）
     closeToTray.value = settingsStore.getSetting('close_to_tray') !== '0'
     // 按来源自动分组：缺省开启，只有显式存过 "0" 才算关闭（与 Rust 侧 feeds_add 判据一致）
@@ -607,6 +623,10 @@ async function saveGeneral() {
       settingsStore.setSetting('retention_keep_unread', keepUnread.value ? '1' : '0'),
       settingsStore.setSetting('notify_enabled', notifyEnabled.value ? '1' : '0'),
       settingsStore.setSetting('event_alert_enabled', eventAlertEnabled.value ? '1' : '0'),
+      settingsStore.setSetting(
+        'thesis_review_reminder_enabled',
+        reviewReminderEnabled.value ? '1' : '0'
+      ),
       settingsStore.setSetting('close_to_tray', closeToTray.value ? '1' : '0'),
       settingsStore.setSetting('auto_group_by_source', autoGroup.value ? '1' : '0'),
       // 事件类型分类：把设置页编辑中的启用领域写回 settings.enabled_event_domains（JSON 数组）

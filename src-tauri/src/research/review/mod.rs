@@ -12,6 +12,7 @@
 //! 数据搬运，而建表是**每次启动**都跑的。
 
 pub mod health;
+pub mod remind;
 
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};

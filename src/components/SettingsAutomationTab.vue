@@ -116,6 +116,17 @@
           </div>
         </div>
       </template>
+      <!-- 复盘配置项：**没有配置**。口径（谁该复查、几天去重、high 才推送）全部
+           写死在 research::review::remind 里，让用户填只会变成"填了不生效"。
+           这里显式占一个分支、不落进下面的报告类分支：否则会显示
+           「输出通道 / 覆盖天数」两个对复盘毫无意义、且保存后又被 buildTaskConfig
+           写成 {} 的字段——用户填了、保存了、什么都没有，比不给填更糟 -->
+      <template v-else-if="formType === 'thesis_review'">
+        <p class="form-hint">
+          每周检查一次「判据到期」与「结构有偏」的判断，<strong>有需要复查的才发一条汇总通知</strong>，没有则完全安静。
+          口径固定，无需配置；提醒可在「设置 → 常规」单独关闭。
+        </p>
+      </template>
       <!-- 报告类配置项 -->
       <template v-else>
         <div class="form-row">
@@ -202,7 +213,7 @@ const taskFormError = ref('')
 
 /** 表单字段：任务名称与类型 */
 const formName = ref('')
-const formType = ref<'batch_extract' | 'period_report' | 'daily_report' | 'weekly_report'>(
+const formType = ref<'batch_extract' | 'period_report' | 'daily_report' | 'weekly_report' | 'thesis_review'>(
   'batch_extract'
 )
 /** 表单字段：cron 表达式 */
@@ -223,6 +234,9 @@ const taskTypeOptions: SelectOption[] = [
   { value: 'period_report', label: '周期报告（按时间汇总）' },
   { value: 'daily_report', label: '每日报告' },
   { value: 'weekly_report', label: '每周报告' },
+  // 存量库不会补种默认任务（`seed_default_tasks` 只在任务表为空时执行），
+  // 所以这一项是"老用户也能建出复盘任务"的唯一入口，不是可选项
+  { value: 'thesis_review', label: '论点复盘（周）' },
 ]
 /** 周期报告的汇总粒度选项 */
 const periodKindOptions: SelectOption[] = [
@@ -263,7 +277,9 @@ function taskTypeLabel(type: string): string {
     batch_extract: '提取',
     period_report: '周期报告',
     daily_report: '日报',
-    weekly_report: '周报'
+    weekly_report: '周报',
+    // 漏这一条不会报错，只会让徽标显示裸 `thesis_review`
+    thesis_review: '复盘'
   }
   return labels[type] ?? type
 }
@@ -326,6 +342,11 @@ function guideTab(t: AutomationTask): 'ai' | 'obsidian' | null {
   if (t.task_type === 'daily_report' || t.task_type === 'weekly_report') {
     return 'obsidian'
   }
+  // 复盘既不用 AI 也不写 Vault：显式早返回 null。
+  // 虽然在返回类型上等价于走到底部的 `return null`，但必须显式写——
+  // 否则将来有人把默认分支改成 'ai'，这里会悄悄多出一个「去配置 →」，
+  // 而点过去是个与复盘毫无关系的 AI 设置页。
+  if (t.task_type === 'thesis_review') return null
   return null
 }
 
@@ -404,7 +425,10 @@ function startEdit(t: AutomationTask) {
     t.task_type === 'batch_extract' ||
     t.task_type === 'period_report' ||
     t.task_type === 'daily_report' ||
-    t.task_type === 'weekly_report'
+    t.task_type === 'weekly_report' ||
+    // 漏这一处：编辑复盘任务时 formType 不重置，表单停在**上一个任务的类型**上，
+    // 保存即改写类型与 config。与上面 buildTaskConfig 的漏法同一个失效模式
+    t.task_type === 'thesis_review'
   ) {
     formType.value = t.task_type
   }
@@ -474,6 +498,13 @@ function buildTaskConfig(): string {
       provider: formProvider.value.trim() || 'agnes',
       window_mode: 'natural'
     })
+  }
+  // 复盘没有配置，必须**在 else 之前**拦截。落到 else 会被写成 `{channel,days}`：
+  // 后端 `run_review_task` 不读 config，所以当场不会报错，但用户下次「编辑 → 保存」时
+  // `startEdit` 会把 channel/days 回填进报告表单，再保存就彻底变成一条报告任务。
+  // 这就是"编辑再保存静默改错类型"的完整路径。
+  if (formType.value === 'thesis_review') {
+    return JSON.stringify({})
   }
   return JSON.stringify({
     channel: formChannel.value,
@@ -584,6 +615,9 @@ onMounted(() => {
 .badge-period_report { background: var(--primary); }
 .badge-daily_report { background: var(--success); }
 .badge-weekly_report { background: var(--tone-indigo); }
+/* 复盘是"该看一眼"的提醒型任务，用 amber 与 --danger（失败）区分开。
+   缺这条会让徽标变成无底透明块——类名有、样式没有，与 period_report 当初同一个坑 */
+.badge-thesis_review { background: var(--tone-amber); }
 /* 调度是一行时间信息 → 元信息档 11 */
 .task-schedule {
   font-size: var(--fs-modal-meta);

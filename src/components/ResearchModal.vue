@@ -59,7 +59,11 @@
         @close="close"
       />
       <ResearchEntitiesTab v-show="tab === 'entities'" @entities-changed="onEntitiesChanged" />
-      <ThesisPanel v-show="tab === 'theses'" @open-article="onOpenThesisArticle" />
+      <ThesisPanel
+        v-show="tab === 'theses'"
+        @open-article="onOpenThesisArticle"
+        @goto-review="onGotoReview"
+      />
     </div>
   </BaseModal>
 </template>
@@ -278,6 +282,26 @@ async function onOpenThesisArticle(articleId: number) {
   emit('close')
   uiStore.setMainView('articles')
   await articlesStore.selectArticle(articleId)
+}
+
+/**
+ * 论点页签里点了「本周复盘」
+ *
+ * 复盘是独立主屏视图（PRD-05：它有会话状态，放弹窗里会让 Esc 语义错配），
+ * 所以这里必须**先关弹窗、再切视图**：
+ * 顺序反了会短暂出现"弹窗浮在复盘页上"的中间态，而那个中间态里
+ * 卡片既在弹窗遮罩下不可点、又不在侧栏路径上，用户只能按 Esc——
+ * 而 Esc 同时是"关弹窗"与"退出视图"，一次按键退两层。
+ *
+ * 用 `setMainView('review')` 而非 `toggleReviewView()`：这里表达的是确定意图，
+ * 若用户恰好在复盘页打开研究工作台再点这个按钮，toggle 会把他送回文章列表
+ * ——"点了去复盘，结果到了文章列表"是最难解释的一类 bug。
+ *
+ * @returns 无返回值；副作用为关弹窗并切到复盘视图（会话状态由 review store 持有，不重置）
+ */
+function onGotoReview() {
+  emit('close')
+  uiStore.setMainView('review')
 }
 </script>
 
