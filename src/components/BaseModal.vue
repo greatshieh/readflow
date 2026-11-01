@@ -8,7 +8,7 @@
        absolute —— 遮罩于是被局限在面板盒子里、并被面板的 overflow:hidden 裁掉
        （表现为弹窗被"关"在栏内）。移到 body 下即彻底脱离该坐标系。 -->
   <Teleport to="body">
-  <div class="overlay" :class="{ show: open }" @mousedown.self="emit('close')">
+  <div class="overlay" :class="{ show: open }" @mousedown.self="onOverlayMousedown">
     <div
       ref="panelRef"
       class="base-modal"
@@ -38,6 +38,13 @@
  * # 为什么点击关闭监听 `mousedown` 而非 `click`
  * 用户从面板内部按下鼠标、拖到遮罩上松开时，`click` 的 target 是二者共同祖先
  * （即遮罩），会被误判成"点了遮罩"而关闭弹窗、丢掉正在填的内容。按下点才是真实意图。
+ *
+ * # 打开初期的遮罩点击会被忽略（300ms）
+ * `mousedown` 解决了"拖动误判"，但解决不了"手滑"：点完打开入口后手还压在鼠标键上、
+ * 双击的第二下、触控板抬起时的余震，都会在弹窗刚出现的那一瞬落到遮罩上。
+ * 故 `onOverlayMousedown` 会丢掉打开后 `OVERLAY_GUARD_MS` 内的点击。
+ * 这是**迟滞**而不是禁用——过了窗口行为与原来完全一致；Esc 与 ✕ 从不迟滞，
+ * 它们是明确意图，给它们加延迟只会让人觉得卡。
  *
  * # 与全局确认框的优先级
  * 全局确认框（`GlobalModal`，z-index 9999）可能叠在弹窗之上（如弹窗内点删除）。
@@ -98,6 +105,40 @@ let lastActive: HTMLElement | null = null
 
 /** 本实例当前是否持有滚动锁（用于配对 acquire / release，避免多余调用错位计数） */
 let locked = false
+
+/**
+ * 打开初期忽略遮罩点击的时长（ms）
+ *
+ * 应对的是**手滑**而非"不想关"：点完入口按钮后手还没离开鼠标键、双击的第二下、
+ * 或者手指从触控板抬起时的余震，都会在弹窗刚出现时落到遮罩上。
+ * 弹窗进场动画是 200ms（`--m-in`），取 300ms 覆盖"动画期间 + 落定后一瞬"这段
+ * 最容易误触的窗口。
+ *
+ * 只拦遮罩的 `mousedown`：Esc、✕ 按钮、任何键盘路径都不受影响——那些是明确意图，
+ * 给它们加迟滞只会让人觉得卡。
+ */
+const OVERLAY_GUARD_MS = 300
+
+/**
+ * 本次进入打开态的时刻（`performance.now()` 基准）
+ *
+ * 用 `performance.now()` 而不是 `Date.now()`：这里量的是时长，不该受系统时钟
+ * 被校时或用户改时间影响。
+ */
+let openedAt = 0
+
+/**
+ * 遮罩被按下：关闭弹窗，但打开初期的手滑不算
+ *
+ * 语义边界要说清：这是**防手滑迟滞**，不是"禁止点遮罩关闭"。过了 {@link OVERLAY_GUARD_MS}
+ * 之后，行为与改动前完全一致。
+ *
+ * @returns 无返回值；超过迟滞窗口时 `emit('close')`
+ */
+function onOverlayMousedown(): void {
+  if (performance.now() - openedAt < OVERLAY_GUARD_MS) return
+  emit('close')
+}
 
 /**
  * 面板内可聚焦元素的选择器
@@ -210,6 +251,8 @@ function onKeydown(e: KeyboardEvent): void {
 function activate(): void {
   if (locked) return
   locked = true
+  // 记下进入打开态的时刻，供遮罩点击的防手滑迟滞判断（见 OVERLAY_GUARD_MS）
+  openedAt = performance.now()
   lastActive = document.activeElement as HTMLElement | null
   acquireDialog()
   document.addEventListener('keydown', onKeydown, true)
