@@ -27,6 +27,7 @@ use sqlx::SqlitePool;
 
 use crate::ai::{self, AIProvider};
 use crate::db::{CustomEventType, EventWithContext, ResearchEvent, Setting};
+use crate::projection;
 use crate::util::{html_escape, sanitize_url};
 
 use super::{TaskOutcome, extract::PRESET_DOMAINS};
@@ -276,8 +277,11 @@ fn parse_report_config(config_json: &str, kind: ReportKind) -> ReportConfig {
 /// 与 [`run_report_task`] 的区别在于**不涉及任务行**：既不从 `automation_tasks`
 /// 取配置，也不回写运行状态，因此"手动生成报告"无需先创建任何任务。
 ///
-/// 文件名由 [`report_filename`] 按类型与日期确定，因此同一时间窗口重复生成
-/// 会覆盖同名文件（日报按日期、周报按 ISO 周号）——同一天只保留最新一份。
+/// 文件名由 [`report_filename`] 按类型与日期确定，因此同一时间窗口重复生成会落到
+/// 同一个文件上（日报按日期、周报按 ISO 周号）。**但它不会覆盖用户写的内容**：
+/// Markdown 走 [`projection::project_document`] 做块级合并（只替换标记块内的机器
+/// 内容，块外与 frontmatter 里用户自己的键原样保留），HTML 作为一次性渲染产物整篇
+/// 覆盖（理由见 [`write_report_to`] 的注释）。
 ///
 /// # 参数
 /// * `pool` - 数据库连接池
@@ -1046,17 +1050,24 @@ fn render_report_html(
     s
 }
 
-/// 渲染报告 Markdown（Obsidian 惯例格式）
+/// 渲染报告 Markdown（Obsidian 惯例格式 + 投影标记块）
 ///
-/// 结构：YAML frontmatter（type / date / period / events / entities / tags）
-/// → 一级标题 → `[!summary]` 统计 callout（含情感倾向统计）→ 按实体分组的二级标题（双链）+
-/// 事件列表（类型 / 日期 / 事实）+ `[!quote]` 证据 callout（内含来源链接）。
+/// 结构：YAML frontmatter（type / readflow_id / date / period / events / entities / tags）
+/// → 三个标记块：[`header`] 一级标题、[`summary`] 统计 callout、[`body`] 按实体分组
+/// 的二级标题（双链）+ 事件列表（类型 / 日期 / 事实）+ `[!quote]` 证据 callout。
 ///
 /// 之所以按 Obsidian 惯例渲染：报告最终落在用户 Vault 里与既有笔记共存，
 /// frontmatter 让 dataview 能按报告类型建视图，双链让实体笔记的反链面板
 /// 自动聚合"提到该实体的所有报告"——这两件事纯 Markdown 给不了。
 ///
-/// 无事件时仍输出完整 frontmatter，只把正文换成提示 callout，
+/// # 为什么要把正文切成标记块
+/// 报告文件按「类型 + 周期」命名，同一周期重跑就会落到同一个文件上；而这个文件
+/// 同时是用户写批注的地方。没有块边界时，重新生成 = 整篇覆盖 = 用户批注消失。
+/// 切块之后由 [`crate::projection::project_document`] 只替换块内内容，块外的空隙
+/// 留给用户。三块的划分依据是"变更频率"：标题跟日期变、统计跟数据变、正文跟事件变，
+/// 分开后一次重跑不会把三块全判为"改了"。
+///
+/// 无事件时仍输出完整 frontmatter 与三个块，只把正文换成提示 callout，
 /// 保持骨架稳定以便跨期归档对比。
 ///
 /// # 参数
@@ -1065,40 +1076,73 @@ fn render_report_html(
 /// * `rows` - 窗口内的事件行（已按实体名排序）
 ///
 /// # 返回值
-/// 完整 Markdown 文本
+/// 完整 Markdown 文本（带标记，不是最终落盘字节——落盘要经投影合并）
 fn render_report(kind: ReportKind, days: i64, rows: &[EventWithContext]) -> String {
     let today = Local::now().format("%Y-%m-%d").to_string();
     let period = format!("近 {} 天", days);
-    let entities = count_entities(rows);
 
-    // frontmatter：period 含空格故加引号，其余取值均为无歧义字面量或数字，
-    // 不会被 YAML 误解析
-    let mut md = format!(
-        "---\ntype: {}\ndate: {}\nperiod: \"{}\"\nevents: {}\nentities: {}\ntags: [readflow, {}]\n---\n\n",
+    // readflow_id 的周期段与文件名（[`report_basename`]）取自同一个函数
+    // [`report_identity_key`]，二者因此**不可能**对不上。这不是洁癖：投影会比对
+    // 文件里的 `readflow_id` 与本次要写的 ID，不一致就拒绝合并（防止两篇同名笔记
+    // 互相覆盖）。周报的键必须是 ISO 周号而不是"今天"——否则周一生成、周五重跑
+    // 会被判成"另一条记录"，同一周内再也更新不了。
+    let frontmatter = format!(
+        "type: {}\nreadflow_id: report:{}:{}\ndate: {}\nperiod: \"{}\"\nevents: {}\nentities: {}\ntags: [readflow, {}]\n",
         kind.slug(),
+        kind.slug(),
+        report_identity_key(kind),
         today,
         period,
         rows.len(),
-        entities,
+        count_entities(rows),
         kind.tag()
     );
 
-    md.push_str(&format!("# 研究{} · {}\n\n", kind.label(), today));
-    // 结尾只留一个换行：实体循环自己以 `\n## ` 开头，两者恰好凑成组前空行
+    let header = render_report_header(kind, &today);
+    let summary = render_report_summary(&period, rows);
+    let body = render_report_body(rows);
+    projection::assemble(
+        &frontmatter,
+        &[
+            ("header", header.as_str()),
+            ("summary", summary.as_str()),
+            ("body", body.as_str()),
+        ],
+    )
+}
+
+/// `header` 块：一级标题
+///
+/// 单独成块的理由：标题里含日期，每天都会变。若把它放在块外，它就成了"机器生成但
+/// 在用户区"的内容，要么被当作正文不动（标题永远是旧的），要么得特殊处理。
+fn render_report_header(kind: ReportKind, today: &str) -> String {
+    format!("# 研究{} · {}\n", kind.label(), today)
+}
+
+/// `summary` 块：统计 callout（覆盖窗口 / 事件数 / 实体数 / 情感倾向）
+fn render_report_summary(period: &str, rows: &[EventWithContext]) -> String {
     let tally = tally_sentiment(rows);
-    md.push_str(&format!(
+    format!(
         "> [!summary] 覆盖{}\n> 共 **{}** 条事件 · **{}** 个实体\n> 情感倾向：利好 {} · 利空 {} · 中性 {}\n",
         period,
         rows.len(),
-        entities,
-        tally.0, tally.1, tally.2
-    ));
+        count_entities(rows),
+        tally.0,
+        tally.1,
+        tally.2
+    )
+}
 
+/// `body` 块：按实体分组的事件列表
+///
+/// 无事件时返回提示 callout —— 仍留在 `body` 块内，这样"从有事件变成无事件"是一次
+/// 正常的块内替换，不会把用户写在块外的批注牵扯进来。
+fn render_report_body(rows: &[EventWithContext]) -> String {
     if rows.is_empty() {
-        md.push_str("> [!info] 本期无动态\n> 时间窗口内没有已提取的研究事件。\n");
-        return md;
+        return "> [!info] 本期无动态\n> 时间窗口内没有已提取的研究事件。\n".to_string();
     }
 
+    let mut md = String::new();
     // 按实体分组（rows 已按实体名排序，直接相邻聚合即可，无需 HashMap 保序）
     let mut current_entity = "";
     for row in rows {
@@ -1181,15 +1225,29 @@ fn truncate_title(title: &str) -> String {
     }
 }
 
-/// 报告文件基名（不含扩展名，markdown 与 html 共用，保证同目录并列）
-fn report_basename(kind: ReportKind) -> String {
+/// 报告的**周期身份键**：日报用日期，周报用 ISO 周号
+///
+/// 文件名（[`report_basename`]）与 frontmatter 的 `readflow_id` 都从这里取，
+/// 保证"文件叫什么"与"文件里写着我是谁"永远一致。这条一致性不是文案问题：
+/// 投影用 `readflow_id` 判断"这个文件是不是同一个对象"，不一致就会被当成另一条
+/// 记录而拒绝写入。
+///
+/// 周报必须按 ISO 周而不是"当天日期"——同一周里任意一天重跑都要落到同一个键上，
+/// 否则周一生成、周五重跑就更新不了那份周报。
+fn report_identity_key(kind: ReportKind) -> String {
     let now = Local::now();
     match kind {
-        ReportKind::Daily => format!("研究日报-{}", now.format("%Y-%m-%d")),
-        ReportKind::Weekly => {
-            // ISO 周数命名，便于跨年归档排序
-            format!("研究周报-{}-W{:02}", now.year(), now.iso_week().week())
-        }
+        ReportKind::Daily => now.format("%Y-%m-%d").to_string(),
+        // ISO 周数命名，便于跨年归档排序（与文件名同源）
+        ReportKind::Weekly => format!("{}-W{:02}", now.year(), now.iso_week().week()),
+    }
+}
+
+/// 报告文件基名（不含扩展名，markdown 与 html 共用，保证同目录并列）
+fn report_basename(kind: ReportKind) -> String {
+    match kind {
+        ReportKind::Daily => format!("研究日报-{}", report_identity_key(kind)),
+        ReportKind::Weekly => format!("研究周报-{}", report_identity_key(kind)),
     }
 }
 
@@ -1202,7 +1260,8 @@ fn report_filename(kind: ReportKind) -> String {
 ///
 /// # 参数
 /// * `kind` - 报告类型（决定文件名）
-/// * `markdown` - 报告内容
+/// * `markdown` - 报告内容（带投影标记）
+/// * `html` - HTML 报告内容
 ///
 /// # 返回值
 /// 成功时返回展示用路径描述
@@ -1213,14 +1272,7 @@ fn deliver_to_app_dir(kind: ReportKind, markdown: &str, html: &str) -> Result<St
     let dir = REPORTS_DIR
         .get()
         .ok_or("报告目录未初始化，请重启应用")?;
-    if !dir.exists() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("创建报告目录失败: {}", e))?;
-    }
-    let base = report_basename(kind);
-    let md_path = dir.join(format!("{}.md", base));
-    let html_path = dir.join(format!("{}.html", base));
-    std::fs::write(&md_path, markdown).map_err(|e| format!("写入报告文件失败: {}", e))?;
-    std::fs::write(&html_path, html).map_err(|e| format!("写入 HTML 报告失败: {}", e))?;
+    let md_path = write_report_to(dir, kind, markdown, html)?;
     Ok(format!("已写入 {} 与同名 HTML 报告", md_path.display()))
 }
 
@@ -1262,25 +1314,55 @@ async fn resolve_vault_dir(pool: &SqlitePool, subpath: Option<&str>) -> Result<P
 
 /// 把报告写入指定目录（必要时创建目录）
 ///
+/// **这是全应用唯一一处写报告文件的地方**：`app` / `file` / `obsidian` / `both`
+/// 四个通道最终都走到这里，因此"重新生成会不会覆盖用户批注"只需要在这一个函数里
+/// 保证一次。
+///
+/// # 为什么 Markdown 合并、HTML 整篇覆盖（有意的非对称，别顺手统一）
+/// 报告文件按「类型 + 周期」命名，同一周期重跑落在同一个文件上。对这两份文件，
+/// 用户的参与方式是**根本不同**的：
+///
+/// - `.md` 是**工作面**。它进用户的 Obsidian Vault，和既有笔记并列，用户会在里面
+///   写批注、画箭头、加自己的结论。所以它必须走
+///   [`crate::projection::project_document`]——只替换标记块内的机器内容，块外一个字
+///   都不动。
+/// - `.html` 是**一次性渲染产物**。它存在的意义是"给人看 / 打印 / 发出去"，样式全
+///   内联、无外部依赖（见 [`render_report_html`] 的模块头）。没人会在 HTML 源码里
+///   写批注——真要批注也是在浏览器里不落盘。所以它整篇覆盖是**对的**，合并反而
+///   会让样式更新不彻底：旧 HTML 的 `<style>` 块留在文件里，新样式混进去，症状是
+///   "改了样式但看起来没变"。
+///
+/// 一句话：**md 是用户可以编辑的，html 是产物**。把 html 也改成块合并，等于给一个
+/// 没人编辑的文件加上"用户区"，只会制造"为什么我的 HTML 没更新"这类新问题。
+///
 /// # 参数
-/// * `dir` - 目标目录
+/// * `dir` - 目标目录（不存在时创建）
 /// * `kind` - 报告类型（决定文件名）
-/// * `markdown` - 报告内容
+/// * `markdown` - 报告内容（带投影标记）
+/// * `html` - HTML 报告内容
 ///
 /// # 返回值
-/// 成功时返回写入的文件路径
+/// 成功时返回 Markdown 文件路径
 ///
 /// # 错误
-/// 目录创建失败或文件写入失败时返回错误信息
-fn write_report_to(dir: &Path, kind: ReportKind, markdown: &str, html: &str) -> Result<PathBuf, String> {
+/// 目录创建失败、Markdown 合并失败（如目标文件不是 Readflow 生成的）、HTML 写入失败
+fn write_report_to(
+    dir: &Path,
+    kind: ReportKind,
+    markdown: &str,
+    html: &str,
+) -> Result<PathBuf, String> {
     if !dir.exists() {
         std::fs::create_dir_all(dir).map_err(|e| format!("创建报告目录失败: {}", e))?;
     }
     let base = report_basename(kind);
+
     let md_path = dir.join(format!("{}.md", base));
+    projection::project_document(&md_path, markdown)?;
+
     let html_path = dir.join(format!("{}.html", base));
-    std::fs::write(&md_path, markdown).map_err(|e| format!("写入报告文件失败: {}", e))?;
     std::fs::write(&html_path, html).map_err(|e| format!("写入 HTML 报告失败: {}", e))?;
+
     Ok(md_path)
 }
 
@@ -1453,6 +1535,85 @@ mod tests {
         assert!(message.contains("Obsidian Vault"), "描述应含 Vault 落点: {}", message);
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 同一周期重跑：块外用户批注逐字保留，块内机器内容被刷新
+    ///
+    /// 这是本次改动的核心验收——此前 `write_report_to` 整篇 `fs::write`，重跑一次
+    /// 用户在周报里写的批注就永久消失（文件是唯一副本，没有第二处可恢复）。
+    #[test]
+    fn rerender_keeps_user_annotation_between_blocks() {
+        let dir = std::env::temp_dir().join(format!(
+            "readflow-report-annotation-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录失败");
+
+        let md = render_report(ReportKind::Daily, 1, &[sample_event("英伟达")]);
+        let path = write_report_to(&dir, ReportKind::Daily, &md, "<html/>").expect("首轮写报告失败");
+        let first = std::fs::read_to_string(&path).expect("读回失败");
+        assert!(
+            first.contains("<!-- readflow:begin:body -->"),
+            "报告应带投影标记：{first}"
+        );
+
+        // 用户在两块之间的空隙里写了一句批注
+        let annotated = first.replace(
+            "<!-- readflow:end:header -->\n",
+            "<!-- readflow:end:header -->\n\n我的批注：这条超预期，明天盯渠道库存。\n",
+        );
+        std::fs::write(&path, &annotated).expect("写批注失败");
+
+        // 同一周期重跑（`report_basename` 同一天 → 落到同一个文件）
+        write_report_to(&dir, ReportKind::Daily, &md, "<html/>").expect("重跑失败");
+        let after = std::fs::read_to_string(&path).expect("读回失败");
+
+        assert!(
+            after.contains("我的批注：这条超预期，明天盯渠道库存。"),
+            "重跑不得抹掉用户在块外写的内容：{after}"
+        );
+        assert!(
+            after.matches("<!-- readflow:begin:body -->").count() == 1,
+            "重跑不应产生重复块：{after}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 身份键必须与文件名同源，且必须写进 frontmatter
+    ///
+    /// 投影用 `readflow_id` 判断"这个文件是不是同一个对象"，一旦它与文件名不同源，
+    /// 同一周期重跑就会被当成另一条记录而拒绝写入。
+    #[test]
+    fn report_identity_key_matches_basename_and_frontmatter() {
+        for kind in [ReportKind::Daily, ReportKind::Weekly] {
+            let base = report_basename(kind);
+            let key = report_identity_key(kind);
+            assert!(
+                base.ends_with(key.as_str()),
+                "文件名 {} 应以身份键 {} 结尾",
+                base,
+                key
+            );
+            let md = render_report(kind, 1, &[]);
+            assert!(
+                md.contains(&format!("readflow_id: report:{}:{}", kind.slug(), key)),
+                "frontmatter 的身份键应与文件名同源：{}",
+                md
+            );
+        }
+
+        // 周报按 ISO 周，不含具体日期 —— 否则周一生成、周五重跑会更新不了同一份周报。
+        // 用连字符个数区分：`2026-W44` 一个，`2026-11-01` 两个。
+        let weekly = report_identity_key(ReportKind::Weekly);
+        assert!(weekly.contains("-W"), "周报身份键应按 ISO 周：{}", weekly);
+        assert_eq!(
+            weekly.matches('-').count(),
+            1,
+            "周报身份键不应混入日期（否则同一周内重跑会被判成另一条记录）：{}",
+            weekly
+        );
     }
 
     /// 构造一条最小事件行（只填被测字段，其余取固定占位）

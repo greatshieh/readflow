@@ -84,6 +84,8 @@ mod grouping;
 mod rsshub;
 mod fonts;
 mod obsidian;
+// 投影写入：所有把 Markdown 落到用户目录的路径都必须经它，否则重新生成会覆盖用户批注
+mod projection;
 mod research;
 mod tray;
 mod notify;

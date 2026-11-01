@@ -12,11 +12,15 @@
 //!   足够覆盖 RSS 正文。
 //! - [`sanitize_filename`]：清理标题中的非法文件名字符并限长。
 //! - [`export_to_vault`]：拼装 YAML frontmatter + 可选 AI 摘要 + 正文，并在 Vault 目录下落盘，
-//!   返回人类可读的成功消息。
+//!   返回人类可读的成功消息。落盘走 [`crate::projection::project_document`] 而非直接
+//!   `fs::write`——同名笔记里可能有用户的批注，重新导出只替换标记块内的机器内容。
 //!
 //! # 设计意图
 //! - **正文格式**：RSS 正文是 HTML 片段，Obsidian 虽能渲染 HTML，但原生 Markdown 才是 Vault 的
 //!   一等公民（标题层级、列表、代码块、链接都能被图谱与搜索识别），故导出时转为 Markdown。
+//! - **区分"机器的"与"用户的"**：正文按语义段包进 `<!-- readflow:begin:<name> -->` 标记块，
+//!   块之间与文件末尾的空隙是用户的书写区，重导出永不触碰。frontmatter 里
+//!   `readflow_id: article:<id>` 是身份锚点（不靠文件名，用户改名不影响）。
 //! - **原文 + 译文同文件（可选）**：原文始终导出（`content` 优先，回退 `summary`）；当用户开启
 //!   `obsidian_use_translation` 且文章已有 AI 译文时，译文以独立的「译文」节一并写入同一篇笔记，
 //!   便于对照阅读。译文缺失时只导出原文，保证笔记不为空。
@@ -30,6 +34,7 @@ use std::path::PathBuf;
 use sqlx::SqlitePool;
 
 use crate::db::{Article, Feed, Setting};
+use crate::projection;
 
 /// 导出所需的设置键（与前端 settings 表单、数据库 settings 表一一对应）
 const KEY_VAULT_PATH: &str = "obsidian_vault_path";
@@ -51,7 +56,9 @@ const DEFAULT_EXPORT_FOLDER: &str = "ReadFlow";
 /// 成功时返回人类可读的提示（含相对路径）；失败返回错误字符串
 ///
 /// # 错误
-/// 文章不存在、Vault 路径未配置或不存在、目录不可写、文件写入失败时返回错误信息
+/// 文章不存在、Vault 路径未配置或不存在、目录不可写、文件写入失败时返回错误信息；
+/// 目标位置已存在一篇**不是 Readflow 生成**的同名笔记（没有我们的标记块）时也会报错
+/// 并拒写——那种情况下覆盖等于删掉用户自己的笔记，宁可不导出。
 pub async fn export_to_vault(pool: &SqlitePool, article_id: i64) -> Result<String, String> {
     // 1. 读取文章本体（含正文 HTML 与 AI 产物）；缺失即视为非法 ID
     let article = Article::get_by_id(pool, article_id)
@@ -100,26 +107,40 @@ pub async fn export_to_vault(pool: &SqlitePool, article_id: i64) -> Result<Strin
         None
     };
 
-    // 5. 拼装 Markdown（YAML frontmatter + 可选 AI 摘要 callout + 原文 + 可选译文节）
+    // 5. 拼装 Markdown（YAML frontmatter + 三个标记块：摘要 / 原文 / 译文）
     let markdown = build_markdown(&article, &source, &orig_md, trans_md.as_deref());
 
-    // 6. 落盘：Vault 根 / 导出目录；目录不存在则创建（用户期望导出到该目录）
+    // 6. 落盘：Vault 根 / 导出目录；目录不存在则创建（用户期望导出到该目录）。
+    //    不直接用 fs::write：同名文件很可能已被用户写过批注，投影只替换块内内容。
     let target_dir = PathBuf::from(&vault_path).join(&export_folder);
     if !target_dir.exists() {
         fs::create_dir_all(&target_dir).map_err(|e| format!("创建导出目录失败：{e}"))?;
     }
     let filename = format!("{}.md", sanitize_filename(&article.title));
     let file_path = target_dir.join(&filename);
-    fs::write(&file_path, markdown).map_err(|e| format!("写入文件失败：{e}"))?;
+    projection::project_document(&file_path, &markdown)?;
 
     Ok(format!("已导出到 {}/{}", export_folder, filename))
 }
 
 /// 拼装完整 Markdown 文本
 ///
-/// 结构：`---` YAML frontmatter（title / source / url / author / published / tags）
-/// + 可选「AI 摘要」callout（Obsidian 原生语法）+ 「原文」节 + 可选「译文」节。
-/// 原文恒有、译文可选——二者同处一篇笔记，便于对照阅读。
+/// 结构：`---` YAML frontmatter（readflow_id / title / source / url / author / published / tags）
+/// + 三个标记块：`summary`（AI 摘要 callout，可缺）+ `content`（原文节）+ `translation`
+/// （译文节，可缺）。原文恒有、译文可选——二者同处一篇笔记，便于对照阅读。
+///
+/// # 为什么要包标记块
+/// 导出文件名按标题生成，同一篇文章重复导出会落到同一个文件；而用户很可能就在这篇
+/// 笔记里写了批注。包块之后由 [`projection::project_document`] 只替换块内内容，
+/// 块之间与文件末尾的空隙留给用户（那些地方永远不动）。这也顺带修掉了"同标题的
+/// 两篇文章第二次导出覆盖第一篇"的问题——覆盖范围被限制在块内了。
+///
+/// # 一块都没有时的行为
+/// `summary` / `translation` 缺失时**连标记一起省略**，而不是留一个空块：空块在
+/// Obsidian 里表现为一段突兀的空白，且会让"这个块有没有内容"变成两处状态（标记
+/// 存在性 + 内容是否为空），将来判断"要不要写"就容易读错一边。省略后如果用户后来
+/// 有了摘要，投影会把 `summary` 块追加到文件末尾——顺序上排在 `translation` 之后，
+/// 这是"追加到末尾"这条通用规则的可接受代价（已知，不值得为它开特例）。
 ///
 /// # 参数
 /// * `article` - 文章数据
@@ -128,10 +149,32 @@ pub async fn export_to_vault(pool: &SqlitePool, article_id: i64) -> Result<Strin
 /// * `trans_md` - 译文 Markdown（可选：仅当开启译文开关且文章已有译文时传入）
 ///
 /// # 返回值
-/// 完整的 `.md` 文件字符串
+/// 完整的 `.md` 文件字符串（带标记，不是最终落盘字节——落盘要经投影合并）
 fn build_markdown(article: &Article, source: &str, orig_md: &str, trans_md: Option<&str>) -> String {
-    // YAML frontmatter：值统一用双引号包裹，规避标题/链接里的冒号、井号被误判为 YAML 语法
-    let mut fm = String::from("---\n");
+    let frontmatter = build_frontmatter(article, source);
+    let blocks = build_blocks(article.ai_summary.as_deref(), orig_md, trans_md);
+    let borrowed: Vec<(&str, &str)> = blocks
+        .iter()
+        .map(|(name, inner)| (*name, inner.as_str()))
+        .collect();
+    projection::assemble(&frontmatter, &borrowed)
+}
+
+/// 文章的 frontmatter 内文（不含上下 `---`）
+///
+/// 值统一用双引号包裹，规避标题/链接里的冒号、井号被误判为 YAML 语法。
+/// `readflow_id` 放首位：它是"这篇笔记对应数据库哪一行"的唯一锚点，投影与将来可能的
+/// 反向查找都靠它，**不靠文件名**（用户改名是日常操作）。
+///
+/// # 参数
+/// * `article` - 文章数据
+/// * `source` - 来源名（已查得或回退值）
+///
+/// # 返回值
+/// 可直接交给 [`projection::assemble`] 的 frontmatter 内文
+fn build_frontmatter(article: &Article, source: &str) -> String {
+    let mut fm = String::new();
+    fm.push_str(&format!("readflow_id: article:{}\n", article.id));
     fm.push_str(&format!("title: {}\n", yaml_str(&article.title)));
     fm.push_str(&format!("source: {}\n", yaml_str(source)));
     if !article.link.is_empty() {
@@ -147,32 +190,45 @@ fn build_markdown(article: &Article, source: &str, orig_md: &str, trans_md: Opti
         fm.push_str(&format!("published: {}\n", dt.format("%Y-%m-%d %H:%M")));
     }
     fm.push_str("tags: [readflow]\n");
-    fm.push_str("---\n\n");
+    fm
+}
 
-    let mut out = fm;
-    // 若有 AI 摘要，以 Obsidian callout 形式放在正文前，便于快速回顾
-    if let Some(summary) = &article.ai_summary {
-        if !summary.is_empty() {
-            out.push_str("> [!abstract] AI 摘要\n");
-            for line in summary.lines() {
-                out.push_str(&format!("> {}\n", line));
-            }
-            out.push('\n');
+/// 文章的块清单（按文件内顺序）
+///
+/// # 参数
+/// * `ai_summary` - AI 摘要；空或 `None` 时**连 `summary` 块带标记一起省略**
+/// * `orig_md` - 原文 Markdown（恒有，`content` 块必出）
+/// * `trans_md` - 译文 Markdown（可选，非空时才出 `translation` 块）
+///
+/// # 返回值
+/// `(块名, 块内 Markdown)`；块名与顺序固定，缺的块直接不出现
+fn build_blocks(
+    ai_summary: Option<&str>,
+    orig_md: &str,
+    trans_md: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    let mut blocks: Vec<(&'static str, String)> = Vec::with_capacity(3);
+
+    // AI 摘要：Obsidian callout，便于快速回顾。
+    // 用 trim 判空而不是 is_empty：只有一个空白的摘要会渲染成一个空心 callout，
+    // 既没信息又占位，等同"没有摘要"。
+    if let Some(summary) = ai_summary.filter(|s| !s.trim().is_empty()) {
+        let mut inner = String::from("> [!abstract] AI 摘要\n");
+        for line in summary.lines() {
+            inner.push_str(&format!("> {}\n", line));
         }
+        blocks.push(("summary", inner));
     }
+
     // 原文节：恒有
-    out.push_str("## 原文\n\n");
-    out.push_str(orig_md.trim());
-    out.push('\n');
-    // 译文节：可选（开启开关且已有译文时追加）
-    if let Some(tm) = trans_md {
-        if !tm.trim().is_empty() {
-            out.push_str("\n\n## 译文\n\n");
-            out.push_str(tm.trim());
-            out.push('\n');
-        }
+    blocks.push(("content", format!("## 原文\n\n{}\n", orig_md.trim())));
+
+    // 译文节：可选（开启开关且已有译文时才有）
+    if let Some(tm) = trans_md.filter(|s| !s.trim().is_empty()) {
+        blocks.push(("translation", format!("## 译文\n\n{}\n", tm.trim())));
     }
-    out
+
+    blocks
 }
 
 /// 把字符串转成 YAML 安全的双引号字面量
@@ -708,5 +764,47 @@ mod tests {
         clean_blank_lines(&mut t);
         // 连续空行压成一行；末行后保留换行（调用方 html_to_markdown 会整体 trim）
         assert_eq!(t, "a\n\nb\n");
+    }
+
+    /// 摘要缺失时连 `summary` 块带标记一起省略，不留空块
+    #[test]
+    fn blocks_omit_summary_when_absent() {
+        for summary in [None, Some(""), Some("   ")] {
+            let blocks = build_blocks(summary, "正文", None);
+            let names: Vec<&str> = blocks.iter().map(|(n, _)| *n).collect();
+            assert_eq!(names, vec!["content"], "摘要为空时不应出现 summary 块：{:?}", summary);
+        }
+    }
+
+    /// 摘要与译文都存在时三块齐备，且顺序固定为 summary → content → translation
+    #[test]
+    fn blocks_keep_fixed_order() {
+        let blocks = build_blocks(Some("一句话结论"), "正文", Some("译好的正文"));
+        let names: Vec<&str> = blocks.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, vec!["summary", "content", "translation"]);
+
+        assert!(
+            blocks[0].1.starts_with("> [!abstract] AI 摘要\n> 一句话结论\n"),
+            "摘要应渲染成 callout：{}",
+            blocks[0].1
+        );
+        assert!(
+            blocks[1].1.starts_with("## 原文\n\n正文"),
+            "原文块应含原文小标题：{}",
+            blocks[1].1
+        );
+        assert!(
+            blocks[2].1.starts_with("## 译文\n\n译好的正文"),
+            "译文块应含译文小标题：{}",
+            blocks[2].1
+        );
+    }
+
+    /// 空白译文不产生块（避免笔记末尾多一个只有标题的空节）
+    #[test]
+    fn blocks_skip_blank_translation() {
+        let blocks = build_blocks(Some("摘要"), "正文", Some("   \n  "));
+        assert_eq!(blocks.len(), 2, "空白译文不应产生 translation 块");
+        assert_eq!(blocks[1].0, "content");
     }
 }
