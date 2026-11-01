@@ -72,15 +72,25 @@
           :class="{ expanded: expandedEventId === ev.id }"
           @click="toggleExpand(ev.id)"
         >
+          <!-- 行的左边缘只放「宽度恒定」的两样东西：情感徽标（永远两字）与日期
+               （YYYY-MM-DD，tabular-nums）。这样每一行的正文都起于同一条竖线，
+               扫读时视线不用来回找左边缘。 -->
           <div class="event-row">
-            <span class="event-type" :class="`type-${ev.event_type}`">
-              {{ typeLabel(ev.event_type) }}
-            </span>
             <span class="event-sentiment" :class="getSentimentClass(ev.sentiment)">
               {{ sentimentLabel(ev.sentiment) }}
             </span>
             <span class="event-date">{{ ev.event_date || '日期未知' }}</span>
             <span class="event-fact">{{ ev.fact }}</span>
+            <!-- 类型标签放在行尾，而不是行首：它的字数随类型变（财报 2 / 业绩预告 4 /
+                 自定义类型可能更长），排在正文前面会把情感、日期、正文的左边缘一起推歪。
+                 移到行尾后，宽度差异只影响它自己，右端对齐成一条整齐的标签列。 -->
+            <span
+              class="event-type"
+              :class="`type-${ev.event_type}`"
+              :title="typeLabel(ev.event_type)"
+            >
+              {{ typeLabel(ev.event_type) }}
+            </span>
             <span class="expand-arrow">{{ expandedEventId === ev.id ? '▾' : '▸' }}</span>
             <button
               class="event-del"
@@ -686,9 +696,16 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
 }
 
 /* 情感徽标：与 .event-type 同几何，但语义色用 positive/negative/neutral。
-   徽标属元信息档 11；角色默认 400，色块反白小字保留 500 补强；行高取标签档 1.4 压住色块高度。 */
+   徽标属元信息档 11；角色默认 400，色块反白小字保留 500 补强；行高取标签档 1.4 压住色块高度。
+
+   它是整行的第一列，兼任"对齐锚"：min-width 固定成「两字 + 两侧内边距」，
+   因为情感标签恒为两字（利好/利空/中性）。没有这一条，未标注情感的事件
+   会渲染成只有内边距的空壳，日期随之左移，一整列就对不齐了。 */
 .event-sentiment {
   flex-shrink: 0;
+  min-width: calc(2em + 2 * var(--sp-2));
+  text-align: center;
+  white-space: nowrap;
   font-size: var(--fs-modal-meta);
   font-weight: 500;
   padding: var(--sp-025) var(--sp-2);
@@ -715,9 +732,17 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
   align-items: baseline;
   gap: var(--sp-2);
 }
-/* 类型徽标：与 .event-sentiment 同档（11/500/1.4），几何一致便于并排 */
+/* 类型徽标：与 .event-sentiment 同档（11/500/1.4），但**不做定宽**——
+   它的字数是 2～4（财报/业绩预告）且自定义类型可能更长，钉死宽度要么被截断，
+   要么把短标签撑成一圈空荡的色块。所以它不参与左侧对齐，
+   而是靠"排在正文之后 + flex 自动推到右端"形成右对齐的标签列。
+   max-width 只兜住极端长的自定义类型，避免它把正文挤成窄条。 */
 .event-type {
   flex-shrink: 0;
+  max-width: 9em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: var(--fs-modal-meta);
   font-weight: 500;
   line-height: var(--lh-modal-label);
@@ -741,9 +766,12 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
 }
-/* 事件正文：一次阅读的主体句，用正文档 14 / 1.65（原先 14 + 裸写 1.5，行距偏挤） */
+/* 事件正文：一次阅读的主体句，用正文档 14 / 1.65（原先 14 + 裸写 1.5，行距偏挤）。
+   min-width: 0 是 flex 行里长文本的必需项：默认 min-width:auto 会让它撑到
+   max-content，把行尾的类型徽标和箭头顶出行外。 */
 .event-fact {
   flex: 1;
+  min-width: 0;
   font-size: var(--fs-modal-body);
   color: var(--text-primary);
   line-height: var(--lh-modal-body);
