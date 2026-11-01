@@ -82,6 +82,7 @@
             <span><kbd>esc</kbd>关闭</span>
             <!-- 可点入口：`?` 键本身没人能猜到，必须有个可见地方把它带出来 -->
             <span class="pal-hint">标题无命中时自动搜全文</span>
+            <button class="pal-action" type="button" @click="openResearch">研究工作台</button>
             <button class="pal-action" type="button" @click="openShortcuts">快捷键</button>
           </div>
         </div>
@@ -331,6 +332,29 @@ function close() {
 function openShortcuts() {
   close()
   window.dispatchEvent(new CustomEvent('open-shortcuts'))
+}
+
+/**
+ * 打开研究工作台
+ *
+ * 与 {@link openShortcuts} 同构：弹窗由 `FeedPanel` 持有，走既有的 `open-research`
+ * 窗口事件（`FeedPanel.handleOpenResearch` 早在监听，无需新增接线）。
+ * 同样**必须先关本面板**——两者的浮层都在 body 下，工作台弹窗的遮罩 z-index 1000
+ * 高于本面板的 900，不关会看着像"点了没反应"。
+ *
+ * # 为什么放底栏，而不是塞进结果列表
+ * 结果列表的模型是 `Article[]`：上下键、回车、`jump()` 全都假定"选中的是一篇文章"。
+ * 混进一条静态命令会打破这个心智模型，也会给"标题无命中自动退全文"那套判断
+ * 多开一个特例。底栏本来就是放"入口"的位置（"快捷键"就在那儿），语义正确。
+ *
+ * 补这个入口是为了降低"误关之后重新打开"的成本：DESIGN §4.6.2 把
+ * `Ctrl/⌘K → 打开研究工作台` 列为建议后续补的入口，此前一直缺。
+ *
+ * @returns 无返回值
+ */
+function openResearch() {
+  close()
+  window.dispatchEvent(new CustomEvent('open-research'))
 }
 
 /**
