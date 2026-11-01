@@ -829,8 +829,11 @@ pub async fn mark(pool: &SqlitePool, input: ReviewMarkInput) -> Result<(), Strin
         return Err("写一句理由吧——半年后它比结论本身更有用".into());
     }
 
+    // `from_value` 需要一个空初值："保持"这一支没有旧值可记（什么都没改）。
+    // `to_value` 则不给初值——每个分支都会赋值，给了只会换来一条
+    // "初始化后从未读取"的告警，而那条告警恰好在提示"这里有可能是死代码"。
     let mut from_value = String::new();
-    let mut to_value = String::new();
+    let to_value: String;
 
     match input.action.as_str() {
         "unchanged" => {

@@ -2701,6 +2701,58 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
     .execute(pool)
     .await?;
 
+    // ─── 覆盖范围与组装（阶段三） ────────────────────────────────────────────
+    //
+    // 覆盖 = "我盯哪些标的 / 为什么盯 / 什么条件才不盯了"。这三件事此前无处存放：
+    // `entities` 只有 name/entity_type/aliases/enabled/alert_rules，都有别的职责。
+    //
+    // 为什么单独建表而不是给 entities 加列：铁律（见本函数头部）。而且
+    // "在覆盖内"本身是可撤销的状态——把标的移出覆盖要能回到"从没加过"的形态，
+    // 加列做不到（列一旦有值就分不清"没填"与"填了空"）。
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS coverage (
+            entity_id INTEGER PRIMARY KEY,
+            tier TEXT NOT NULL DEFAULT 'watch',        -- core / watch / exit
+            reason TEXT NOT NULL DEFAULT '',           -- 为什么盯（一句话）
+            exit_condition TEXT NOT NULL DEFAULT '',   -- 什么条件下不再盯
+            position_note TEXT NOT NULL DEFAULT '',    -- 产业链位置（手写，不自动推断）
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_coverage_tier ON coverage(tier)")
+        .execute(pool)
+        .await?;
+
+    // 覆盖变更史：append-only。
+    //
+    // **只在档位变化（含创建 / 移出）时写一行**，改错别字不写。理由：这表要回答的是
+    // ROADMAP 的验收问题——"上次把一只移出覆盖，是在什么条件下决定的"。
+    // 每次文本编辑都记进去，真变化会被淹没，用户也就不看了。
+    //
+    // `tier_to` 允许空串表示"移出覆盖"；`note` 存当时的"为什么盯"快照，
+    // 因为移出之后 coverage 行已被删除，理由会一起消失——而理由正是要留下的东西。
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS coverage_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_id INTEGER NOT NULL,
+            tier_from TEXT NOT NULL DEFAULT '',     -- 空串 = 首次加入
+            tier_to TEXT NOT NULL DEFAULT '',       -- 空串 = 移出覆盖
+            note TEXT NOT NULL DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_coverage_history_entity ON coverage_history(entity_id, created_at DESC)",
+    )
+    .execute(pool)
+    .await?;
+
     // ─── 周期报告「本期值得跟进」（P4） ─────────────────────────────────────
     //
     // 为什么不给 report_periods 加一列存 JSON：

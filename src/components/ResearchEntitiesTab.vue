@@ -1,6 +1,32 @@
 <template>
   <!-- ═══ Tab 3：实体管理 ═══ -->
   <div class="m-body">
+    <!-- 视图切换：同一批数据的两个问题——「系统要看谁」（实体：启停 / 评分 / 告警）
+         与「我为什么看它」（覆盖：档位 / 为什么盯 / 退出条件）。
+         做成切换而不是第二个页签：两者共用同一个入口，用户不会在两个页签之间迷路；
+         而覆盖离开"有哪些实体"这个上下文就填不出来（它要选标的）。 -->
+    <div class="ent-seg" role="group" aria-label="视图">
+      <button
+        type="button"
+        class="ent-seg-btn"
+        :class="{ on: view === 'entities' }"
+        :aria-pressed="view === 'entities'"
+        @click="view = 'entities'"
+      >
+        实体
+      </button>
+      <button
+        type="button"
+        class="ent-seg-btn"
+        :class="{ on: view === 'coverage' }"
+        :aria-pressed="view === 'coverage'"
+        @click="view = 'coverage'"
+      >
+        覆盖
+      </button>
+    </div>
+
+    <template v-if="view === 'entities'">
     <!-- 实体列表 -->
     <div class="entity-list" v-if="entitiesStore.entities.length > 0">
       <div
@@ -90,6 +116,11 @@
         {{ entitiesStore.loading ? '评分中...' : '重新评分' }}
       </button>
     </div>
+    </template>
+
+    <!-- 覆盖清单：与实体列表互斥显示。用 v-if 而不是 v-show：
+         覆盖面板挂载时会拉一次清单，v-show 会让"没打开过覆盖页签"也白跑一次查询 -->
+    <CoveragePanel v-else />
 
     <!-- 实体级告警规则编辑弹窗（P1-F） -->
     <EntityAlertRuleModal
@@ -117,6 +148,7 @@
 import { ref } from 'vue'
 import AppSelect, { type SelectOption } from './AppSelect.vue'
 import EntityAlertRuleModal from './EntityAlertRuleModal.vue'
+import CoveragePanel from './coverage/CoveragePanel.vue'
 import { useEntitiesStore } from '@/stores/entities'
 import { showConfirm } from '@/stores/modal'
 import { ENTITY_TYPE_LABELS, entityTypeLabel } from '@/utils/entityLabels'
@@ -127,6 +159,9 @@ const emit = defineEmits<{
 }>()
 
 const entitiesStore = useEntitiesStore()
+
+/** 当前视图：实体（系统要看谁） / 覆盖（我为什么看它） */
+const view = ref<'entities' | 'coverage'>('entities')
 
 /** 新实体的名称输入 */
 const newName = ref('')
@@ -466,5 +501,41 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
   font-size: var(--fs-modal-body);
   line-height: var(--lh-modal-body);
   color: var(--danger);
+}
+
+/* 视图切换（实体 / 覆盖）。
+   用 role="group" + aria-pressed 而不是半套 ARIA tab：tablist 需要配套的
+   tabpanel 语义与方向键切换，只做一半比不做更糟（读屏会播报"标签页 1/2"
+   然后告诉你没有对应面板）。两个互斥按钮用 group + pressed 语义足够准确。 */
+.ent-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  margin-bottom: var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--fill);
+}
+.ent-seg-btn {
+  padding: var(--sp-1) var(--sp-3);
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--fs-modal-label);
+  cursor: pointer;
+  transition: background var(--m-tap) var(--m-ease-out),
+    color var(--m-tap) var(--m-ease-out);
+}
+.ent-seg-btn:hover {
+  color: var(--text-primary);
+}
+.ent-seg-btn.on {
+  background: var(--surface);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-xs);
+}
+.ent-seg-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
 }
 </style>

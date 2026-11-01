@@ -493,6 +493,11 @@ pub fn run() {
             thesis_review_start,
             thesis_review_mark,
             thesis_review_finish,
+            // 覆盖范围与组装（阶段三）
+            coverage_list,
+            coverage_upsert,
+            coverage_remove,
+            coverage_dossier,
             // 行情/财务数据层（金融升级 Phase 1）
             market_link_symbol,
             market_get_state,
@@ -3092,6 +3097,71 @@ async fn thesis_review_mark(input: research::review::ReviewMarkInput) -> Result<
 async fn thesis_review_finish(review_id: i64) -> Result<research::review::ReviewSummary, String> {
     let pool = db_pool().await.map_err(|e| e.to_string())?;
     research::review::finish(&pool, review_id).await
+}
+
+/// 读取覆盖清单（按档位排序）
+///
+/// 每行除覆盖内容外还带四个计数：在跟踪的论点数、未结案的判据数、
+/// 最近一次被复盘处置的时间、近 30 天事件数。这四个数回答的是
+/// "这条覆盖还活着吗"——只看档位与理由，清单会变成一份静态名单。
+///
+/// # 返回值
+/// 覆盖条目列表（档位：核心 → 观察 → 本月退出）
+///
+/// # 错误
+/// 查询失败
+#[tauri::command]
+async fn coverage_list() -> Result<Vec<research::coverage::CoverageRow>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::coverage::list(&pool).await
+}
+
+/// 新增或更新一条覆盖（同一个入口，避免同标的出现两行）
+///
+/// # 参数
+/// * `input` - 覆盖内容（`tier` / `reason` / `exit_condition` / `position_note`）
+///
+/// # 返回值
+/// 标的 ID
+///
+/// # 错误
+/// 档位非法、标的已不存在、超长或写入失败
+#[tauri::command]
+async fn coverage_upsert(input: research::coverage::CoverageInput) -> Result<i64, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::coverage::upsert(&pool, input).await
+}
+
+/// 把标的移出覆盖（只删覆盖行，不动实体与论点）
+///
+/// # 参数
+/// * `entity_id` - 标的 ID
+///
+/// # 错误
+/// 删除或写变更史失败
+#[tauri::command]
+async fn coverage_remove(entity_id: i64) -> Result<(), String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::coverage::remove(&pool, entity_id).await
+}
+
+/// 生成「研究一页」（五节 markdown 骨架）
+///
+/// 返回 markdown 原文而不是渲染好的 HTML：复制与导出都用同一份原文，
+/// 前端不再二次拼装——两处拼装迟早会不一致，而导出物是给外人看的。
+///
+/// # 参数
+/// * `entity_id` - 标的 ID
+///
+/// # 返回值
+/// `{ title, defaultName, markdown, thesisCount, evidenceCount }`
+///
+/// # 错误
+/// 标的已不存在或查询失败
+#[tauri::command]
+async fn coverage_dossier(entity_id: i64) -> Result<research::coverage::Dossier, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::coverage::dossier(&pool, entity_id).await
 }
 
 /// 为单个实体重抽历史事件：对库内文本命中该实体的文章逐篇补抽 AI 事件

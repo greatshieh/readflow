@@ -15,10 +15,13 @@
 //! - [`report`]：日报/周报 Markdown 渲染与多通道输出（应用内 / Obsidian / 文件）
 //! - [`period`]：周期报告（日/周/月）——按时间汇总全部文章、交模型归纳、正文只入库
 //! - [`thesis`]：论点台账——用户自己的判断、证据挂接（支持/反驳）、变更留痕
+//! - [`review`]：周复盘——判据、健康度规则、会话与提醒
+//! - [`coverage`]：覆盖范围与组装——我盯哪些标的、为什么盯、把判断拼成一页
 //!
 //! 本模块同时承载自动化任务的**统一执行器**（[`run_task_once`]）：
 //! cron 调度与手动触发共用同一条执行路径，运行结果统一回写任务行。
 
+pub mod coverage;
 pub mod extract;
 pub mod normalize;
 pub mod period;
