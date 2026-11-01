@@ -337,15 +337,35 @@ function formatSize(size: number): string {
   return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
-// 每次切入本页签都重拉报告列表（对应拆分前 switchToReports 的行为）
+// 重拉报告列表的时机：切入本页签（`active` 翻真）**或**弹窗重新打开（`open` 翻真）
+//
+// 第二个条件是「保留上次停留处」（DESIGN §4.6.2）的配套，不是冗余：
+// 页签不再随关闭复位，所以重开弹窗时 `active` 一直是 true、永远不翻真，
+// 只挂 `active` 的 watch 就再也不会触发，列表会一直停在关闭前的快照上——
+// 用户在 Obsidian / 资源管理器里新增或删掉的文件，界面上看不到。
 watch(
-  () => props.active,
-  async vis => {
-    if (!vis) return
+  [() => props.active, () => props.open],
+  async ([vis, isOpen]) => {
+    // 两个条件缺一不可：
+    // · `vis`：不在本页签就不该关心报告列表；
+    // · `isOpen`：**关闭弹窗时也不该刷新**。数组源是"任一变化就触发"，关闭会让
+    //   `open` 翻假而 `active` 仍为真，只判 `vis` 就会在没人看的时候白跑一次 IPC，
+    //   并把"上次那份已被删除"的清理提前到关闭瞬间——看起来像关弹窗时丢东西。
+    if (!vis || !isOpen) return
     reportError.value = ''
     reportsLoading.value = true
     try {
       await researchStore.loadReports()
+      // 上次读的那份报告可能已在外部被删 / 改名。列表刚拉过，这里是纯内存比对，成本为零。
+      // 不校验的话，正文会继续显示一份已不存在文件的内容，且列表里没有任何一行高亮
+      // （`activeReportName` 匹配不到任何 `r.name`）——用户既不知道自己在看什么，
+      // 也不知道那份文件已经不在了。DESIGN §4.6.2 要求的"打开时校验一次"就是这个位置。
+      if (
+        researchStore.activeReportName &&
+        !researchStore.reports.some(r => r.name === researchStore.activeReportName)
+      ) {
+        researchStore.closeReport()
+      }
     } catch (e) {
       reportError.value = e instanceof Error ? e.message : String(e)
     } finally {

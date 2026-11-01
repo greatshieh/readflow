@@ -226,6 +226,20 @@ function isReportMissing(e: unknown): boolean {
  *
  * 生成期间**拦下关闭**（决策⑬：P0–P2 先阻塞），但必须给一次反馈——
  * 三条关闭路径（Esc / 点遮罩 / 点 ✕）全被静默吃掉时，用户会以为应用卡死。
+ *
+ * # 这里**只关弹窗**，不重置任何内部状态
+ * 不要顺手写 `tab = 'timeline'` 或 `closeReport()`：DESIGN §4.6.2 明确要求
+ * 「上次停留处」保留（"刚关掉又打开，期望回到同一份；每次都回列表等于每次重新找"），
+ * §4.6.4 的退出表里 Esc / 点遮罩 / 点 ✕ 三者的副作用只有「焦点归还触发元素」，
+ * 不含任何状态清理。
+ *
+ * 页签与报告面板的状态本来就能跨开关存活（`BaseModal` 无 `v-if` + 三个页签 `v-show`
+ * 常驻，见 §4.6.1 的那条隐式契约），**清掉才是破坏**。误点遮罩的代价因此只剩
+ * "重新打开一次"，而不是"页签归零 + 报告正文清空 + 找回原来那份"。
+ *
+ * 配套改动：报告列表的刷新时机原本挂在「切入页签」（`active` 翻真）上，页签不再
+ * 复位后重开弹窗时 `active` 不变、不会触发刷新。故 `ResearchReportsTab` 的刷新
+ * 条件已扩为 `active || open`，见该组件对应 watch 的注释。
  */
 function close() {
   if (reportStore.generating) {
@@ -233,8 +247,6 @@ function close() {
     return
   }
   emit('close')
-  tab.value = 'timeline'
-  researchStore.closeReport()
 }
 
 /**
