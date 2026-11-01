@@ -3561,6 +3561,7 @@ async fn report_export_prepare(
             let payload = research::period::export_payload(&pool, id).await?;
             Ok(serde_json::json!({
                 "markdown": payload.markdown,
+                "document": payload.document,
                 "defaultName": payload.default_name,
             }))
         }
@@ -3573,6 +3574,7 @@ async fn report_export_prepare(
                 .map(|(stem, _)| stem.to_string())
                 .unwrap_or(name);
             Ok(serde_json::json!({
+                "document": markdown,
                 "markdown": markdown,
                 "defaultName": default_name,
             }))
@@ -3618,7 +3620,20 @@ async fn report_export_write(
         path.push('.');
         path.push_str(ext);
     }
-    std::fs::write(&path, content).map_err(|e| format!("写入导出文件失败: {}", e))?;
+    // Markdown 且是投影文档 → 走块级合并，保住用户在上一次导出里写的批注。
+    //
+    // 这里是「另存为」：路径是用户自己选的、覆盖也是他自己确认的，所以传 Overwrite
+    // ——目标文件没有标记时按他的选择整篇写，不再拦一次（拦了就是不听他刚点的确认）。
+    // 定时任务那边的自动落盘走的是 project_document（Protect），两者不能混。
+    if ext == "md" && content.contains(projection::BEGIN_PREFIX) {
+        projection::project_document_with(
+            std::path::Path::new(&path),
+            &content,
+            projection::ExistingFilePolicy::Overwrite,
+        )?;
+    } else {
+        std::fs::write(&path, content).map_err(|e| format!("写入导出文件失败: {}", e))?;
+    }
     Ok(Some(path))
 }
 

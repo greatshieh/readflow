@@ -73,9 +73,27 @@ use std::collections::HashSet;
 use std::path::Path;
 
 /// 块起始标记前缀（后接块名，再接 ` -->`）
-const BEGIN_PREFIX: &str = "<!-- readflow:begin:";
+///
+/// 公开出去是为了让"另存为"那一层能判断一份内容是不是投影文档：含这个前缀才走合并，
+/// 否则按用户选定的路径整篇写。判断逻辑集中在这一处，别的地方不要再手写这个字符串。
+pub const BEGIN_PREFIX: &str = "<!-- readflow:begin:";
 /// 块结束标记前缀（后接块名，再接 ` -->`）
 const END_PREFIX: &str = "<!-- readflow:end:";
+
+/// 目标文件已存在、但不是 Readflow 产物（一个标记都没有）时怎么办
+///
+/// 两种场景的**意图完全不同**，不能用同一条规则：
+/// - 定时任务自动落盘时没有人在场。此时目标路径上躺着一篇用户手写的笔记，唯一正确的
+///   做法是拒绝——否则每跑一次就往里塞一段报告。
+/// - 「另存为」对话框里，用户自己选的路径、自己确认的覆盖。这时候再拦一次，等于不听
+///   他刚点下的那个确认。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExistingFilePolicy {
+    /// 无人值守：目标文件不是我们的产物就拒绝写入
+    Protect,
+    /// 用户显式选了路径并确认覆盖：按他的选择整篇写
+    Overwrite,
+}
 
 /// 一次投影的结果
 ///
@@ -86,6 +104,8 @@ const END_PREFIX: &str = "<!-- readflow:end:";
 pub enum ProjectOutcome {
     /// 目标文件原本不存在，整篇写入
     Created,
+    /// 目标文件存在但不是我们的产物，按 [`ExistingFilePolicy::Overwrite`] 整篇覆盖
+    Overwritten,
     /// 目标文件已存在，在块级别完成合并
     Merged {
         /// 命中并就地替换的块数
@@ -105,27 +125,51 @@ struct MergeCounts {
     removed: usize,
 }
 
-/// 把一份带标记的完整文档投影到 `path`
+/// 把一份带标记的完整文档投影到 `path`（无人值守时的保守策略）
 ///
-/// `doc` 必须是完整文档：`---` frontmatter + 若干标记块。**除 frontmatter 之外，
-/// 机器生成的一切内容都必须在块内**——块外的字节会被当作"用户写的"而永不改动，
-/// 所以标题这类会随日期变化的内容也必须包在块里。
-///
-/// 文件不存在时整篇写入；已存在时逐块合并（详见 [`merge_into_existing`]）。
+/// 等价于 `project_document_with(path, doc, ExistingFilePolicy::Protect)`，
+/// 目标文件不是 Readflow 产物时拒绝写入。
 ///
 /// # 参数
 /// * `path` - 目标文件路径（父目录不存在时会创建）
 /// * `doc` - 带标记的完整文档
 ///
 /// # 返回值
-/// [`ProjectOutcome`]：新建 / 合并（含替换与追加的块数）
+/// [`ProjectOutcome`]：新建 / 合并（含替换、追加、移除的块数）
+///
+/// # 错误
+/// 见 [`project_document_with`]
+pub fn project_document(path: &Path, doc: &str) -> Result<ProjectOutcome, String> {
+    project_document_with(path, doc, ExistingFilePolicy::Protect)
+}
+
+/// 把一份带标记的完整文档投影到 `path`，并指定"目标文件不是我们的产物"时怎么办
+///
+/// `doc` 必须是完整文档：`---` frontmatter + 若干标记块。**除 frontmatter 之外，
+/// 机器生成的一切内容都必须在块内**——块外的字节会被当作"用户写的"而永不改动，
+/// 所以标题这类会随日期变化的内容也必须包在块里。
+///
+/// 文件不存在时整篇写入；已存在且含标记时逐块合并（详见 [`merge_into_existing`]）；
+/// 已存在但一个标记都没有时按 `policy` 决定拒绝还是覆盖。
+///
+/// # 参数
+/// * `path` - 目标文件路径（父目录不存在时会创建）
+/// * `doc` - 带标记的完整文档
+/// * `policy` - 目标文件不是 Readflow 产物时的处理策略
+///
+/// # 返回值
+/// [`ProjectOutcome`]：新建 / 覆盖 / 合并
 ///
 /// # 错误
 /// - `doc` 缺 frontmatter、没有任何标记块、块名重复或标记不配对（生成的文档本身有问题）
-/// - 目标文件存在但不是 Readflow 生成的（一个标记都没有）→ **拒绝写入**，避免把机器
-///   内容追加进一篇纯手写笔记
+/// - `policy` 为 [`ExistingFilePolicy::Protect`] 且目标文件不是 Readflow 生成的
+///   （一个标记都没有）→ **拒绝写入**，避免把机器内容追加进一篇纯手写笔记
 /// - 目标文件不是合法 UTF-8（盲写会毁掉用户的编码）或读写失败
-pub fn project_document(path: &Path, doc: &str) -> Result<ProjectOutcome, String> {
+pub fn project_document_with(
+    path: &Path,
+    doc: &str,
+    policy: ExistingFilePolicy,
+) -> Result<ProjectOutcome, String> {
     let (doc_frontmatter, doc_body) = split_frontmatter(doc);
     let doc_frontmatter =
         doc_frontmatter.ok_or("投影文档缺少 frontmatter：生成的 Markdown 必须以 --- 开头")?;
@@ -141,13 +185,20 @@ pub fn project_document(path: &Path, doc: &str) -> Result<ProjectOutcome, String
 
     // 一个标记都没有 = 这已经是用户的笔记，不是我们的产物。
     // 此时"追加机器内容"比"什么都不做"更糟：用户会在一篇纯手写笔记末尾突然看到
-    // 一大段报告，且此后我们每次导出都会往里塞。
+    // 一大段报告，且此后我们每次导出都会往里塞。所以默认拒绝；
+    // 只有用户在「另存为」里亲手选了路径并确认覆盖时才照写。
     if !existing.contains(BEGIN_PREFIX) {
-        return Err(format!(
-            "目标文件已存在且不是 Readflow 生成的内容：{}。为避免覆盖你手写的内容，本次未写入。\
-             如需重新生成，请先把该文件移走或改名。",
-            path.display()
-        ));
+        return match policy {
+            ExistingFilePolicy::Overwrite => {
+                atomic_write(path, doc)?;
+                Ok(ProjectOutcome::Overwritten)
+            }
+            ExistingFilePolicy::Protect => Err(format!(
+                "目标文件已存在且不是 Readflow 生成的内容：{}。为避免覆盖你手写的内容，本次未写入。\
+                 如需重新生成，请先把该文件移走或改名。",
+                path.display()
+            )),
+        };
     }
 
     let (merged, counts) = merge_into_existing(&existing, doc_frontmatter, &doc_blocks, path)?;
@@ -704,6 +755,57 @@ mod tests {
 
         let after = std::fs::read_to_string(&path).expect("读回失败");
         assert_eq!(after, hand_written, "拒绝写入时文件必须一字未改");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 「另存为」场景：用户在对话框里选了路径并确认覆盖 → 按他的选择整篇写
+    ///
+    /// 与上一条是同一份输入、只差 policy，用来锁住"两种意图不能串味"：
+    /// 定时任务的自动落盘必须保护用户文件，用户手选路径时必须听话。
+    #[test]
+    fn overwrite_policy_writes_over_hand_written_file() {
+        let dir = temp_dir("overwrite");
+        let path = dir.join("我的手写笔记.md");
+        std::fs::write(&path, "# 旧内容\n").expect("写夹具失败");
+
+        let outcome = project_document_with(&path, &doc_v1(), ExistingFilePolicy::Overwrite)
+            .expect("显式覆盖时不应被拒绝");
+        assert_eq!(outcome, ProjectOutcome::Overwritten);
+
+        let after = std::fs::read_to_string(&path).expect("读回失败");
+        assert!(after.contains("# 研究日报 · 2026-11-01"), "{after}");
+        assert!(!after.contains("# 旧内容"), "应被整篇覆盖：{after}");
+        assert!(
+            after.contains(BEGIN_PREFIX),
+            "覆盖后应当是我们的投影文档：{after}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 覆盖过之后的第二次导出，回到合并分支（而不是每次都整篇覆盖）
+    #[test]
+    fn overwrite_then_merge_keeps_user_note() {
+        let dir = temp_dir("overwrite-merge");
+        let path = dir.join("报告.md");
+        std::fs::write(&path, "# 手写\n").expect("写夹具失败");
+        project_document_with(&path, &doc_v1(), ExistingFilePolicy::Overwrite).expect("首次覆盖失败");
+
+        let old = std::fs::read_to_string(&path).expect("读回失败");
+        std::fs::write(&path, format!("{old}\n我加的一句话。\n")).expect("写回夹具失败");
+
+        let outcome = project_document(&path, &doc_v1()).expect("二次投影失败");
+        assert_eq!(
+            outcome,
+            ProjectOutcome::Merged {
+                replaced: 2,
+                appended: 0,
+                removed: 0
+            }
+        );
+        let after = std::fs::read_to_string(&path).expect("读回失败");
+        assert!(after.contains("我加的一句话。"), "覆盖过一次之后就该按块合并：{after}");
 
         std::fs::remove_dir_all(&dir).ok();
     }

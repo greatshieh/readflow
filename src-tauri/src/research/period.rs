@@ -1168,8 +1168,14 @@ pub async fn track_followup(pool: &SqlitePool, followup_id: i64) -> Result<i64, 
 
 /// 导出的载荷（正文 + 默认文件名，不含扩展名）
 pub struct ExportPayload {
-    /// 报告正文 Markdown
+    /// 报告正文 Markdown（纯正文，供前端渲染 HTML 预览）
     pub markdown: String,
+    /// 带投影标记的完整文档（md 落盘用：含 frontmatter 与分块标记）
+    ///
+    /// 与 `markdown` 分开是必须的：前端会把 `markdown` 交给 `renderMarkdown` 渲染成
+    /// HTML，而渲染器会转义所有 `<`——把带 `<!-- readflow:begin:... -->` 的文本丢进去，
+    /// 用户就会在报告里看到一堆标记原文。
+    pub document: String,
     /// 默认文件名（不含扩展名）
     pub default_name: String,
 }
@@ -1200,9 +1206,100 @@ pub async fn export_payload(pool: &SqlitePool, id: i64) -> Result<ExportPayload,
         PeriodKind::Monthly => local_from.format("%Y-%m").to_string(),
     };
     Ok(ExportPayload {
+        document: build_export_document(kind, &row, &stamp),
         markdown: row.markdown,
         default_name: format!("{}-{}", kind.file_prefix(), stamp),
     })
+}
+
+/// 把库里存的整篇正文包成带投影标记的导出文档
+///
+/// # 为什么要包
+/// 导出到用户目录的 md 会被用户直接编辑（写批注、加判断）。没有块边界时，同名文件
+/// 重新导出就是整篇覆盖 = 批注消失。块边界让 [`crate::projection::project_document`]
+/// 只替换块内、块外逐字节不动。
+///
+/// # 为什么只能按文本切段
+/// `report_periods` 只存渲染好的 `markdown`，没有结构化的 topics/followups，所以这里
+/// 按 [`render_markdown`] 自己写出的段标题切。这些锚点是渲染器的固定字符串、不是 AI
+/// 生成的内容，因此可靠；唯一撞车可能是 AI 把某个主题命名为「接下来盯什么」，概率极低，
+/// 且即使切错也只是块边界偏移——**用户写在块外的东西仍然安全**，因为块外一律不动。
+///
+/// 找不到「引用源」段时（例如正文被 `MAX_MARKDOWN_CHARS` 截断）整篇作为一个块，
+/// 绝不因为结构对不上而丢内容。
+///
+/// # 参数
+/// * `kind` - 报告类型（决定 `type` 与 `readflow_id` 的类型段）
+/// * `row` - 报告行（取正文与窗口边界）
+/// * `stamp` - 周期标识（与默认文件名同源，保证"文件叫什么"与"文件里写着我是谁"一致）
+///
+/// # 返回值
+/// 可直接交给 [`crate::projection::project_document`] 的完整文档
+fn build_export_document(kind: PeriodKind, row: &PeriodRow, stamp: &str) -> String {
+    let kind_slug = kind.as_str();
+    let frontmatter = format!(
+        "type: period-{kind_slug}\nreadflow_id: report:period:{kind_slug}:{stamp}\n\
+         period_start: {}\nperiod_end: {}\n",
+        row.period_start.with_timezone(&Local).format("%Y-%m-%d"),
+        row.period_end.with_timezone(&Local).format("%Y-%m-%d"),
+    );
+    let blocks = split_into_blocks(&row.markdown);
+    // assemble 要 `&[(&str, &str)]`，这里把持有所有权的 String 借出去，避免复制正文
+    let borrowed: Vec<(&str, &str)> = blocks
+        .iter()
+        .map(|(name, inner)| (*name, inner.as_str()))
+        .collect();
+    crate::projection::assemble(&frontmatter, &borrowed)
+}
+
+/// 按渲染器自己写出的段标题，把整篇正文切成标记块
+///
+/// 段序固定：`header`（标题 + 覆盖范围说明）→ `brief`（摘要 callout + 要点）→
+/// `body`（各主题）→ `followups`（接下来盯什么）→ `sources`（引用源与页脚）。
+/// 块名固定不随内容变化，因此重新生成时不会错位。
+///
+/// # 参数
+/// * `markdown` - 库里存的整篇正文
+///
+/// # 返回值
+/// 按文件内顺序排列的 `(块名, 块内 Markdown)`
+fn split_into_blocks(markdown: &str) -> Vec<(&'static str, String)> {
+    // 用 rfind：真正的段标题在正文靠后，「接下来盯什么」若被 AI 用作主题名会出现在更早处
+    let Some(sources_at) = markdown.rfind("\n## 引用源\n") else {
+        return vec![("body", markdown.to_string())];
+    };
+    let follow_at = markdown[..sources_at].rfind("\n## 接下来盯什么\n");
+    // 正文段的终点：有跟进清单就是它，否则直接到引用源
+    let topics_end = follow_at.unwrap_or(sources_at);
+    // 正文段的起点：**第一个二级标题**。不能拿 topics_end 当起点——没有主题时
+    // 会把「标题 + 摘要」也划进正文段，header 就成了空块。
+    let body_start = markdown[..topics_end]
+        .find("\n## ")
+        .map(|i| i + 1)
+        .unwrap_or(topics_end);
+
+    let mut blocks: Vec<(&'static str, String)> = Vec::with_capacity(5);
+    // 摘要 callout 的起点：`> [!` 是渲染器写的 callout 固定开头，
+    // 而「> 已纳入 x / 共 y 篇」这类普通引用块不算，所以不能只认 `> `
+    match markdown[..body_start].find("\n> [!") {
+        Some(i) => {
+            let brief_at = i + 1;
+            blocks.push(("header", markdown[..brief_at].to_string()));
+            blocks.push(("brief", markdown[brief_at..body_start].to_string()));
+        }
+        None => blocks.push(("header", markdown[..body_start].to_string())),
+    }
+    // 空段不产出：`render_block` 会写出一个没有内容的空块，读起来是噪音
+    if body_start < topics_end {
+        blocks.push(("body", markdown[body_start..topics_end].to_string()));
+    }
+    // 段的首尾必须严丝合缝：起点含前导换行、终点不含下一段的前导换行，
+    // 这样各段首尾相接连起来才逐字节等于原文（有单测锁住）
+    if let Some(f) = follow_at {
+        blocks.push(("followups", markdown[f..sources_at].to_string()));
+    }
+    blocks.push(("sources", markdown[sources_at..].to_string()));
+    blocks
 }
 
 /// 启动时收尾「生成中」的孤儿行
@@ -1732,9 +1829,148 @@ mod tests {
         assert!(md.contains("1. 文章一"), "引用源清单按编号排列");
     }
 
+    /// 切块后的各段首尾相接必须等于原文——切分只许移动边界，不许丢字节
     #[test]
-    fn long_text_is_hard_truncated() {
-        let long = "字".repeat(5000);
+    fn split_into_blocks_preserves_every_byte() {
+        let raw = r#"{"title":"T","lead":"L","highlights":[{"level":"high","text":"H1","refs":[1]}],
+            "topics":[{"name":"主题一","summary":"S","facts":["F1"],"refs":[1]}],
+            "followups":[{"name":"宁德时代","reason":"R","refs":[1]}]}"#;
+        let r = normalize(raw, 1, "f").expect("应解析成功");
+        let window = PeriodWindow {
+            from: Utc.with_ymd_and_hms(2026, 10, 29, 16, 0, 0).single().unwrap(),
+            to: Utc.with_ymd_and_hms(2026, 10, 30, 16, 0, 0).single().unwrap(),
+        };
+        let articles = vec![PeriodArticle {
+            id: 1,
+            title: "文章一".into(),
+            summary: "s".into(),
+            content: String::new(),
+            link: "https://a/1".into(),
+            published_at: None,
+            feed_name: "源一".into(),
+        }];
+        let md = render_markdown(PeriodKind::Daily, window, &r, &articles, 1);
+
+        let blocks = split_into_blocks(&md);
+        let names: Vec<&str> = blocks.iter().map(|(n, _)| *n).collect();
+        assert_eq!(
+            names,
+            vec!["header", "brief", "body", "followups", "sources"],
+            "段序必须固定，重新生成时才不会错位"
+        );
+        assert_eq!(
+            blocks.iter().map(|(_, s)| s.as_str()).collect::<String>(),
+            md,
+            "各段拼接必须逐字节还原原文"
+        );
+        assert!(blocks[0].1.starts_with("# T"), "header 应从标题开始");
+        assert!(blocks[1].1.starts_with("> [!summary]"), "brief 应从摘要 callout 开始");
+        assert!(
+            blocks[3].1.trim_start().starts_with("## 接下来盯什么"),
+            "followups 段以段标题开头"
+        );
+        assert!(
+            blocks[4].1.trim_start().starts_with("## 引用源"),
+            "sources 段以段标题开头"
+        );
+    }
+
+    /// 没有跟进清单时只有四段，且不能因为少一段就把引用源吞进正文
+    #[test]
+    fn split_into_blocks_without_followups() {
+        let md = "# 标题\n\n> [!summary] 导语\n\n## 主题\n\n内容\n\n---\n\n## 引用源\n\n1. 文章\n";
+        let blocks = split_into_blocks(md);
+        let names: Vec<&str> = blocks.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, vec!["header", "brief", "body", "sources"]);
+        assert_eq!(
+            blocks.iter().map(|(_, s)| s.as_str()).collect::<String>(),
+            md
+        );
+    }
+
+    /// 结构对不上（例如正文被硬截断）时整篇作为一个块，绝不丢内容
+    #[test]
+    fn split_into_blocks_falls_back_to_single_block() {
+        let md = "# 标题\n\n## 主题\n\n被截断的正文";
+        let blocks = split_into_blocks(md);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].0, "body");
+        assert_eq!(blocks[0].1, md);
+    }
+
+    /// 没有摘要 callout 时 header 段吃掉开头，不产生空的 brief 块
+    #[test]
+    fn split_into_blocks_without_brief() {
+        let md = "# 标题\n\n## 主题\n\n内容\n\n---\n\n## 引用源\n\n1. 文章\n";
+        let blocks = split_into_blocks(md);
+        let names: Vec<&str> = blocks.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, vec!["header", "body", "sources"]);
+        assert!(
+            !blocks[0].1.contains("## 主题"),
+            "header 不该吃掉正文：{}",
+            blocks[0].1
+        );
+        assert_eq!(
+            blocks.iter().map(|(_, s)| s.as_str()).collect::<String>(),
+            md
+        );
+    }
+
+    /// 端到端：导出文档经两轮投影后，用户写在块间的批注仍在、块内内容已更新
+    ///
+    /// 这条串起来的正是"周期日报重新生成会不会吃掉我在 Obsidian 里写的话"这个真实问题。
+    #[test]
+    fn export_document_round_trip_keeps_user_note() {
+        let dir = std::env::temp_dir().join(format!("readflow-period-rt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建临时目录失败");
+        let path = dir.join("周期日报-2026-11-01.md");
+
+        let build = |body: &str| {
+            let blocks = split_into_blocks(body);
+            let borrowed: Vec<(&str, &str)> = blocks
+                .iter()
+                .map(|(n, s)| (*n, s.as_str()))
+                .collect();
+            crate::projection::assemble(
+                "type: period-daily\nreadflow_id: report:period:daily:2026-11-01\n",
+                &borrowed,
+            )
+        };
+
+        let v1 = "# 研究日报 · 11-01\n\n> [!summary] 导语\n\n## 主题\n\n内容 A\n\n---\n\n## 引用源\n\n1. 文章\n";
+        crate::projection::project_document(&path, &build(v1)).expect("首次导出失败");
+
+        // 用户在「主题」与「引用源」之间写一句
+        let old = std::fs::read_to_string(&path).expect("读回失败");
+        std::fs::write(
+            &path,
+            old.replace(
+                "<!-- readflow:end:body -->",
+                "<!-- readflow:end:body -->\n\n我的批注：这条判断我不同意。\n",
+            ),
+        )
+        .expect("写回夹具失败");
+
+        // 重新生成：正文变了
+        let v2 = "# 研究日报 · 11-01\n\n> [!summary] 导语\n\n## 主题\n\n内容 B（已更新）\n\n---\n\n## 引用源\n\n1. 文章\n";
+        crate::projection::project_document(&path, &build(v2)).expect("二次导出失败");
+
+        let after = std::fs::read_to_string(&path).expect("读回失败");
+        assert!(after.contains("内容 B（已更新）"), "块内应更新：{after}");
+        assert!(
+            after.contains("我的批注：这条判断我不同意。"),
+            "块外批注必须保留：{after}"
+        );
+        assert!(
+            after.contains("readflow_id: report:period:daily:2026-11-01"),
+            "身份键要写进 frontmatter：{after}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn long_text_is_hard_truncated() {        let long = "字".repeat(5000);
         let out = truncate_chars(&long, 100);
         assert_eq!(out.chars().count(), 101, "100 字 + 省略号");
         assert!(out.ends_with('…'));

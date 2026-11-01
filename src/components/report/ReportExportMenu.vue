@@ -137,13 +137,15 @@ onBeforeUnmount(() => {
 async function doExport(format: 'md' | 'html') {
   busy.value = true
   try {
-    const payload = await invoke<{ markdown: string; defaultName: string }>(
+    const payload = await invoke<{ markdown: string; document?: string; defaultName: string }>(
       'report_export_prepare',
       { kind: props.target.kind, id: props.target.id ?? null, name: props.target.name ?? null },
     )
+    // md 走 document：它带投影标记，落盘时按块合并，用户上次写的批注不会被覆盖。
+    // html 走 markdown：渲染器会转义所有 `<`，标记混进去会变成一串可见的乱码文本。
     const content =
       format === 'md'
-        ? payload.markdown
+        ? payload.document ?? payload.markdown
         : buildExportHtml(props.target.label, renderMarkdown(payload.markdown), reportCss)
     const path = await invoke<string | null>('report_export_write', {
       defaultName: payload.defaultName,
