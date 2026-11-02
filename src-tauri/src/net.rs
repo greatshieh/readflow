@@ -233,8 +233,14 @@ fn build(timeout: Duration, proxy: &str) -> Client {
                 //
                 // `no_proxy` 收的是整个豁免表（不是追加），故三个地址写在同一个
                 // 逗号串里，分多次调用只会剩下最后一次。
+                //
+                // IPv6 回环必须写 `::1` 而**不能**写 `[::1]`：reqwest 的
+                // `NoProxy::from_string` 对每段依次尝试 `IpNet`、`IpAddr`，两者
+                // 都失败时**静默降级成一个域名条目**。`[::1]` 带方括号，两种解析
+                // 都会失败，于是它变成一个永不匹配任何 host 的"域名"——界面上
+                // 写着豁免回环，实际 IPv6 回环照样被塞进代理隧道。
                 builder = builder.proxy(
-                    p.no_proxy(reqwest::NoProxy::from_string("localhost,127.0.0.1,[::1]")),
+                    p.no_proxy(reqwest::NoProxy::from_string("localhost,127.0.0.1,::1")),
                 );
             }
             // 走不到这里（`set_proxy` 已校验过一次），但保留兜底：任何路径下
