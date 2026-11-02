@@ -280,6 +280,22 @@ export const useThesesStore = defineStore('theses', () => {
   }
 
   /**
+   * 把一条论点组装成一页 markdown（「组装」预览的取数）
+   *
+   * # 为什么不在前端拼
+   * 章节顺序、引用写法、日期截断是**内容格式**，不是渲染。拼接在同族的
+   * `coverage::dossier` 里也在 Rust——搬一份到前端，同一套格式就会两头各长一个，
+   * 改一处漏一处，两个出口的产出物迟早互相不认识。
+   * 前端只做两件事：把原文交给 `renderMarkdown` 显示、把原文写进剪贴板。
+   *
+   * @param id - 论点 ID
+   * @returns markdown 原文
+   */
+  async function composeMarkdown(id: number): Promise<string> {
+    return invoke<string>('thesis_compose', { id })
+  }
+
+  /**
    * 删除论点
    *
    * @param id - 论点 ID
@@ -372,6 +388,7 @@ export const useThesesStore = defineStore('theses', () => {
     refreshCurrent,
     create,
     update,
+    composeMarkdown,
     remove,
     addEvidence,
     removeEvidence,

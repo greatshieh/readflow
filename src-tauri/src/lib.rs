@@ -505,6 +505,7 @@ pub fn run() {
             // 论点台账命令（判断 / 证据 / 变更留痕）
             thesis_list,
             thesis_get,
+            thesis_compose,
             thesis_create,
             thesis_update,
             thesis_delete,
@@ -3099,6 +3100,17 @@ async fn thesis_list(
 async fn thesis_get(id: i64) -> Result<research::thesis::ThesisDetail, String> {
     let pool = db_pool().await.map_err(|e| e.to_string())?;
     research::thesis::get_detail(&pool, id).await
+}
+
+/// 把一条论点组装成一页 markdown（「组装」出口）
+///
+/// 返回的是 markdown **原文**而不是渲染后的 HTML：调用方要能"复制原文"，
+/// 粘贴到 Obsidian 里还能继续按自己的习惯排版。渲染由前端
+/// `utils/markdown.ts` 统一做，与周期报告共用同一套规则。
+#[tauri::command]
+async fn thesis_compose(id: i64) -> Result<String, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    research::thesis::compose_markdown(&pool, id).await
 }
 
 /// 新建论点，返回新行 ID

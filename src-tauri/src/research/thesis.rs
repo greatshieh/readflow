@@ -366,6 +366,220 @@ pub async fn get_detail(pool: &SqlitePool, id: i64) -> Result<ThesisDetail, Stri
     })
 }
 
+/// 把一条论点组装成一页 markdown（「组装」出口的取数端）
+///
+/// # 参数
+/// * `pool` - 数据库连接池
+/// * `id` - 论点 ID
+///
+/// # 返回值
+/// 一段可直接粘进 Obsidian / Word 的 markdown 原文；论点不存在时返回错误
+///
+/// # 为什么拼接放在后端
+/// 章节顺序、引用写法、日期截断都是**内容格式**，不是渲染。前端的
+/// `utils/markdown.ts::renderMarkdown` 只负责把已有 markdown 变成 HTML；
+/// 若拼接也搬到前端，同一套格式就会在 `period.rs` / `coverage.rs` / 这里
+/// 各长一份，改一处漏一处，三个出口的产出物迟早互相不认识。
+///
+/// # 为什么反驳证据排在支持证据之前
+/// 与 `ThesisDetail` 界面的排序一致：先看反证是这套工具的核心主张
+/// （对抗确认偏误）。导出的那一页若按"支持在前"排，等于在产物里
+/// 把这条主张又抹掉了——而产物是要拿给别人看的，抹得更彻底。
+pub async fn compose_markdown(pool: &SqlitePool, id: i64) -> Result<String, String> {
+    // 复用 get_detail：证据排序、来源 join、快照字段全在那里，
+    // 这里再查一遍就成了第二份"证据怎么读"的真相
+    let detail = get_detail(pool, id).await?;
+    let t = &detail.thesis;
+
+    // 判据是一对一，可能没有；没有时下面要明说，不能静默跳过
+    let falsifier = sqlx::query(
+        "SELECT statement, window_kind, due_at, every_n_days, verdict \
+         FROM thesis_falsifiers WHERE thesis_id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("读取判据失败：{e}"))?;
+
+    let mut md = String::new();
+    md.push_str(&format!("# {}：{}\n\n", t.entity_name, t.statement));
+    md.push_str(&format!(
+        "> 置信 {}/5 · {} · 建立于 {}\n\n",
+        t.confidence,
+        status_cn(&t.status),
+        date_part(&t.created_at)
+    ));
+
+    md.push_str("## 判据\n\n");
+    match &falsifier {
+        Some(row) => {
+            md.push_str(&format!("{}\n\n", row.get::<String, _>("statement")));
+            md.push_str(&format!("- 检验窗口：{}\n", window_cn(row)));
+            md.push_str(&format!(
+                "- 结论：{}\n\n",
+                verdict_cn(&row.get::<String, _>("verdict"))
+            ));
+        }
+        None => md.push_str(
+            "_还没有写判据。判据是「出现什么我就承认自己错了」——没有它，这条判断无法被证伪。_\n\n",
+        ),
+    }
+
+    // 三档固定顺序：反驳 → 存疑 → 支持。只有反驳档带空态提示：
+    // 「暂无反驳证据」不等于论点成立，只说明还没遇到，这句话值得写进产物
+    let groups: [(&str, &str, &str); 3] = [
+        (
+            "oppose",
+            "反驳证据",
+            "暂无反驳证据 —— 这不等于它成立，只说明还没遇到。",
+        ),
+        ("mixed", "存疑证据", ""),
+        ("support", "支持证据", ""),
+    ];
+    for (stance, title, empty_hint) in groups {
+        let items: Vec<&Evidence> = detail
+            .evidence
+            .iter()
+            .filter(|e| e.stance == stance)
+            .collect();
+        if items.is_empty() && empty_hint.is_empty() {
+            continue;
+        }
+        md.push_str(&format!("## {}\n\n", title));
+        if items.is_empty() {
+            md.push_str(&format!("_{empty_hint}_\n\n"));
+            continue;
+        }
+        for (i, e) in items.iter().enumerate() {
+            // 标题取源文章标题并标注来源类型；源文章被删时退回"某类快照"的说法，
+            // **绝不写「已删除」**——快照正文还在，这一条证据依然可读
+            let head = if e.article_title.is_empty() {
+                format!("{}快照", kind_cn(&e.kind))
+            } else {
+                format!("{}（{}）", e.article_title, kind_cn(&e.kind))
+            };
+            md.push_str(&format!("**{}. {}**\n\n", i + 1, head));
+            if !e.note.is_empty() {
+                md.push_str(&format!("我的批注：{}\n\n", e.note));
+            }
+            let snap = clip(&e.snapshot_text, 300);
+            if !snap.is_empty() {
+                md.push_str(&format!("> {}\n\n", snap.replace('\n', "\n> ")));
+            }
+        }
+    }
+
+    if !detail.revisions.is_empty() {
+        md.push_str("## 变更记录\n\n");
+        for r in &detail.revisions {
+            let line = format!(
+                "- {} · {} {} → {}",
+                date_part(&r.created_at),
+                field_cn(&r.field),
+                r.from_value,
+                r.to_value
+            );
+            md.push_str(&line);
+            if !r.reason.is_empty() {
+                md.push_str(&format!("：{}", r.reason));
+            }
+            md.push('\n');
+        }
+        md.push('\n');
+    }
+
+    Ok(md)
+}
+
+/// 取时间串的日期部分（`2026-10-30 12:00:00` → `2026-10-30`）
+///
+/// 库里存的是 `CURRENT_TIMESTAMP` 的 `YYYY-MM-DD HH:MM:SS`。整串写进文档，
+/// 秒级时间会出现在给人看的正文里，既吵又让人误以为精度重要。
+fn date_part(ts: &str) -> &str {
+    ts.split_whitespace().next().unwrap_or(ts)
+}
+
+/// 论点状态 → 中文（与前端 `STATUS_META` 逐字一致）
+///
+/// 刻意不复用 `coverage.rs` 的 `status_label`：那里是给覆盖清单用的口语
+/// （"跟进中 / 已确认"），这里是给对外产物用的正式说法。两处文案会分叉，
+/// 共享一个函数反而会把一边的措辞绑死。
+fn status_cn(status: &str) -> &'static str {
+    match status {
+        "active" => "观察中",
+        "confirmed" => "已验证",
+        "refuted" => "已推翻",
+        "archived" => "已归档",
+        _ => "未知",
+    }
+}
+
+/// 证据来源类型 → 中文（与前端 `KIND_LABEL` 一致）
+fn kind_cn(kind: &str) -> &'static str {
+    match kind {
+        "event" => "研究事件",
+        "highlight" => "高亮",
+        "article" => "文章",
+        _ => "来源",
+    }
+}
+
+/// 判据结论 → 中文
+fn verdict_cn(verdict: &str) -> &'static str {
+    match verdict {
+        "verified" => "已证实",
+        "refuted" => "已证伪",
+        "unclear" => "无法判断",
+        _ => "待验证",
+    }
+}
+
+/// 变更字段 → 中文
+fn field_cn(field: &str) -> &'static str {
+    match field {
+        "confidence" => "置信度",
+        "status" => "状态",
+        "statement" => "判断",
+        _ => "字段",
+    }
+}
+
+/// 检验窗口 → 一行中文
+///
+/// `date` 与 `cycle` 互斥（`window_kind` 决定哪个字段有值），
+/// 两个都空时给出"未设窗口"而不是空白——空白会让人以为数据丢了。
+fn window_cn(row: &sqlx::sqlite::SqliteRow) -> String {
+    let kind: String = row.get("window_kind");
+    match kind.as_str() {
+        "date" => match row.get::<Option<String>, _>("due_at") {
+            Some(d) => format!("到期日 {}", date_part(&d)),
+            None => "到期日未填".to_string(),
+        },
+        "cycle" => match row.get::<Option<i64>, _>("every_n_days") {
+            Some(n) => format!("每 {} 天复核一次", n),
+            None => "复核周期未填".to_string(),
+        },
+        _ => "未设窗口".to_string(),
+    }
+}
+
+/// 按字符截断（不按字节，中文不能从半个字切开）
+///
+/// 超过 `max` 个字符时补省略号。快照正文最长可达整篇文章，
+/// 原样导出会让"一页"变成"一篇"，失去快速转述的价值。
+fn clip(text: &str, max: usize) -> String {
+    let trimmed = text.trim();
+    let mut out = String::new();
+    for (i, ch) in trimmed.chars().enumerate() {
+        if i >= max {
+            out.push('…');
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// 反查：某条来源被挂到过哪些论点
 ///
 /// 用于阅读时显示"这条我评过没有"，避免重复挂载。
@@ -896,6 +1110,17 @@ mod tests {
                 evidence_id INTEGER PRIMARY KEY, article_id INTEGER,
                 source_name TEXT NOT NULL DEFAULT '', published_at TEXT NOT NULL DEFAULT '',
                 captured_at DATETIME DEFAULT CURRENT_TIMESTAMP)"#,
+            // 判据表：写入端在 `research/review`，读取端在「组装」。
+            // 缺这张表时 compose_markdown 会报 `no such table`，
+            // 而报错发生在测试库、不是真实库——很容易被当成"生产代码有 bug"。
+            r#"CREATE TABLE thesis_falsifiers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, thesis_id INTEGER NOT NULL UNIQUE,
+                statement TEXT NOT NULL, window_kind TEXT NOT NULL, due_at DATETIME,
+                every_n_days INTEGER, keywords TEXT NOT NULL DEFAULT '[]',
+                event_type TEXT NOT NULL DEFAULT '', entity_id INTEGER,
+                verdict TEXT NOT NULL DEFAULT 'pending', verdict_evidence_id INTEGER,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)"#,
         ] {
             sqlx::query(ddl).execute(&pool).await.expect("建论点表失败");
         }
@@ -1406,6 +1631,122 @@ mod tests {
         assert_eq!(
             src, 0,
             "来源行也必须清掉：PRAGMA foreign_keys 未开启，CASCADE 不生效，只能显式删"
+        );
+    }
+
+    /// 「组装」产出：反驳排在支持之前、没有证据的档位不留空小节、没判据要说人话
+    ///
+    /// 三条断言都是"有牙齿"的：
+    /// - **先挂支持、后挂反驳**，导出后反驳仍在前——若有人把顺序改成
+    ///   "按挂载时间"，这条立刻变红。顺序不是排版偏好，是对抗确认偏误的
+    ///   核心主张，产物里抹掉它比界面里抹掉更彻底（产物是给别人看的）；
+    /// - **没有对应证据的档位不留空小节**（用「存疑」档验证）：空标题会让
+    ///   读者以为数据丢了；
+    /// - **没写判据时要有明确一句话**，留白等于默许一条无法被证伪的判断。
+    ///
+    /// 另注：`create()` 自己会写一条「建立论点」的变更记录，所以这里断言的是
+    /// "变更小节只出现一次"而不是"不出现"——想测"无变更"，得绕过 create 直接写库。
+    #[tokio::test]
+    async fn compose_markdown_orders_oppose_first_and_skips_empty_sections() {
+        let pool = test_pool().await;
+        let (eid, aid) = seed(&pool).await;
+
+        let id = create(
+            &pool,
+            NewThesis {
+                statement: "2027 年储能出货会超预期".into(),
+                entity_id: eid,
+                confidence: Some(4),
+            },
+        )
+        .await
+        .expect("建论点失败");
+
+        // 两条事件：一条将要挂成支持，一条挂成反驳
+        let mut ev_ids = Vec::new();
+        for fact in ["中标 2GWh 大单", "储能毛利率下滑 6 个点"] {
+            let ev: i64 = sqlx::query_scalar(
+                "INSERT INTO research_events (article_id, entity_id, event_type, fact, evidence) \
+                 VALUES (?, ?, 'order', ?, '') RETURNING id",
+            )
+            .bind(aid)
+            .bind(eid)
+            .bind(fact)
+            .fetch_one(&pool)
+            .await
+            .expect("插事件失败");
+            ev_ids.push(ev);
+        }
+
+        // 刻意先挂支持、后挂反驳：顺序断言不能靠插入顺序蒙对
+        add_evidence(
+            &pool,
+            NewEvidence {
+                thesis_id: id,
+                kind: "event".into(),
+                ref_id: ev_ids[0],
+                stance: "support".into(),
+                note: Some("订单可见度提升".into()),
+            },
+        )
+        .await
+        .expect("挂支持失败");
+        add_evidence(
+            &pool,
+            NewEvidence {
+                thesis_id: id,
+                kind: "event".into(),
+                ref_id: ev_ids[1],
+                stance: "oppose".into(),
+                note: Some("价格战开始".into()),
+            },
+        )
+        .await
+        .expect("挂反驳失败");
+
+        let md = compose_markdown(&pool, id).await.expect("组装失败");
+
+        assert!(
+            md.contains("2027 年储能出货会超预期"),
+            "标题必须带判断原文：\n{md}"
+        );
+        let opp = md.find("## 反驳证据").expect("缺反驳小节");
+        let sup = md.find("## 支持证据").expect("缺支持小节");
+        assert!(opp < sup, "反驳必须排在支持之前，实际：\n{md}");
+        assert!(md.contains("价格战开始"), "反驳的批注要进产物：\n{md}");
+        assert!(
+            !md.contains("## 存疑证据"),
+            "没有存疑证据时不该留空小节：\n{md}"
+        );
+        assert_eq!(
+            md.matches("## 变更记录").count(),
+            1,
+            "变更小节只能出现一次：\n{md}"
+        );
+        assert!(
+            md.contains("还没有写判据"),
+            "没写判据时必须明说，不能留白：\n{md}"
+        );
+
+        // 补上判据后再组装一次：窗口与结论要出现在产物里
+        sqlx::query(
+            "INSERT INTO thesis_falsifiers (thesis_id, statement, window_kind, due_at) \
+             VALUES (?, '2026 年底交付未达 20GWh 即算错', 'date', '2026-12-31')",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .expect("插判据失败");
+
+        let md2 = compose_markdown(&pool, id).await.expect("二次组装失败");
+        assert!(
+            md2.contains("到期日 2026-12-31"),
+            "检验窗口要带日期：\n{md2}"
+        );
+        assert!(md2.contains("待验证"), "判据结论要出现：\n{md2}");
+        assert!(
+            !md2.contains("还没有写判据"),
+            "有判据后不该再出现空态提示：\n{md2}"
         );
     }
 }
