@@ -176,15 +176,37 @@ pub async fn fetch_feed(url: &str) -> Result<ParsedFeed, String> {
 /// 的话，用户会以为是原站挂了，跑去检查原站——而真正断掉的是实例那一跳。
 /// 把实例名写进错误里，用户才知道该换实例还是该配代理。
 fn network_error_message(err: &reqwest::Error, url: &str) -> String {
-    let base = classify_network_error(err.is_timeout(), err.is_connect(), &err.to_string());
+    build_network_error(
+        classify_network_error(err.is_timeout(), err.is_connect(), &err.to_string()),
+        url,
+        &crate::net::effective_proxy_label(),
+    )
+}
+
+/// 拼装网络层错误文案（纯函数，便于单测）
+///
+/// # 参数
+/// * `base` - [`classify_network_error`] 给出的基础说明
+/// * `url` - 本次请求的地址
+/// * `route` - 本次连接实际走的路径（代理地址或「直连」，见 [`crate::net::effective_proxy_label`]）
+///
+/// # 返回值
+/// 可直接展示的错误字符串
+///
+/// # 为什么要把「本次连接」写进去
+/// 「浏览器能开、应用不能」有一半成因是**应用实际走的路和用户以为的不一样**：
+/// 隐式环境变量代理、TUN 只覆盖了部分流量、代理规则把某个域名放行成直连……
+/// 这些都不体现在任何界面元素上。把实际路径写进错误，用户不必再猜，
+/// 也不必再让别人远程排查一轮。
+fn build_network_error(base: String, url: &str, route: &str) -> String {
     let host = crate::rsshub::host_of(url).unwrap_or_default();
     if crate::rsshub::looks_like_rsshub_host(&host) {
         return format!(
-            "RSSHub 实例 {} 连不上（断点在这一跳，与它要抓的原站无关）：{}",
-            host, base
+            "RSSHub 实例 {} 连不上（断点在这一跳，与它要抓的原站无关）：{}（本次连接：{}）",
+            host, base, route
         );
     }
-    base
+    format!("{}（本次连接：{}）", base, route)
 }
 
 /// 把 reqwest 的连接级错误翻译成用户能据此采取行动的话
@@ -1051,6 +1073,38 @@ mod tests {
         let msg = classify_network_error(false, false, "builder error: bad header value");
         assert!(msg.starts_with("请求失败："), "{msg}");
         assert!(msg.contains("bad header value"), "{msg}");
+    }
+
+    /// 普通源的错误要带上「本次连接走哪条路」
+    ///
+    /// 「浏览器能开、应用不能」有一半是"实际走的路和以为的不一样"，
+    /// 不写出来用户只能猜。
+    #[test]
+    fn network_error_reports_effective_route() {
+        let msg = build_network_error(
+            "连接被中断".into(),
+            "https://example.com/feed",
+            "http://127.0.0.1:7899",
+        );
+        assert!(msg.contains("连接被中断"), "{msg}");
+        assert!(
+            msg.contains("本次连接：http://127.0.0.1:7899"),
+            "要写出实际路径: {msg}"
+        );
+        assert!(!msg.contains("RSSHub"), "普通源不该被判成实例: {msg}");
+    }
+
+    /// RSSHub 源要同时说清「断在这一跳」与「走的是哪条路」
+    #[test]
+    fn rsshub_network_error_names_instance_and_route() {
+        let msg = build_network_error(
+            "连接被中断".into(),
+            "https://rsshub.app/latepost/4",
+            "直连",
+        );
+        assert!(msg.contains("RSSHub 实例 rsshub.app"), "{msg}");
+        assert!(msg.contains("与它要抓的原站无关"), "{msg}");
+        assert!(msg.contains("本次连接：直连"), "{msg}");
     }
 
     /// Twitter 源的原生视频：video 标签、src 与 controls 都应保留

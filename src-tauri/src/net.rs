@@ -144,6 +144,24 @@ pub fn proxy_url() -> String {
     PROXY.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+/// 供错误文案展示的「本次连接走哪条路」
+///
+/// # 返回值
+/// 配了代理时是代理地址，未配时是「直连」
+///
+/// # 为什么要出现在错误里
+/// 「同一个源，浏览器能开、应用不能」有太多种成因，其中一半是**应用实际走的路**
+/// 与用户以为的不一样（隐式环境变量代理、TUN 只覆盖了一部分流量……）。
+/// 把这条路写进错误，用户不必再猜，也不必再让别人远程排查一轮。
+pub fn effective_proxy_label() -> String {
+    let proxy = proxy_url();
+    if proxy.is_empty() {
+        "直连".to_string()
+    } else {
+        proxy
+    }
+}
+
 /// 归一化并校验代理地址（纯函数，便于单测）
 ///
 /// 对 `pub` 是为了让 `lib.rs::settings_set` 能「先校验、再落库、最后切换」：
@@ -223,6 +241,15 @@ fn build(timeout: Duration, proxy: &str) -> Client {
             // "代理不可用"都不该升级成"应用不能联网"。
             Err(e) => eprintln!("代理地址无法解析，本次按直连处理: {}", e),
         }
+    } else {
+        // 留空 = 真直连，必须显式关掉环境变量代理探测。
+        //
+        // reqwest 默认会读 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`，于是同一个
+        // "留空"设置会出现两种行为：从桌面启动器起来（继承不到变量）是直连，
+        // 从某个带变量的终端里起来却在走一个用户从没配过的代理。这类"配置看得见、
+        // 行为对不上"的幽灵问题最难查——排查时甚至会把结论带偏（本项目就被带偏过
+        // 一次）。界面上写的是"留空为直连"，这里就得让它名副其实。
+        builder = builder.no_proxy();
     }
 
     builder.build().unwrap_or_else(|e| {
@@ -445,6 +472,64 @@ mod tests {
             request_line.starts_with("GET http://proxied.invalid/probe"),
             "代理收到的应是绝对 URI 请求行（说明确实走了代理），实际: {:?}",
             request_line.lines().next()
+        );
+    }
+
+    /// 「本次连接」标签要如实反映当前设置
+    #[test]
+    fn effective_proxy_label_reflects_setting() {
+        let _guard = PROXY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_proxy("").unwrap();
+        assert_eq!(effective_proxy_label(), "直连");
+        set_proxy("socks5://127.0.0.1:1080").unwrap();
+        assert_eq!(effective_proxy_label(), "socks5://127.0.0.1:1080");
+        set_proxy("").unwrap();
+    }
+
+    /// 「留空」必须是真的直连：不得偷偷沿用环境变量里的代理
+    ///
+    /// reqwest 默认会读 `HTTPS_PROXY`。不清掉这个隐式入口的话，同一个「留空」
+    /// 会因为启动方式不同而行为不同——从带变量的终端启动时，应用会走一个用户
+    /// 从没配过的代理，而界面上写着"直连"。这条测试用一个假代理守着：
+    /// 它一旦收到连接，就说明留空时仍然用了环境变量代理。
+    ///
+    /// 把 `build` 里的 `.no_proxy()` 注释掉，本用例会立刻失败——已实测过。
+    #[tokio::test]
+    async fn empty_setting_ignores_environment_proxy() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let _guard = PROXY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 256];
+                let _ = socket.read(&mut buf).await;
+                let _ = tx.send(());
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+            }
+        });
+
+        // 仅本进程内生效；并发用例走的都是 127.0.0.1（本就豁免代理）或显式设了代理
+        std::env::set_var("HTTPS_PROXY", format!("http://{}", addr));
+        set_proxy("").unwrap();
+        let slot: &'static ClientSlot = Box::leak(Box::new(ClientSlot::new()));
+        // 目标域名不可解析：走代理时会落到假代理上，真直连则会 DNS 失败
+        let _ = shared(slot, Duration::from_secs(2))
+            .get("https://env-proxy-must-not-be-used.invalid/x")
+            .send()
+            .await;
+        std::env::remove_var("HTTPS_PROXY");
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(400), rx)
+                .await
+                .is_err(),
+            "代理留空时仍然使用了环境变量里的代理"
         );
     }
 }
