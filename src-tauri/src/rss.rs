@@ -129,6 +129,21 @@ pub async fn fetch_feed(url: &str) -> Result<ParsedFeed, String> {
         .unwrap_or("")
         .to_string();
 
+    // Cloudflare 挑战页的判定依据也在响应头里（`cf-mitigated` / `server`），
+    // 同样要在 `text()` 之前取；取不到就留空，交由正文特征兜底。
+    let cf_mitigated = resp
+        .headers()
+        .get("cf-mitigated")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let server = resp
+        .headers()
+        .get("server")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
     // 读 body 失败与"发请求失败"是两种情形：连接已建立、状态码也拿到了，
     // 是传输过程中断（大文件、长响应、对端提前关闭）。分开说，用户才知道
     // 该换网络还是该认为源本身有问题。
@@ -141,7 +156,16 @@ pub async fn fetch_feed(url: &str) -> Result<ParsedFeed, String> {
     // 都会走到这里，没有状态码的话错误信息完全无法定位
     if !status.is_success() {
         let reason = status.canonical_reason().unwrap_or("Unknown");
-        return Err(http_error_message(status.as_u16(), reason, &body, url));
+        return Err(http_error_message(
+            status.as_u16(),
+            reason,
+            &body,
+            url,
+            &ChallengeHeaders {
+                cf_mitigated: &cf_mitigated,
+                server: &server,
+            },
+        ));
     }
 
     // 根据内容类型选择解析器；只要头部里有 json 就走 JSON Feed 分支。
@@ -289,6 +313,49 @@ fn classify_network_error(is_timeout: bool, is_connect: bool, raw: &str) -> Stri
     format!("请求失败：{}", raw)
 }
 
+/// 判定"响应是不是 Cloudflare 人机验证页"所需的最小响应头集合
+///
+/// 单独成结构体而不是两个相邻的 `&str` 参数：同类型的两个参数最容易传反，
+/// 而传反之后的现象是"挑战页识别时灵时不灵"，这种 bug 极难在测试之外发现。
+struct ChallengeHeaders<'a> {
+    /// `cf-mitigated` 响应头（Cloudflare 挑战页会写 `challenge`）
+    cf_mitigated: &'a str,
+    /// `server` 响应头（挑战页通常是 `cloudflare`）
+    server: &'a str,
+}
+
+/// 判断该响应是否为 Cloudflare 人机验证页
+///
+/// # 参数
+/// * `status` - HTTP 状态码
+/// * `body` - 响应体原文
+/// * `headers` - 判定所需响应头
+///
+/// # 返回值
+/// 是挑战页返回 `true`，其余一律 `false`
+///
+/// # 为什么要单独判
+/// 挑战页是 `403` + 一段要求执行 JS 的 HTML。若归进「返回网页而非订阅内容」，
+/// 用户会以为源坏了或地址填错了，而真正该做的往往是**换实例**——这个判断
+/// 决定下一步动作，不能省。
+///
+/// `cf-mitigated` 是 Cloudflare 主动标注的确定信号，优先采信；正文特征只作兜底：
+/// 万一响应头被中间设备剥掉，仍能凭 "Just a moment" 认出来。
+fn is_cloudflare_challenge(status: u16, body: &str, headers: &ChallengeHeaders<'_>) -> bool {
+    if status != 403 {
+        return false;
+    }
+    if headers
+        .cf_mitigated
+        .to_ascii_lowercase()
+        .contains("challenge")
+    {
+        return true;
+    }
+    headers.server.eq_ignore_ascii_case("cloudflare")
+        && body.to_ascii_lowercase().contains("just a moment")
+}
+
 /// 构造非 2xx 响应的错误信息
 ///
 /// # 参数
@@ -296,16 +363,51 @@ fn classify_network_error(is_timeout: bool, is_connect: bool, raw: &str) -> Stri
 /// * `reason` - 状态原因短语（如 "Forbidden"）
 /// * `body` - 响应体原文（内部会压缩空白并截断）
 /// * `url` - 本次请求的地址（判断是否 RSSHub 实例，决定能否解析上游失败）
+/// * `headers` - 判定 Cloudflare 挑战页所需的响应头
 ///
 /// # 返回值
 /// 可直接展示给用户的错误字符串
+///
+/// # 判定顺序
+/// Cloudflare 挑战 → RSSHub 上游失败 → 通用格式。挑战页必须排在最前：
+/// 它同样是 403，但结论与"被站点拒绝"完全不同——站点是活的，只是挡住程序。
 ///
 /// # 为什么 RSSHub 的错误页要单独处理
 /// 实例返回 503 时，真正失败的很可能是**它去抓原站**那一步，而不是实例自身。
 /// 这两种处境用户的下一步完全不同（换实例 vs 换不到也别折腾），而 RSSHub 的
 /// 错误页里就写着失败的上游地址，解析出来比丢一段 HTML 片段有用得多。
-fn http_error_message(status: u16, reason: &str, body: &str, url: &str) -> String {
+fn http_error_message(
+    status: u16,
+    reason: &str,
+    body: &str,
+    url: &str,
+    headers: &ChallengeHeaders<'_>,
+) -> String {
     let host = crate::rsshub::host_of(url).unwrap_or_default();
+
+    if is_cloudflare_challenge(status, body, headers) {
+        // 说清两件事：断在哪一环（人机验证，不是网络、不是源没了）、下一步做什么。
+        // RSSHub 实例与普通站点的话术要分开——对前者"换实例"是对的处方，
+        // 对后者说"换实例"等于让人去改一个并不存在的设置。
+        return if crate::rsshub::looks_like_rsshub_host(&host) {
+            format!(
+                "HTTP {} {}：RSSHub 实例 {} 被 Cloudflare 人机验证拦住了（响应是 \"Just a moment...\" 挑战页），\
+                 程序无法通过这种验证，换一个实例通常就好（本次连接：{}）",
+                status,
+                reason,
+                host,
+                crate::net::effective_proxy_label()
+            )
+        } else {
+            format!(
+                "HTTP {} {}：该站点被 Cloudflare 人机验证拦住了（响应是 \"Just a moment...\" 挑战页），\
+                 程序无法通过这种验证；源本身通常还活着，可在浏览器里打开确认（本次连接：{}）",
+                status,
+                reason,
+                crate::net::effective_proxy_label()
+            )
+        };
+    }
     if crate::rsshub::looks_like_rsshub_host(&host) {
         if let Some(failure) = crate::rsshub::parse_upstream_failure(body) {
             let mut msg = format!(
@@ -1282,6 +1384,14 @@ mod tests {
 
     // ─── P2a：抓取 / 解析错误信息 ─────────────────────────────────────────────
 
+    /// 测试用：不含任何 Cloudflare 特征的普通响应头
+    fn plain_headers() -> ChallengeHeaders<'static> {
+        ChallengeHeaders {
+            cf_mitigated: "",
+            server: "",
+        }
+    }
+
     /// 非 2xx 错误信息应含状态码、原因与响应片段
     #[test]
     fn http_error_message_includes_status_and_snippet() {
@@ -1290,9 +1400,82 @@ mod tests {
             "Forbidden",
             "<html>\n  <body>blocked</body>\n</html>",
             "https://example.com/feed",
+            &plain_headers(),
         );
         assert!(msg.contains("HTTP 403 Forbidden"), "msg: {msg}");
         assert!(msg.contains("blocked"), "应含响应体片段: {msg}");
+    }
+
+    /// Cloudflare 挑战页（带 `cf-mitigated` 头）：必须点明"人机验证"并给出换实例的处方
+    ///
+    /// 这是 `rsshub.app` 从 2026-11-02 起的真实状态：站点活着、TLS 正常、也返回了
+    /// 403，但正文是一段要求执行 JS 的挑战页。笼统报"被拒绝"会让人去查网络和地址。
+    #[test]
+    fn cloudflare_challenge_is_named_for_rsshub() {
+        let msg = http_error_message(
+            403,
+            "Forbidden",
+            "<html><head><title>Just a moment...</title></head><body>Enable JavaScript</body></html>",
+            "https://rsshub.app/latepost/4",
+            &ChallengeHeaders {
+                cf_mitigated: "challenge",
+                server: "cloudflare",
+            },
+        );
+        assert!(msg.contains("人机验证"), "msg: {msg}");
+        assert!(
+            msg.contains("换一个实例"),
+            "RSSHub 场景应给出换实例的处方: {msg}"
+        );
+        assert!(
+            msg.contains("本次连接："),
+            "要带上本次实际走的连接: {msg}"
+        );
+        assert!(
+            !msg.contains("响应内容："),
+            "不应退化成通用 403 文案: {msg}"
+        );
+    }
+
+    /// 响应头被中间设备剥掉时，仍能靠正文 "Just a moment" 认出挑战页
+    #[test]
+    fn cloudflare_challenge_falls_back_to_body() {
+        let msg = http_error_message(
+            403,
+            "Forbidden",
+            "<html><body>Just a moment...</body></html>",
+            "https://example.com/feed",
+            &ChallengeHeaders {
+                cf_mitigated: "",
+                server: "cloudflare",
+            },
+        );
+        assert!(msg.contains("人机验证"), "msg: {msg}");
+        assert!(
+            msg.contains("源本身通常还活着"),
+            "普通站点应提示源没坏: {msg}"
+        );
+        assert!(
+            !msg.contains("换一个实例"),
+            "普通站点没有实例可换，说这句话会误导: {msg}"
+        );
+    }
+
+    /// 普通 403（无 Cloudflare 特征）不受影响，仍走原格式
+    #[test]
+    fn plain_403_keeps_original_wording() {
+        let msg = http_error_message(
+            403,
+            "Forbidden",
+            "<html><body>blocked</body></html>",
+            "https://example.com/feed",
+            &ChallengeHeaders {
+                cf_mitigated: "",
+                server: "nginx",
+            },
+        );
+        assert!(msg.contains("响应内容"), "msg: {msg}");
+        assert!(!msg.contains("人机验证"), "不该误判普通 403: {msg}");
     }
 
     /// RSSHub 实例的 503 要点出「它抓不到哪个上游」，而不是丢一段 HTML
@@ -1309,6 +1492,7 @@ mod tests {
             "Service Unavailable",
             body,
             "https://rsshub.rssforever.com/latepost/4",
+            &plain_headers(),
         );
         assert!(msg.contains("抓不到上游"), "msg: {msg}");
         assert!(
@@ -1329,7 +1513,13 @@ mod tests {
     #[test]
     fn upstream_parsing_is_limited_to_rsshub_hosts() {
         let body = r#"<p>Error: [GET] "https://example.com/x": timed out</p>"#;
-        let msg = http_error_message(503, "Service Unavailable", body, "https://example.com/feed");
+        let msg = http_error_message(
+            503,
+            "Service Unavailable",
+            body,
+            "https://example.com/feed",
+            &plain_headers(),
+        );
         assert!(!msg.contains("抓不到上游"), "msg: {msg}");
         assert!(msg.contains("响应内容"), "普通站点仍走原格式: {msg}");
     }
