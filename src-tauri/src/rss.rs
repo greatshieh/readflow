@@ -89,6 +89,50 @@ pub struct ParsedItem {
     pub enclosure_type: Option<String>,
 }
 
+/// 抓订阅源时使用的 UA
+///
+/// 部分站点会拒绝空 UA 或默认爬虫 UA，故固定一个能表明身份的字符串。
+/// 抽成常量是为了让"首次请求"与"重试请求"不可能用上两个不同的 UA——
+/// 那种差异会让重试的结论不可比。
+const FEED_USER_AGENT: &str = "ReadFlow/1.0 (RSS Reader)";
+
+/// 发一次抓取请求
+///
+/// # 参数
+/// * `client` - 已构建好的客户端（代理等配置已烘焙其中）
+/// * `url` - Feed 地址
+///
+/// # 返回值
+/// 成功时是响应；失败时是 reqwest 原始错误，交由调用方决定是否重试
+async fn send_get(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<reqwest::Response, reqwest::Error> {
+    client
+        .get(url)
+        .header("User-Agent", FEED_USER_AGENT)
+        .send()
+        .await
+}
+
+/// 判断这次失败是否值得立刻重试一次
+///
+/// # 参数
+/// * `err` - 首次请求的错误
+///
+/// # 返回值
+/// 值得重试返回 `true`
+///
+/// # 判据
+/// 只认「连接阶段失败且不是超时」：
+/// - 经代理时对端在握手阶段直接切断（`unexpected EOF`）最常见，换条新连接往往就通；
+/// - 超时不重试——它已经等满一个完整超时档，再等一次会让用户以为界面卡死；
+/// - DNS 解析失败、端口拒绝也会被这条放进来重试一次，代价是多一次快速失败，
+///   换来的是"偶发解析抖动"同样能自愈，比按错误字符串细分更划算。
+fn is_retryable_connect_error(err: &reqwest::Error) -> bool {
+    err.is_connect() && !err.is_timeout()
+}
+
 /// 抓取并解析 RSS/Atom/JSON Feed
 ///
 /// 先发起带自定义 UA 的 GET 请求（部分站点会拒绝空 UA 或默认爬虫 UA），
@@ -113,12 +157,31 @@ pub async fn fetch_feed(url: &str) -> Result<ParsedFeed, String> {
     // 每个源一次 TCP + TLS 握手（超时档见 crate::net）
     let client = crate::net::feed_client();
 
-    let resp = client
-        .get(url)
-        .header("User-Agent", "ReadFlow/1.0 (RSS Reader)")
-        .send()
-        .await
-        .map_err(|e| network_error_message(&e, url))?;
+    let resp = match send_get(&client, url).await {
+        Ok(resp) => resp,
+        Err(first) => {
+            // 连接阶段失败重试一次。
+            //
+            // 经代理访问时，对端（或中间设备）在 TLS 握手阶段直接切断连接是常见现象
+            // ——典型表现就是 `unexpected EOF`。这种失败跟"源坏了"无关，换一条新连接
+            // 往往就通了；用户自己再点一次刷新也能通，但那不该由用户承担。
+            //
+            // 超时不重试：它已经等满了一个完整超时档，再等一次只会让界面像卡死。
+            if !is_retryable_connect_error(&first) {
+                return Err(network_error_message(&first, url));
+            }
+            match send_get(&client, url).await {
+                Ok(resp) => resp,
+                // 重试仍失败才报错，并在文案里注明——否则用户会以为"点了一次却报了两个错"
+                Err(second) => {
+                    return Err(format!(
+                        "{}（已自动重试 1 次）",
+                        network_error_message(&second, url)
+                    ))
+                }
+            }
+        }
+    };
 
     // status / headers 必须在 text() 消费 resp 之前取出
     let status = resp.status();
@@ -203,7 +266,8 @@ fn network_error_message(err: &reqwest::Error, url: &str) -> String {
     build_network_error(
         classify_network_error(err.is_timeout(), err.is_connect(), &err.to_string()),
         url,
-        &crate::net::effective_proxy_label(),
+        // 读客户端实际烘焙的代理，而不是设置里的值：错误只描述"刚发出去的那个请求"
+        &crate::net::feed_route_label(),
     )
 }
 
@@ -212,7 +276,7 @@ fn network_error_message(err: &reqwest::Error, url: &str) -> String {
 /// # 参数
 /// * `base` - [`classify_network_error`] 给出的基础说明
 /// * `url` - 本次请求的地址
-/// * `route` - 本次连接实际走的路径（代理地址或「直连」，见 [`crate::net::effective_proxy_label`]）
+/// * `route` - 本次连接实际走的路径（代理地址或「直连」，见 [`crate::net::feed_route_label`]）
 ///
 /// # 返回值
 /// 可直接展示的错误字符串
@@ -396,7 +460,7 @@ fn http_error_message(
                 status,
                 reason,
                 host,
-                crate::net::effective_proxy_label()
+                crate::net::feed_route_label()
             )
         } else {
             format!(
@@ -404,7 +468,7 @@ fn http_error_message(
                  程序无法通过这种验证；源本身通常还活着，可在浏览器里打开确认（本次连接：{}）",
                 status,
                 reason,
-                crate::net::effective_proxy_label()
+                crate::net::feed_route_label()
             )
         };
     }
@@ -1175,6 +1239,25 @@ mod tests {
         let msg = classify_network_error(false, false, "builder error: bad header value");
         assert!(msg.starts_with("请求失败："), "{msg}");
         assert!(msg.contains("bad header value"), "{msg}");
+    }
+
+    /// 连接阶段失败会自动重试一次，并在文案里注明
+    ///
+    /// 用「绑定后立刻释放的端口」制造确定的连接拒绝（无监听者），比依赖外网稳定。
+    /// 断言那句「已自动重试 1 次」是关键：它同时证明了**重试真的发生了**
+    /// 与**失败不再被静默吞掉**——没有它，用户只会看到一次失败，无从判断
+    /// 应用是否尝试过自愈。
+    #[tokio::test]
+    async fn connect_failure_is_retried_once() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // 释放后该端口无人监听，连接会被立刻拒绝（is_connect 成立且非超时）
+        drop(listener);
+
+        let msg = fetch_feed(&format!("http://127.0.0.1:{port}/feed"))
+            .await
+            .expect_err("连接被拒绝时应返回错误");
+        assert!(msg.contains("已自动重试 1 次"), "msg: {msg}");
     }
 
     /// 普通源的错误要带上「本次连接走哪条路」

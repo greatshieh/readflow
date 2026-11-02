@@ -97,6 +97,19 @@ impl ClientSlot {
             cached: Mutex::new(None),
         }
     }
+
+    /// 该槽里现成客户端的构建条件（即它当初是用哪个代理地址建起来的）
+    ///
+    /// # 返回值
+    /// * `Some(proxy)` - 已缓存客户端的代理地址（空串表示当时是直连）
+    /// * `None` - 还没构建过，下一次取用会按当前设置构建
+    fn cached_proxy(&self) -> Option<String> {
+        self.cached
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|c| c.proxy.clone())
+    }
 }
 
 /// 抓订阅源用的客户端缓存槽
@@ -159,6 +172,27 @@ pub fn effective_proxy_label() -> String {
         "直连".to_string()
     } else {
         proxy
+    }
+}
+
+/// 抓订阅源的那个客户端**实际**用的连接（`"直连"` 或代理地址）
+///
+/// # 与 [`effective_proxy_label`] 的区别
+/// 后者读的是**设置里的值**，前者读的是**客户端被构建时烘焙进去的值**。
+/// 绝大多数时候两者相同，但一旦出现"设置改了、缓存客户端没重建"，
+/// 设置值就会说谎——而那正是排查时最需要它说实话的时刻：用户看到
+/// 「本次连接：http://…」会去怀疑网络，实际请求可能走的是直连。
+///
+/// 所以错误文案统一用这个函数：它只描述刚发出去的那个请求。
+///
+/// # 返回值
+/// 客户端尚未构建过时退回设置值——那种情况下下一次取用必然按设置构建，
+/// 设置值就是将要发生的事实。
+pub fn feed_route_label() -> String {
+    match FEED_CLIENT.cached_proxy() {
+        Some(proxy) if proxy.is_empty() => "直连".to_string(),
+        Some(proxy) => proxy,
+        None => effective_proxy_label(),
     }
 }
 
@@ -490,6 +524,38 @@ mod tests {
         set_proxy("socks5://127.0.0.1:1080").unwrap();
         assert_eq!(effective_proxy_label(), "socks5://127.0.0.1:1080");
         set_proxy("").unwrap();
+    }
+
+    /// 错误文案里的「本次连接」必须读**客户端实际烘焙的代理**，而不是设置值
+    ///
+    /// 这两种值绝大多数时候相同，但一旦"设置改了、缓存客户端还没重建"，它们就会
+    /// 分叉：设置值是新的，而刚发出去的那个请求用的是旧的。此时文案若跟着设置走，
+    /// 用户会看到一个与请求不符的连接方式，把排查带到错误的方向（本项目已被带偏过）。
+    #[test]
+    fn feed_route_label_follows_client_not_setting() {
+        let _guard = PROXY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        // 1) 用直连构建缓存
+        set_proxy("").unwrap();
+        let _ = feed_client();
+        assert_eq!(feed_route_label(), "直连");
+
+        // 2) 只改设置、不取客户端：缓存仍指向直连，标签不能改口
+        set_proxy("http://127.0.0.1:7899").unwrap();
+        assert_eq!(
+            feed_route_label(),
+            "直连",
+            "缓存客户端还没重建，标签不能跟着设置走"
+        );
+
+        // 3) 取一次客户端触发重建，标签随之更新
+        let _ = feed_client();
+        assert_eq!(feed_route_label(), "http://127.0.0.1:7899");
+
+        // 4) 复位全局状态，避免污染同进程其它用例
+        set_proxy("").unwrap();
+        let _ = feed_client();
+        assert_eq!(feed_route_label(), "直连");
     }
 
     /// 「留空」必须是真的直连：不得偷偷沿用环境变量里的代理
