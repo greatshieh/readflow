@@ -52,6 +52,13 @@ interface RefreshProgressPayload {
    * 定时 / 全量刷新路径下前端唯一能收到源级错误的方式——据此在源旁显示错误图标。
    */
   error: string | null
+  /**
+   * 本次抓取实际使用的地址（仅在"后端把源自动迁到别的 RSSHub 实例"时非 null）
+   *
+   * 地址是后端改写的，不同步过来的话列表里会一直显示那个已经连不上的旧链接，
+   * 用户会以为"地址明明坏了却还能抓到内容"。
+   */
+  url: string | null
 }
 
 /**
@@ -182,6 +189,9 @@ export const useFeedsStore = defineStore('feeds', () => {
           if (feed) {
             feed.unread_count = p.unreadCount
             feed.last_error = p.error
+            // 后端把源自动搬到其它 RSSHub 实例时会把新地址带回来，就地更新；
+            // 注意只在非 null 时写，否则每次成功刷新都会把 url 覆盖成 null
+            if (p.url) feed.url = p.url
           }
           // 推进 n/m 进度；done === total 时保留最后值，由 refreshFeeds 的 finally 统一复位
           refreshProgress.value = { done: p.done, total: p.total }

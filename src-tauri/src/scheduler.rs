@@ -91,6 +91,70 @@ pub struct RefreshProgress {
     /// 定时 / 全量刷新路径下前端唯一能收到错误的方式：失败时该字段非空，
     /// 前端据此在订阅源旁显示错误图标。成功时传 `None`（清空该源的错误状态）。
     pub error: Option<String>,
+    /// 本次抓取实际使用的地址（仅在发生了"自动迁移到别的实例"时非 `None`）
+    ///
+    /// 订阅源 URL 由后端改写，前端据此就地更新列表里的地址。不通知的话，
+    /// 用户会看到一个"地址还是死的、却能抓到内容"的条目，无从判断发生了什么。
+    pub url: Option<String>,
+}
+
+/// 每轮刷新最多迁移多少个源
+///
+/// 迁移要把候选实例挨个探一遍（每个最多 `PROBE_TIMEOUT`）。一轮刷新里若几十个源
+/// 同时迁移，用户会盯着进度条等上好几分钟。宁可分几轮迁完，也不能让一次刷新失控。
+const MAX_RELOCATIONS_PER_ROUND: usize = 3;
+
+/// 抓取一个源；失败且地址属于 RSSHub 实例时，换一个可用实例重试一次
+///
+/// # 参数
+/// * `url` - 订阅源里存的地址
+/// * `configured` - 设置项 `rsshub_base_url` 的值（用于认出用户自建实例）
+/// * `allow_relocate` - 本次是否允许迁移（调用方用本轮剩余额度控制）
+///
+/// # 返回值
+/// `(抓取结果, 实际使用的地址, 是否发生了迁移)`
+///
+/// # 为什么两种情况写在一处
+/// 全量刷新与单源刷新都要这套流程。写两遍的结果一定是"一边改了另一边没改"，
+/// 然后表现为"手动刷新会换实例、定时刷新不会"这类难以复现的差异。
+///
+/// # 迁移失败时不覆盖原始错误
+/// 用户最需要知道的是「原来那个实例连不上」。把错误直接换成"换实例也失败"，
+/// 会让人以为是换了之后才坏的，反而把第一步的线索弄丢了。
+pub(crate) async fn fetch_with_relocation(
+    url: &str,
+    configured: &str,
+    allow_relocate: bool,
+) -> (Result<crate::rss::ParsedFeed, String>, String, bool) {
+    match fetch_feed(url).await {
+        Ok(parsed) => (Ok(parsed), url.to_string(), false),
+        Err(original) => {
+            if !allow_relocate {
+                return (Err(original), url.to_string(), false);
+            }
+            match crate::rsshub::relocate(url, configured).await {
+                // 换到了可用实例：必须真正抓通才算迁移成功。
+                // 探测只回答"这个实例此刻能返回内容"，而正文解析仍可能失败。
+                Ok(Some(new_url)) => match fetch_feed(&new_url).await {
+                    Ok(parsed) => (Ok(parsed), new_url, true),
+                    Err(e) => (
+                        Err(format!(
+                            "{}；已自动换到 {} 重试，仍然失败：{}",
+                            original, new_url, e
+                        )),
+                        url.to_string(),
+                        false,
+                    ),
+                },
+                Ok(None) => (Err(original), url.to_string(), false),
+                Err(reason) => (
+                    Err(format!("{}；自动换实例未成功：{}", original, reason)),
+                    url.to_string(),
+                    false,
+                ),
+            }
+        }
+    }
 }
 
 /// 后台刷新管理器
@@ -254,11 +318,42 @@ pub(crate) async fn refresh_all_feeds(
     let mut new_texts: Vec<(String, String)> = Vec::new();
     // 已处理完的源计数（成功与失败都推进，让前端 n/m 能走满）
     let mut done = 0usize;
+    // RSSHub 实例地址：本轮只读一次。逐源读库没有意义，而且它在迁移成功时会被改写
+    let mut rsshub_base = Setting::get(pool, "rsshub_base_url")
+        .await
+        .unwrap_or(None)
+        .unwrap_or_default();
+    // 本轮剩余的迁移额度，见 [`MAX_RELOCATIONS_PER_ROUND`]
+    let mut relocations_left = MAX_RELOCATIONS_PER_ROUND;
 
     for feed in feeds {
         done += 1;
-        match fetch_feed(&feed.url).await {
+        // 抓取（失败且地址属于 RSSHub 实例时，自动换一个可用实例重试一次）。
+        // 用 `migrated` 区分"这次用的是原地址"还是"地址被换过"，后者要写库并广播。
+        let (result, used_url, migrated) =
+            fetch_with_relocation(&feed.url, &rsshub_base, relocations_left > 0).await;
+        if migrated {
+            relocations_left = relocations_left.saturating_sub(1);
+        }
+        match result {
             Ok(parsed) => {
+                if migrated {
+                    // 把新地址落库：下次刷新直接用能通的那个，不必再走一遍迁移
+                    if let Err(e) =
+                        Feed::update(pool, feed.id, Some(&used_url), &feed.name, feed.folder_id)
+                            .await
+                    {
+                        eprintln!("迁移后更新 {} 的地址失败: {}", feed.name, e);
+                    } else if let Some(origin) = crate::rsshub::origin_of(&used_url) {
+                        // 与「添加订阅」保持一致：把选中的实例写回设置，
+                        // 让之后新增的源也直接用它，而不是又去撞那个死掉的主机
+                        match Setting::set(pool, "rsshub_base_url", &origin).await {
+                            // 本轮后续的源直接按新实例排候选，省掉一轮跳过死主机的判断
+                            Ok(()) => rsshub_base = origin,
+                            Err(e) => eprintln!("迁移后写回实例地址失败: {}", e),
+                        }
+                    }
+                }
                 // 存储新文章；单个源入库失败只记录，继续处理后面的源
                 let new_count = match store_items(pool, feed.id, &feed.name, &parsed.items).await {
                     Ok(count) => {
@@ -293,9 +388,20 @@ pub(crate) async fn refresh_all_feeds(
                 .await
                 .map_err(|e| e.to_string())?;
 
-                // 该源处理完毕：立即重算未读数并广播进度（error=None 表示成功）
-                emit_feed_progress(pool, app, feed.id, &feed.name, new_count, done, total, None)
-                    .await;
+                // 该源处理完毕：立即重算未读数并广播进度（error=None 表示成功）。
+                // 迁移过的话把新地址一并广播，前端就地更新列表里的链接。
+                emit_feed_progress(
+                    pool,
+                    app,
+                    feed.id,
+                    &feed.name,
+                    new_count,
+                    done,
+                    total,
+                    None,
+                    migrated.then(|| used_url.clone()),
+                )
+                .await;
             }
             // 抓取失败（超时 / 解析失败）同样只记录，保证整轮刷新不被拖垮；
             // 仍广播一次进度（new_count=0），让前端 n/m 不至于停在中途。
@@ -320,6 +426,7 @@ pub(crate) async fn refresh_all_feeds(
                     done,
                     total,
                     Some(e),
+                    None,
                 )
                 .await;
             }
@@ -548,6 +655,7 @@ mod new_article_notify_tests {
 /// * `done` - 已完成源序号（从 1 起）
 /// * `total` - 本轮源总数
 /// * `error` - 本次抓取该源失败的原因；成功传 `None`（随事件广播给前端）
+/// * `url` - 本次实际使用的地址；仅在发生过实例迁移时传 `Some`，其余传 `None`
 pub(crate) async fn emit_feed_progress(
     pool: &SqlitePool,
     app: Option<&AppHandle>,
@@ -557,6 +665,7 @@ pub(crate) async fn emit_feed_progress(
     done: usize,
     total: usize,
     error: Option<String>,
+    url: Option<String>,
 ) {
     // 先 COUNT 再回写（而非 UPDATE + 查询），两条语句都极轻量：
     // 该源文章数通常为几十到几百，单次 COUNT 的代价可忽略
@@ -594,6 +703,7 @@ pub(crate) async fn emit_feed_progress(
             done,
             total,
             error,
+            url,
         };
         if let Err(e) = app.emit("refresh-progress", payload) {
             eprintln!("发送刷新进度事件失败: {}", e);

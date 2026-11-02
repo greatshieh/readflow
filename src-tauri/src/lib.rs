@@ -1784,7 +1784,29 @@ async fn feeds_refresh_one(feed_id: i64, app: tauri::AppHandle) -> Result<i64, S
         None => return Err(format!("订阅源不存在: id={}", feed_id)),
     };
 
-    match rss::fetch_feed(&feed.url).await {
+    // RSSHub 实例地址：迁移判断要用。手动刷新单源时额度就是 1——
+    // 用户点一次刷新，换一次实例已经是极限，再多就变成"点了没反应".
+    let rsshub_base = Setting::get(&pool, "rsshub_base_url")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let (result, used_url, migrated) =
+        scheduler::fetch_with_relocation(&feed.url, &rsshub_base, true).await;
+    if migrated {
+        // 地址变了就落库：否则下次刷新又回到那个死实例上，白换一次
+        if let Err(e) = Feed::update(&pool, feed.id, Some(&used_url), &feed.name, feed.folder_id)
+            .await
+        {
+            eprintln!("迁移后更新 {} 的地址失败: {}", feed.name, e);
+        } else if let Some(origin) = rsshub::origin_of(&used_url) {
+            if let Err(e) = Setting::set(&pool, "rsshub_base_url", &origin).await {
+                eprintln!("迁移后写回实例地址失败: {}", e);
+            }
+        }
+    }
+
+    match result {
         Ok(parsed) => {
             // 入库：store_items 内部按 UNIQUE(feed_id, guid) 去重，返回实际新增条数
             let count = rss::store_items(&pool, feed.id, &feed.name, &parsed.items)
@@ -1810,8 +1832,18 @@ async fn feeds_refresh_one(feed_id: i64, app: tauri::AppHandle) -> Result<i64, S
             // 重算该源未读数、写回 feeds 表并广播单源进度事件（done=1/total=1）。
             // 复用调度器的 emit_feed_progress，与全量刷新的载荷格式保持一致；
             // 该函数对 SQL/事件失败自带日志兜底，不影响本次刷新结果
-            scheduler::emit_feed_progress(&pool, Some(&app), feed.id, &feed.name, count, 1, 1, None)
-                .await;
+            scheduler::emit_feed_progress(
+                &pool,
+                Some(&app),
+                feed.id,
+                &feed.name,
+                count,
+                1,
+                1,
+                None,
+                migrated.then(|| used_url.clone()),
+            )
+            .await;
             Ok(count)
         }
         // 抓取失败：先把错误原因写入源级状态并广播（前端据此在源旁显示错误图标），
@@ -1834,6 +1866,7 @@ async fn feeds_refresh_one(feed_id: i64, app: tauri::AppHandle) -> Result<i64, S
                 1,
                 1,
                 Some(e.clone()),
+                None,
             )
             .await;
             Err(format!("抓取 {} 失败: {}", feed.name, e))

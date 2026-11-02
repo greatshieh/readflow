@@ -63,6 +63,21 @@ const CACHE_TTL_FALLBACK: Duration = Duration::from_secs(60);
 /// 用同一个标识能保证"探测能过、正式抓取也能过"。
 const PROBE_USER_AGENT: &str = "ReadFlow/1.0 (RSS Reader)";
 
+/// 迁移实例时给候选实例的总时间预算
+///
+/// 比 [`TOTAL_BUDGET`] 短得多：迁移发生在刷新途中，用户已经在等这一轮跑完。
+/// 十秒内换不到可用实例就认输，把时间还给排在后面的源。
+const RELOCATE_BUDGET: Duration = Duration::from_secs(10);
+
+/// 判定某实例主机不可用后的冷却时长
+///
+/// 同一实例下往往挂着几十个源。若每个源失败后都把候选挨个探一遍，一轮刷新会
+/// 从"几秒"变成"几分钟"——用户只会觉得应用卡死。冷却期内这些源照样会迁移，
+/// 只是不再花时间去确认那台已经明确连不上的主机。
+///
+/// 取 10 分钟：短于一次完整刷新周期，长于"同一个坏实例下逐个源失败"的窗口。
+const UNAVAILABLE_TTL: Duration = Duration::from_secs(600);
+
 /// 「这条路由本身跑不了」的分类
 ///
 /// 与 [`ProbeOutcome::Unreachable`] 的区别是本模块最重要的一条分界线：
@@ -171,6 +186,83 @@ fn unanimous_failure(outcomes: &[ProbeOutcome]) -> Option<RouteFailure> {
         }
     }
     kind
+}
+
+/// 解析 RSSHub 错误页，提取「实例自己抓上游失败」的信息
+///
+/// # 参数
+/// * `body` - 非 2xx 响应的正文（HTML 错误页）
+///
+/// # 返回值
+/// 认得出错误页格式并定位到上游地址时返回 [`UpstreamFailure`]，否则 `None`
+///
+/// # 为什么值得单独解析
+/// RSSHub 的 503 有两种完全不同的处境：**实例自身故障**，或**实例活着但它去抓
+/// 原站失败**。对用户而言二者的下一步完全不同——前者换实例或配代理，后者换多少
+/// 实例都一样（大家面对的是同一个上游）。错误页里的
+/// `Error: [GET] "https://…": <no response>` 是唯一能区分它们的证据。
+///
+/// 页面是 HTML，引号与尖括号被转义成 `&quot;` / `&lt;`，故先解码再匹配。
+///
+/// # 为什么不匹配中文或其他语言
+/// RSSHub 的错误页模板是英文硬编码的（`[GET]` 这一段不随语言变），
+/// 而绕过它去猜别的特征串只会引入误判。
+pub fn parse_upstream_failure(body: &str) -> Option<UpstreamFailure> {
+    // 这一步只解引号。`&lt;` / `&gt;` 若现在解开，下面按 `<` 切"原因"时会把
+    // `<no response>` 这种正文当成 HTML 标签的起点，直接切出一个空串——
+    // 那正是这个函数最容易踩的坑。两个字段各自在最后再解一次。
+    let unquoted = decode_quotes(body);
+    let lower = unquoted.to_ascii_lowercase();
+    let at = lower.find("[get]")?;
+    let rest = &unquoted[at + 5..];
+
+    let open = rest.find('"')?;
+    let tail = &rest[open + 1..];
+    let close = tail.find('"')?;
+    let upstream = decode_html_entities(tail[..close].trim());
+    // 只认真正的地址：错误页里还有别的引号内容，认错会把一段无关文字当上游
+    if !upstream.starts_with("http") {
+        return None;
+    }
+
+    let reason = tail[close + 1..]
+        .trim_start_matches(|c: char| c == ':' || c.is_whitespace())
+        .split(['<', '\n', '\r'])
+        .next()
+        .unwrap_or("")
+        .trim();
+    let reason = decode_html_entities(reason);
+
+    Some(UpstreamFailure { upstream, reason })
+}
+
+/// 只解码引号类实体
+///
+/// 与 [`decode_html_entities`] 分开是因为解码时机不同：引号必须先解（否则定位不到
+/// 引号包裹的 URL），而尖括号要留到切分之后——理由见 [`parse_upstream_failure`]。
+fn decode_quotes(s: &str) -> String {
+    s.replace("&quot;", "\"").replace("&#34;", "\"")
+}
+
+/// 解码 HTML 错误页里最常见的几个实体
+///
+/// `&amp;` 必须最后处理：先解它会把 `&amp;quot;` 变成 `&quot;`，
+/// 而后者此时已经错过了 `&quot;` 那一轮替换，留在正文里干扰匹配。
+fn decode_html_entities(s: &str) -> String {
+    s.replace("&quot;", "\"")
+        .replace("&#34;", "\"")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+/// RSSHub 错误页里提取出的上游失败信息
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpstreamFailure {
+    /// 实例抓取失败的上游地址（原站，不是实例本身）
+    pub upstream: String,
+    /// 响应里给出的原因片段（如 `<no response>`、`403 Forbidden`），可能为空
+    pub reason: String,
 }
 
 /// 在 [`unanimous_failure`] 之上，再判断这个一致结论是否足以拦住用户
@@ -358,6 +450,40 @@ pub fn is_rsshub_host(host: &str, configured: &str) -> bool {
     }
 }
 
+/// 只凭主机名判断「这看起来是 RSSHub 实例」——不依赖设置项
+///
+/// # 参数
+/// * `host` - 待判定的主机名（大小写不敏感）
+///
+/// # 返回值
+/// 像是 RSSHub 实例返回 `true`
+///
+/// # 与 [`is_rsshub_host`] 的分工
+/// `is_rsshub_host` 需要 `configured` 才能认出用户自建的实例，但它只能在有数据库
+/// 上下文的地方调用。错误文案的生成点在 `rss`（不碰数据库），只能退而求其次：
+/// 认内置实例与 `rsshub.` 形态的域名。
+///
+/// **宁可漏报，不可误报**：把一个普通源说成"RSSHub 实例连不上"比少一句提示更糟，
+/// 所以这里刻意不猜 `rss.` 这类自建常见前缀——那同样是很多站点的子域。
+pub fn looks_like_rsshub_host(host: &str) -> bool {
+    let host = host.trim().trim_start_matches("www.").to_lowercase();
+    if host.is_empty() {
+        return false;
+    }
+
+    let builtin = std::iter::once(DEFAULT_INSTANCE)
+        .chain(FALLBACK_INSTANCES.iter().copied())
+        .filter_map(host_of);
+    if builtin.into_iter().any(|h| h == host) {
+        return true;
+    }
+
+    match host.strip_prefix("rsshub.") {
+        Some(rest) => !rest.is_empty() && host.split('.').count() <= 3,
+        None => false,
+    }
+}
+
 /// 列出全部候选实例的主机名（小写）
 ///
 /// # 参数
@@ -512,6 +638,164 @@ pub async fn reject_unusable_route(url: &str, configured: &str) -> Result<(), St
         ProbeOutcome::RouteFailed(failure) => Err(failure.message(&route)),
         _ => Ok(()),
     }
+}
+
+/// 已判定不可用的实例主机及判定时刻
+///
+/// 用 `Vec` 而不是 `HashMap`：条目数等于"最近十分钟内失败的实例数"，个位数，
+/// 线性扫描比维护一张哈希表更简单，也不用为此引入额外依赖。
+static UNAVAILABLE_HOSTS: OnceLock<Mutex<Vec<(String, Instant)>>> = OnceLock::new();
+
+/// 取（必要时初始化）不可用主机表的互斥槽位
+fn unavailable_slot() -> &'static Mutex<Vec<(String, Instant)>> {
+    UNAVAILABLE_HOSTS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// 记录某实例主机当前不可用
+///
+/// # 参数
+/// * `host` - 实例主机名（大小写不敏感）
+///
+/// # 说明
+/// 写入时顺带清理过期项：这张表只用于短期降噪，没有保留历史的必要。
+/// 锁中毒时取回内部值继续用——记不上一条冷却记录只会让下次多探一次，
+/// 不值得让它升级成 panic。
+pub fn mark_host_unavailable(host: &str) {
+    let host = host.trim().to_lowercase();
+    if host.is_empty() {
+        return;
+    }
+    let mut guard = unavailable_slot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    guard.retain(|(_, at)| at.elapsed() < UNAVAILABLE_TTL);
+    if !guard.iter().any(|(h, _)| h == &host) {
+        guard.push((host, Instant::now()));
+    }
+}
+
+/// 判断某实例主机是否处于"不可用"冷却期
+///
+/// # 参数
+/// * `host` - 实例主机名（大小写不敏感）
+///
+/// # 返回值
+/// 仍在 [`UNAVAILABLE_TTL`] 内返回 `true`
+fn host_is_cooling(host: &str) -> bool {
+    let host = host.trim().to_lowercase();
+    let guard = unavailable_slot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    guard
+        .iter()
+        .any(|(h, at)| h == &host && at.elapsed() < UNAVAILABLE_TTL)
+}
+
+/// 把一条 RSSHub 地址迁移到当前可用的实例上
+///
+/// # 背景
+/// 订阅源落库时 URL 就是最终地址，之后再也不变。可公共实例是会死的——一个实例
+/// 下线后，挂在它下面的每个源都永久失败，用户唯一的自救方式是删掉重加。
+/// 本函数让抓取链路能把源自己搬到一个还活着的实例上，从此源不再被某个主机钉死。
+///
+/// # 参数
+/// * `url` - 订阅源里存的完整地址
+/// * `configured` - 设置项 `rsshub_base_url` 的值（用于认出用户自建实例）
+///
+/// # 返回值
+/// - `Ok(Some(new_url))`：换到了可用实例，且拼出的地址与原地址不同
+/// - `Ok(None)`：不需要或无法迁移（不是 RSSHub 地址 / 没有路由 / 候选都在冷却期）
+/// - `Err(reason)`：候选都试过仍拿不到内容，`reason` 可直接展示给用户
+///
+/// # 与 [`resolve`] 的分工
+/// `resolve` 服务"添加订阅时选实例"，会写自己那份缓存。这里**不碰那份缓存**：
+/// 迁移是失败后的补救动作，把补救结论写进缓存会让后续添加误以为那条路由可用。
+///
+/// # 为什么遇到 `RouteFailed` 立刻放弃
+/// 「缺浏览器」「路由不存在」这两种答复与实例是否存活无关，换下去也一样。
+/// 继续遍历只会让用户多等，还会把真正的原因（换实例也没用）掩盖成"都连不上"。
+pub async fn relocate(url: &str, configured: &str) -> Result<Option<String>, String> {
+    relocate_among(url, configured, candidate_instances(configured)).await
+}
+
+/// [`relocate`] 的实现体：候选实例由调用方给出
+///
+/// 单独拆出来是为了可测。迁移会**自动改写用户存的地址**，属于本模块风险最高的动作，
+/// 只靠纯函数覆盖不到"到底有没有挑中那个真能返回内容的实例"——测试需要能塞进
+/// 两个假实例，而 `candidate_instances` 返回的是写死的公网清单。
+///
+/// # 参数
+/// * `url` - 订阅源里存的完整地址
+/// * `configured` - 设置项 `rsshub_base_url`（仅用于认定"这确实是 RSSHub 地址"）
+/// * `candidates` - 按优先级排好的候选实例
+async fn relocate_among(
+    url: &str,
+    configured: &str,
+    candidates: Vec<String>,
+) -> Result<Option<String>, String> {
+    let Some((_origin, route)) = split_origin_path(url) else {
+        return Ok(None);
+    };
+    if route.is_empty() || route == "/" {
+        return Ok(None);
+    }
+    let (host, _) = split_host_path(url);
+    if host.is_empty() || !is_rsshub_host(&host, configured) {
+        return Ok(None);
+    }
+
+    // 这次抓取刚刚失败，先给这个主机记一笔：同一实例下的其它源在冷却期内
+    // 不必再花六秒确认"它确实连不上"
+    mark_host_unavailable(&host);
+
+    let started = Instant::now();
+    let mut tried = 0usize;
+    for instance in candidates {
+        let instance_host = host_of(&instance).unwrap_or_default();
+        // 原主机刚失败过，冷却中的主机也不必再探
+        if instance_host == host || host_is_cooling(&instance_host) {
+            continue;
+        }
+        if started.elapsed() >= RELOCATE_BUDGET {
+            break;
+        }
+        tried += 1;
+        match probe(&instance, &route).await {
+            ProbeOutcome::Served => {
+                let new_url = format!("{}{}", instance.trim_end_matches('/'), route);
+                return Ok(if new_url == url { None } else { Some(new_url) });
+            }
+            // 路由级故障：换实例无意义，直接把原因交回去
+            ProbeOutcome::RouteFailed(failure) => return Err(failure.message(&route)),
+            ProbeOutcome::Unreachable => mark_host_unavailable(&instance_host),
+        }
+    }
+
+    if tried == 0 {
+        // 一个候选都没试成：要么全在冷却期，要么预算立刻耗尽。
+        // 此时返回 Ok(None) 而不是 Err——让调用方保留原始错误，
+        // 否则用户看到的是"换实例失败"，而不是真正的原因（原实例连不上）。
+        return Ok(None);
+    }
+    Err(format!(
+        "已尝试 {} 个备用实例，都拿不到这条路由的内容",
+        tried
+    ))
+}
+
+/// 取 URL 的 `协议://主机[:端口]` 前缀
+///
+/// # 参数
+/// * `url` - 形如 `https://host:port/a/b?c=1` 的完整地址
+///
+/// # 返回值
+/// 实例地址形态的前缀；缺协议头时返回 `None`
+///
+/// # 用途
+/// 迁移成功后要把新实例写回设置项 `rsshub_base_url`（与添加订阅时的行为一致），
+/// 而手里只有一个完整 URL，得把路由部分剥掉。
+pub fn origin_of(url: &str) -> Option<String> {
+    split_origin_path(url).map(|(origin, _)| origin)
 }
 
 /// 把 URL 拆成 `(origin, path+query)` 两段
@@ -735,6 +1019,96 @@ mod tests {
             }
         });
         format!("http://{}", addr)
+    }
+
+    /// 起一个"任何路由都 200"的假实例
+    ///
+    /// 主机名刻意用 `localhost` 而不是 `127.0.0.1`：迁移逻辑按**主机名**比较
+    /// 「候选是不是原实例」，两个都用回环地址会被当成同一台而跳过。
+    async fn spawn_serving_instance() -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let body = "<rss version=\"2.0\"><channel><title>t</title></channel></rss>";
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(resp.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        format!("http://localhost:{}", addr.port())
+    }
+
+    // ─── 上游失败解析 / 实例判定 / 迁移 ──────────────────────────────────────
+
+    /// RSSHub 错误页里的上游地址要能被提取出来
+    #[test]
+    fn parses_upstream_failure_from_error_page() {
+        let body = r#"<p>Error: [GET] &quot;https://www.latepost.com/site/get-column&quot;: &lt;no response&gt;</p>"#;
+        let failure = parse_upstream_failure(body).expect("应识别出上游失败");
+        assert_eq!(failure.upstream, "https://www.latepost.com/site/get-column");
+        assert_eq!(failure.reason, "<no response>");
+    }
+
+    /// 认不出的正文不能瞎认（错误页之外的内容也可能碰巧含 `[GET]`）
+    #[test]
+    fn upstream_parser_ignores_unrelated_pages() {
+        assert!(parse_upstream_failure("<html><body>Welcome to RSSHub!</body></html>").is_none());
+        assert!(parse_upstream_failure(r#"[GET] &quot;not-a-url&quot;"#).is_none());
+    }
+
+    /// 只有内置实例与 `rsshub.*` 形态算实例；普通站点、冒名域名都不算
+    #[test]
+    fn only_rsshub_hosts_are_treated_as_instances() {
+        assert!(looks_like_rsshub_host("rsshub.rssforever.com"));
+        assert!(looks_like_rsshub_host("rsshub.app"));
+        assert!(!looks_like_rsshub_host("example.com"));
+        // 段数超限：只是碰巧以 rsshub. 开头的普通站点
+        assert!(!looks_like_rsshub_host("rsshub.app.evil.com"));
+    }
+
+    /// `origin_of` 剥掉路由、保留端口（写回设置时要用）
+    #[test]
+    fn origin_keeps_port_drops_route() {
+        assert_eq!(
+            origin_of("https://rsshub.rssforever.com:8443/latepost/4?x=1").as_deref(),
+            Some("https://rsshub.rssforever.com:8443")
+        );
+        assert_eq!(origin_of("no-scheme/path"), None);
+    }
+
+    /// 端到端：源所在实例连不上时，迁移必须挑中那个真能返回内容的实例
+    ///
+    /// 这是本模块唯一会**自动改写用户地址**的行为，纯函数测不出"到底有没有挑对"。
+    #[tokio::test]
+    async fn relocate_picks_a_live_instance() {
+        // 死实例：回环地址的 1 号端口没有服务在监听，连接会被立刻拒绝
+        let dead = "http://127.0.0.1:1";
+        let alive = spawn_serving_instance().await;
+        let url = format!("{}/latepost/4", dead);
+
+        let result = relocate_among(&url, dead, vec![dead.to_string(), alive.clone()])
+            .await
+            .expect("候选里有活的，不该报错");
+        let new_url = result.expect("应换到可用实例");
+        assert!(new_url.starts_with(&alive), "应换到存活实例: {new_url}");
+        assert!(new_url.ends_with("/latepost/4"), "路由要原样保留: {new_url}");
+    }
+
+    /// 普通源（不是 RSSHub 地址）不参与迁移，绝不能被"顺手换掉"
+    #[tokio::test]
+    async fn relocate_leaves_ordinary_feeds_alone() {
+        let alive = spawn_serving_instance().await;
+        let url = "https://example.com/feed.xml".to_string();
+        assert_eq!(relocate_among(&url, "", vec![alive]).await.unwrap(), None);
     }
 
     /// 端到端验证 `probe` 真的读了响应体

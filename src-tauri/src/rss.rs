@@ -118,7 +118,7 @@ pub async fn fetch_feed(url: &str) -> Result<ParsedFeed, String> {
         .header("User-Agent", "ReadFlow/1.0 (RSS Reader)")
         .send()
         .await
-        .map_err(|e| classify_network_error(e.is_timeout(), e.is_connect(), &e.to_string()))?;
+        .map_err(|e| network_error_message(&e, url))?;
 
     // status / headers 必须在 text() 消费 resp 之前取出
     let status = resp.status();
@@ -141,7 +141,7 @@ pub async fn fetch_feed(url: &str) -> Result<ParsedFeed, String> {
     // 都会走到这里，没有状态码的话错误信息完全无法定位
     if !status.is_success() {
         let reason = status.canonical_reason().unwrap_or("Unknown");
-        return Err(http_error_message(status.as_u16(), reason, &body));
+        return Err(http_error_message(status.as_u16(), reason, &body, url));
     }
 
     // 根据内容类型选择解析器；只要头部里有 json 就走 JSON Feed 分支。
@@ -160,6 +160,31 @@ pub async fn fetch_feed(url: &str) -> Result<ParsedFeed, String> {
     }
 
     Ok(parsed)
+}
+
+/// 把 reqwest 的错误翻译成人话，并在失败点是 RSSHub 实例时点明
+///
+/// # 参数
+/// * `err` - 请求阶段的错误
+/// * `url` - 本次请求的完整地址（用于判断它是不是 RSSHub 实例）
+///
+/// # 返回值
+/// 可直接展示的错误说明
+///
+/// # 为什么要单独点明实例
+/// RSSHub 源的错误里有两跳：**应用 → 实例** 与 **实例 → 原站**。只报「连接被中断」
+/// 的话，用户会以为是原站挂了，跑去检查原站——而真正断掉的是实例那一跳。
+/// 把实例名写进错误里，用户才知道该换实例还是该配代理。
+fn network_error_message(err: &reqwest::Error, url: &str) -> String {
+    let base = classify_network_error(err.is_timeout(), err.is_connect(), &err.to_string());
+    let host = crate::rsshub::host_of(url).unwrap_or_default();
+    if crate::rsshub::looks_like_rsshub_host(&host) {
+        return format!(
+            "RSSHub 实例 {} 连不上（断点在这一跳，与它要抓的原站无关）：{}",
+            host, base
+        );
+    }
+    base
 }
 
 /// 把 reqwest 的连接级错误翻译成用户能据此采取行动的话
@@ -244,17 +269,36 @@ fn classify_network_error(is_timeout: bool, is_connect: bool, raw: &str) -> Stri
 
 /// 构造非 2xx 响应的错误信息
 ///
-/// 格式「HTTP {状态码} {原因}（响应内容：{片段}）」。抽成纯函数便于单测：
-/// 真实链路需要起 HTTP 服务才能触发非 2xx 分支，单测直接喂参数即可覆盖信息拼装。
-///
 /// # 参数
 /// * `status` - HTTP 状态码（如 403）
 /// * `reason` - 状态原因短语（如 "Forbidden"）
 /// * `body` - 响应体原文（内部会压缩空白并截断）
+/// * `url` - 本次请求的地址（判断是否 RSSHub 实例，决定能否解析上游失败）
 ///
 /// # 返回值
 /// 可直接展示给用户的错误字符串
-fn http_error_message(status: u16, reason: &str, body: &str) -> String {
+///
+/// # 为什么 RSSHub 的错误页要单独处理
+/// 实例返回 503 时，真正失败的很可能是**它去抓原站**那一步，而不是实例自身。
+/// 这两种处境用户的下一步完全不同（换实例 vs 换不到也别折腾），而 RSSHub 的
+/// 错误页里就写着失败的上游地址，解析出来比丢一段 HTML 片段有用得多。
+fn http_error_message(status: u16, reason: &str, body: &str, url: &str) -> String {
+    let host = crate::rsshub::host_of(url).unwrap_or_default();
+    if crate::rsshub::looks_like_rsshub_host(&host) {
+        if let Some(failure) = crate::rsshub::parse_upstream_failure(body) {
+            let mut msg = format!(
+                "HTTP {} {}：RSSHub 实例自己抓不到上游 {}",
+                status, reason, failure.upstream
+            );
+            if !failure.reason.is_empty() {
+                msg.push_str(&format!("（实例给出的原因：{}）", failure.reason));
+            }
+            // 换实例有没有用，取决于上游是否对所有实例都不可达。
+            // 公共实例大多同处一地，写清这一点能省掉用户逐个试的时间。
+            msg.push_str("。这类失败与实例是否存活无关，换一个实例通常也一样");
+            return msg;
+        }
+    }
     format!(
         "HTTP {} {}（响应内容：{}）",
         status,
@@ -1187,9 +1231,53 @@ mod tests {
     /// 非 2xx 错误信息应含状态码、原因与响应片段
     #[test]
     fn http_error_message_includes_status_and_snippet() {
-        let msg = http_error_message(403, "Forbidden", "<html>\n  <body>blocked</body>\n</html>");
+        let msg = http_error_message(
+            403,
+            "Forbidden",
+            "<html>\n  <body>blocked</body>\n</html>",
+            "https://example.com/feed",
+        );
         assert!(msg.contains("HTTP 403 Forbidden"), "msg: {msg}");
         assert!(msg.contains("blocked"), "应含响应体片段: {msg}");
+    }
+
+    /// RSSHub 实例的 503 要点出「它抓不到哪个上游」，而不是丢一段 HTML
+    ///
+    /// 这是用户实际遇到过的那条：实例返回 503，真正失败的是它去抓
+    /// `www.latepost.com/site/get-column`。不说清这一层，用户会以为原站挂了。
+    #[test]
+    fn rsshub_503_reports_upstream_target() {
+        let body = r#"<html><body><h1>Welcome to RSSHub!</h1>
+            <p>Error: [GET] &quot;https://www.latepost.com/site/get-column&quot;: &lt;no response&gt;</p>
+            </body></html>"#;
+        let msg = http_error_message(
+            503,
+            "Service Unavailable",
+            body,
+            "https://rsshub.rssforever.com/latepost/4",
+        );
+        assert!(msg.contains("抓不到上游"), "msg: {msg}");
+        assert!(
+            msg.contains("https://www.latepost.com/site/get-column"),
+            "应点名上游地址: {msg}"
+        );
+        assert!(msg.contains("no response"), "应带上实例给的原因: {msg}");
+        assert!(
+            msg.contains("换一个实例通常也一样"),
+            "要提前拦住「换个实例试试」这种无效尝试: {msg}"
+        );
+    }
+
+    /// 非 RSSHub 站点的错误页不参与上面的解析
+    ///
+    /// 普通站点正文里也可能出现 `[GET] "http…"` 之类的字样，
+    /// 若不加限定就会把一段无关文字当成"上游失败"报给用户。
+    #[test]
+    fn upstream_parsing_is_limited_to_rsshub_hosts() {
+        let body = r#"<p>Error: [GET] "https://example.com/x": timed out</p>"#;
+        let msg = http_error_message(503, "Service Unavailable", body, "https://example.com/feed");
+        assert!(!msg.contains("抓不到上游"), "msg: {msg}");
+        assert!(msg.contains("响应内容"), "普通站点仍走原格式: {msg}");
     }
 
     /// HTML 响应 → 提示"返回的是网页而非订阅内容"
