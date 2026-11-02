@@ -9,14 +9,30 @@
         <h3>研究工作台</h3>
       </div>
       <nav class="side-tabs">
+        <p class="side-group">台账</p>
         <button class="side-tab" :class="{ active: tab === 'timeline' }" @click="tab = 'timeline'">
           事件时间线
         </button>
         <button class="side-tab" :class="{ active: tab === 'reports' }" @click="tab = 'reports'">
           报告
         </button>
-        <button class="side-tab" :class="{ active: tab === 'entities' }" @click="tab = 'entities'">
+        <button
+          class="side-tab"
+          :class="{ active: tab === 'entities' && entityView === 'entities' }"
+          @click="showEntityView('entities')"
+        >
           实体管理
+        </button>
+        <!-- 「覆盖」是实体页签的第二个视图，不是新页签（PRD-05 §0：两者共用同一批
+             实体数据，拆成两个容器会出现"同一实体两处维护"）。但把入口只留在页签
+             内部的分段控件里时，侧栏上完全看不到它存在——这是实测反馈的发现性问题。
+             故加一个子项：点击 = 进实体页签并切到覆盖视图。 -->
+        <button
+          class="side-tab sub"
+          :class="{ active: tab === 'entities' && entityView === 'coverage' }"
+          @click="showEntityView('coverage')"
+        >
+          覆盖
         </button>
         <!-- 论点放在最后而不是最前：时间线是全应用的入口（每天开机先看它），
              论点是自己写下的判断，频率低但深度高，紧邻实体管理更顺（都由实体派生） -->
@@ -24,6 +40,17 @@
           论点
           <span v-if="thesesStore.stats.challenged > 0" class="side-dot" aria-hidden="true"></span>
         </button>
+
+        <!-- 「工作流」不是页签组：复盘是独立主屏视图（有会话状态，PRD-05 §1），
+             组装是只读预览弹窗（§0）。列在这里是因为用户会到工作台里找它们；
+             它们不高亮、不带 active 态——这正是"它们不装在这个容器里"的诚实表达。
+             与其让用户翻遍页签找不到，不如摆出来并在点击时送到正确的地方。 -->
+        <p class="side-group">工作流</p>
+        <button class="side-tab action" type="button" @click="onGotoReview">
+          复盘
+          <span class="side-jump" aria-hidden="true">↗</span>
+        </button>
+        <button class="side-tab action" type="button" @click="openCompose()">组装</button>
       </nav>
     </aside>
 
@@ -58,13 +85,32 @@
         :open="open"
         @close="close"
       />
-      <ResearchEntitiesTab v-show="tab === 'entities'" @entities-changed="onEntitiesChanged" />
+      <ResearchEntitiesTab
+        v-show="tab === 'entities'"
+        v-model:view="entityView"
+        @entities-changed="onEntitiesChanged"
+      />
       <ThesisPanel
         v-show="tab === 'theses'"
         @open-article="onOpenThesisArticle"
         @goto-review="onGotoReview"
       />
     </div>
+
+    <!-- 组装预览：叠在本弹窗之上（BaseModal 的 dialogStack 支持多层，Esc 先关上层）。
+         内容是一页 markdown，复制的是原文——与「研究一页」共用同一个预览壳。
+         放在 `side-main` 之外、`BaseModal` 之内：它是本弹窗的附属产物，
+         不该受右列滚动容器约束，也不该在切页签时被重建。 -->
+    <MarkdownPreviewModal
+      :open="composeOpen"
+      :title="composeTitle"
+      :markdown="composeMarkdown"
+      :loading="composeLoading"
+      :error="composeError"
+      :default-name="composeDefaultName"
+      hint="这一页是骨架：标题 + 判据 + 正反证据 + 变更记录。复制的是 markdown 原文，粘到 Obsidian 里仍可重新排版。"
+      @close="composeOpen = false"
+    />
   </BaseModal>
 </template>
 
@@ -99,6 +145,7 @@ import ResearchReportsTab from './ResearchReportsTab.vue'
 import ResearchEntitiesTab from './ResearchEntitiesTab.vue'
 import ThesisPanel from './thesis/ThesisPanel.vue'
 import ReportSegmentBar from './report/ReportSegmentBar.vue'
+import MarkdownPreviewModal from './MarkdownPreviewModal.vue'
 import { useResearchStore } from '@/stores/research'
 import { useEntitiesStore } from '@/stores/entities'
 import { useUiStore } from '@/stores/ui'
@@ -128,6 +175,34 @@ const toast = useToastStore()
 /** 当前 tab：timeline = 事件时间线；reports = 报告（含周期报告与研究报告两段）；
  *  entities = 实体管理；theses = 论点台账 */
 const tab = ref<'timeline' | 'reports' | 'entities' | 'theses'>('timeline')
+
+/**
+ * 实体页签内部的视图（实体清单 / 覆盖清单）
+ *
+ * 提到外壳持有，是因为侧栏多了一个「覆盖」子项：它要能"进实体页签 + 切到覆盖"。
+ * 状态留在这层，两个入口（侧栏子项、页签内的分段控件）才共享同一份——
+ * 各自一个 ref 会立刻出现"侧栏点了覆盖、分段控件还亮着实体"的双高亮。
+ */
+const entityView = ref<'entities' | 'coverage'>('entities')
+
+/**
+ * 切到实体页签并指定视图
+ *
+ * @param v - 目标视图：`entities` 实体清单 / `coverage` 覆盖清单
+ */
+function showEntityView(v: 'entities' | 'coverage') {
+  entityView.value = v
+  tab.value = 'entities'
+}
+
+/** 组装预览：是否打开、内容、加载与失败态 */
+const composeOpen = ref(false)
+const composeMarkdown = ref('')
+const composeLoading = ref(false)
+const composeError = ref('')
+const composeTitle = ref('组装')
+/** 另存为的默认文件名；实体名可能含 `/` `:` 等不能进文件名的字符，落盘前先净化 */
+const composeDefaultName = ref('论点.md')
 
 /** 标题栏显示的页签名称 */
 const tabTitle = computed(() => {
@@ -322,6 +397,53 @@ function onGotoReview() {
   emit('close')
   uiStore.setMainView('review')
 }
+
+/**
+ * 打开「组装」预览
+ *
+ * # 为什么不做"先选一条论点"的选择器
+ * 组装的对象几乎总是**刚看过的那条**判断。多一层选择弹窗，等于为了低频的
+ * "换一条导出"给高频路径加一次点击。这里的目标顺序是：
+ * 显式传入的 id（将来论点详情里的按钮） → 最近打开的论点 → 列表第一条
+ * （列表已按"观察中优先、最近动作倒序"，第一条就是最该处理的）。
+ *
+ * 预览是只读的，选错了代价只是关掉重来——这个代价远小于多一层弹窗。
+ *
+ * @param thesisId - 可选的显式目标；不传时按上面的顺序推导
+ * @returns 无返回值；副作用为打开预览并异步取回 markdown
+ */
+async function openCompose(thesisId?: number) {
+  const target = thesisId ?? thesesStore.detail?.thesis.id ?? thesesStore.list[0]?.id
+  if (target === undefined) {
+    toast.show('还没有论点：先在「论点」页签写一条判断，再来组装。')
+    return
+  }
+
+  composeOpen.value = true
+  composeLoading.value = true
+  composeError.value = ''
+  composeMarkdown.value = ''
+
+  // 标题先按已知信息给出来，别等 IPC 回来再改——否则弹窗标题会跳一下
+  const known =
+    thesesStore.detail?.thesis.id === target
+      ? thesesStore.detail.thesis
+      : thesesStore.list.find(t => t.id === target)
+  composeTitle.value = known ? `组装：${known.entityName}` : '组装'
+  // 文件名只保留实体名：判断原文可能很长且带标点，做文件名会变成一长串乱码
+  composeDefaultName.value = known
+    ? `论点-${known.entityName.replace(/[\\/:*?"<>|]/g, '_')}.md`
+    : '论点.md'
+
+  try {
+    composeMarkdown.value = await thesesStore.composeMarkdown(target)
+  } catch (e) {
+    // Tauri 的 reject 是**字符串**不是 Error，两种都要接住
+    composeError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    composeLoading.value = false
+  }
+}
 </script>
 
 <style scoped>
@@ -379,6 +501,30 @@ function onGotoReview() {
 }
 .side-tab:hover { background: var(--fill); color: var(--text-primary); }
 .side-tab.active { background: var(--primary-tint); color: var(--primary); font-weight: 500; }
+/* 分组标题（「台账」/「工作流」）：只切分语义，不该看起来像能点。
+   比页签小一号、无 hover、不可聚焦——它没有 role，本来也不是控件 */
+.side-group {
+  margin: var(--sp-2) 0 0;
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-modal-meta);
+  font-weight: 500;
+  color: var(--text-tertiary);
+}
+.side-group:first-child { margin-top: 0; }
+/* 子项（「覆盖」）：缩进一格表示从属于上一项，而不是并列页签。
+   不用更小的字号——148px 宽的面板里再缩小会看不清，缩进已足够表达层级 */
+.side-tab.sub {
+  padding-left: var(--sp-6);
+  font-weight: 400;
+}
+/* 跳转项（「复盘」「组装」）：它们不在本容器里，故**没有** active 态。
+   hover 时给主色，暗示"点了会去别处"而不是"切到本站的另一个视图" */
+.side-tab.action:hover { color: var(--primary); }
+.side-jump {
+  margin-left: var(--sp-05);
+  font-size: var(--fs-modal-meta);
+  color: var(--text-tertiary);
+}
 /* 页签上的"有待处理反证"提示点。
    不用数字：这个数只是"该去看一眼"的信号，具体几条在列表里更清楚，
    而左列只有 148px，挂数字会把页签文字挤到换行。 */

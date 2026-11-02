@@ -102,8 +102,22 @@
     <!-- 新建论点弹层（就地，不跳页） -->
     <BaseModal :open="createOpen" title="新论点" size="md" @close="createOpen = false">
       <div class="cf">
-        <label class="cf-field">
-          <span class="cf-label">一句话判断</span>
+        <!-- 一句说明：列表空态里那段话这里也要有。
+             打开弹窗的人正在做"立论"这个动作，此刻最需要知道的是
+             "为什么要挂实体"与"置信度拿来干什么"，而不是三个空控件。 -->
+        <p class="cf-lede">
+          一句能被证据推翻的判断。挂上标的后，读到的文章才能挂成支持或反驳。
+        </p>
+
+        <div class="cf-field">
+          <!-- 计数器与标签同一行：单独占一行时，它紧贴下一个字段，
+               视觉上会被读成"标的实体"的附属物 -->
+          <div class="cf-label-row">
+            <span class="cf-label">一句话判断</span>
+            <span class="cf-count" :class="{ near: form.statement.length > 360 }">
+              {{ form.statement.length }} / 400
+            </span>
+          </div>
           <textarea
             v-model="form.statement"
             class="cf-input"
@@ -111,16 +125,21 @@
             maxlength="400"
             placeholder="如：宁德时代 2027 年储能出货会超预期"
           ></textarea>
-          <span class="cf-count">{{ form.statement.length }} / 400</span>
-        </label>
-        <label class="cf-field">
+        </div>
+
+        <div class="cf-field">
           <span class="cf-label">标的实体</span>
           <AppSelect
             v-model="form.entityId"
             :options="entityOptions"
             placeholder="选一个实体"
           />
-        </label>
+          <!-- 没有实体时把原因写出来，而不是只留一个禁用按钮让用户猜 -->
+          <p v-if="entities.entities.length === 0" class="cf-note">
+            还没有跟踪任何实体。论点必须挂在一个标的上——先去「实体管理」加一个。
+          </p>
+        </div>
+
         <div class="cf-field">
           <span class="cf-label">初始置信</span>
           <div class="cf-conf">
@@ -130,13 +149,18 @@
               type="button"
               class="cf-conf-dot"
               :class="{ on: i <= form.confidence }"
-              :aria-label="`${i} 分`"
+              :aria-label="`${i} 分 · ${CONFIDENCE_HINT[i]}`"
               :aria-pressed="i === form.confidence"
               @click="form.confidence = i"
-            ></button>
-            <span class="cf-conf-text">{{ form.confidence }} / 5</span>
+            >
+              {{ i }}
+            </button>
+            <!-- 光有刻度没有语义，用户不知道 3 分意味着什么。
+                 文案只在当前档位给一句，不做成 5 行说明 -->
+            <span class="cf-conf-text">{{ CONFIDENCE_HINT[form.confidence] }}</span>
           </div>
         </div>
+
         <p v-if="createError" class="cf-error">{{ createError }}</p>
         <div class="cf-foot">
           <button class="btn btn-default" type="button" @click="createOpen = false">取消</button>
@@ -193,6 +217,20 @@ const STATUS_FILTERS: Array<{ value: ThesisStatus | 'all' | 'activeOnly'; label:
   { value: 'archived', label: '已归档' },
   { value: 'all', label: '全部' },
 ]
+
+/**
+ * 置信度档位的人话
+ *
+ * 光给 5 个刻度没有语义：用户不知道该填几分，也不知道 3 分意味着什么。
+ * 只在当前档位显示一句，不做 5 行说明——立论时不该先读一篇帮助。
+ */
+const CONFIDENCE_HINT: Record<number, string> = {
+  1: '只是直觉',
+  2: '有零星信号',
+  3: '有依据，但可能错',
+  4: '把握较大',
+  5: '很确定',
+}
 
 const createOpen = ref(false)
 const creating = ref(false)
@@ -489,17 +527,32 @@ onMounted(() => {
   font-variant-numeric: tabular-nums;
 }
 
-/* ── 新建表单 ───────────────────────────────────────────────────────── */
+/* ── 新建表单 ─────────────────────────────────────────────────────────
+   这一块的要点是间距的**分配方向**：组内紧、组间松。
+   旧版是反的（标签↔控件 6px、字段之间 12px），三个字段连成一片，
+   看起来像"三个控件堆在一起"而不是"三件事"。 */
 .cf {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-3);
+  gap: var(--sp-6);
+}
+.cf-lede {
+  margin: 0;
+  font-size: var(--fs-modal-meta);
+  line-height: 1.6;
+  color: var(--text-tertiary);
 }
 .cf-field {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-05);
+  gap: var(--sp-2);
   position: relative;
+}
+.cf-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
 }
 .cf-label {
   font-size: var(--fs-modal-label);
@@ -521,27 +574,48 @@ onMounted(() => {
   outline: none;
   border-color: var(--primary);
 }
+/* 计数与标签同行右对齐；接近上限时转警示色，而不是等提交才报错 */
 .cf-count {
-  align-self: flex-end;
   font-size: var(--fs-modal-meta);
   color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.cf-count.near {
+  color: var(--warning);
+}
+/* 字段级说明（如"还没有实体"）：与错误分开——它是引导，不是失败 */
+.cf-note {
+  margin: 0;
+  font-size: var(--fs-modal-meta);
+  line-height: 1.6;
+  color: var(--warning);
 }
 .cf-conf {
   display: flex;
   align-items: center;
   gap: var(--sp-1);
 }
+/* 刻度里写数字：只有 5 个圆点时，用户既不知道点到了几，也不知道一共几档 */
 .cf-conf-dot {
-  width: 22px;
-  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
   border: 1px solid var(--border);
   background: var(--surface);
+  color: var(--text-tertiary);
+  font-family: inherit;
+  font-size: var(--fs-modal-meta);
+  font-variant-numeric: tabular-nums;
   cursor: pointer;
 }
+/* 实心主色块上的文字一律用 --tone-fg，不要用 --primary-tint（那是底色令牌） */
 .cf-conf-dot.on {
   background: var(--primary);
   border-color: var(--primary);
+  color: var(--tone-fg);
 }
 .cf-conf-dot:focus-visible {
   outline: 2px solid var(--primary);
@@ -550,18 +624,19 @@ onMounted(() => {
 .cf-conf-text {
   margin-left: var(--sp-2);
   font-size: var(--fs-modal-meta);
-  color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
 }
 .cf-error {
   margin: 0;
   font-size: var(--fs-modal-label);
   color: var(--danger);
 }
+/* 按钮区与内容之间要有一条线：否则整块白到底，取消/创建看起来像第 4 个字段 */
 .cf-foot {
   display: flex;
   justify-content: flex-end;
   gap: var(--sp-2);
-  margin-top: var(--sp-1);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--border);
 }
 </style>

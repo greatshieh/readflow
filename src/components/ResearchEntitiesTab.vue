@@ -145,7 +145,7 @@
  *   通知外壳，由外壳据当前主屏视图决定「立即重算」还是「作废待重算」
  *   （见 `ResearchModal.onEntitiesChanged`），省掉一次看不见的全库扫描。
  */
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import AppSelect, { type SelectOption } from './AppSelect.vue'
 import EntityAlertRuleModal from './EntityAlertRuleModal.vue'
 import CoveragePanel from './coverage/CoveragePanel.vue'
@@ -153,15 +153,34 @@ import { useEntitiesStore } from '@/stores/entities'
 import { showConfirm } from '@/stores/modal'
 import { ENTITY_TYPE_LABELS, entityTypeLabel } from '@/utils/entityLabels'
 
+const props = defineProps<{
+  /** 当前视图（`v-model:view`）；不传时本页签自行回落 `entities` */
+  view?: 'entities' | 'coverage'
+}>()
+
 const emit = defineEmits<{
   /** 实体集合或评分已变化，已加载的关系图随之过期（外壳转交失效处理） */
   (e: 'entities-changed'): void
+  /** 视图切换（`v-model:view`）：外壳侧栏的「覆盖」子项据此驱动本页签 */
+  (e: 'update:view', v: 'entities' | 'coverage'): void
 }>()
 
 const entitiesStore = useEntitiesStore()
 
-/** 当前视图：实体（系统要看谁） / 覆盖（我为什么看它） */
-const view = ref<'entities' | 'coverage'>('entities')
+/**
+ * 当前视图：实体（系统要看谁） / 覆盖（我为什么看它）
+ *
+ * 由外壳 `v-model:view` 受控：侧栏现在有一个「覆盖」子项，点它要能直接
+ * 落到本页签的覆盖视图。写成 computed 而不是 ref，是因为两个入口
+ * （页签内的分段控件、侧栏子项）必须**同一份状态**——各自持有一个 ref
+ * 会立刻出现"侧栏点了覆盖、分段控件还亮着实体"的双高亮。
+ *
+ * 父组件不传时回落到 `entities`，本页签单独使用时行为与从前一致。
+ */
+const view = computed<'entities' | 'coverage'>({
+  get: () => props.view ?? 'entities',
+  set: v => emit('update:view', v),
+})
 
 /** 新实体的名称输入 */
 const newName = ref('')
