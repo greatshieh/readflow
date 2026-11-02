@@ -13,7 +13,7 @@
       <div class="td-crumb">
         <button class="link" type="button" @click="emit('back')">← 论点列表</button>
         <span class="spacer"></span>
-        <button class="btn-ghost" type="button" @click="confirmDelete = true">删除</button>
+        <button class="btn btn-danger-text btn-sm" type="button" @click="confirmDelete = true">删除</button>
       </div>
 
       <div class="td-title-row">
@@ -55,7 +55,7 @@
           {{ s.label }}
         </button>
         <span class="spacer"></span>
-        <button class="btn-ghost" type="button" @click="startEdit">改判断</button>
+        <button class="btn btn-default btn-sm" type="button" @click="startEdit">改判断</button>
       </div>
 
       <!-- 改判断：单独一个小表单，不挤占详情阅读区 -->
@@ -69,8 +69,8 @@
           placeholder="为什么改？（可留空，但半年后你会想看到它）"
         />
         <div class="td-edit-foot">
-          <button class="btn-ghost" type="button" @click="editing = false">取消</button>
-          <button class="btn-primary" type="button" :disabled="!editText.trim()" @click="saveEdit">保存</button>
+          <button class="btn btn-default btn-sm" type="button" @click="editing = false">取消</button>
+          <button class="btn btn-primary btn-sm" type="button" :disabled="!editText.trim()" @click="saveEdit">保存</button>
         </div>
       </div>
     </header>
@@ -91,8 +91,8 @@
         @keydown.enter.prevent="commitPending"
         @keydown.esc.prevent="cancelPending"
       />
-      <button class="btn-ghost" type="button" @click="cancelPending">取消</button>
-      <button class="btn-primary" type="button" @click="commitPending">确认</button>
+      <button class="btn btn-default btn-sm" type="button" @click="cancelPending">取消</button>
+      <button class="btn btn-primary btn-sm" type="button" @click="commitPending">确认</button>
     </div>
 
     <!-- 引导：第一次打开论点时的解释。
@@ -196,7 +196,7 @@
         这个动作不能撤销。
       </p>
       <div class="cf-foot">
-        <button class="btn-ghost" type="button" @click="confirmDelete = false">取消</button>
+        <button class="btn btn-default btn-sm" type="button" @click="confirmDelete = false">取消</button>
         <button class="btn-danger" type="button" @click="doDelete">删除</button>
       </div>
     </BaseModal>
@@ -954,46 +954,10 @@ onMounted(() => {
   outline: 2px solid var(--primary);
   outline-offset: 1px;
 }
-.btn-ghost,
-.btn-primary,
-.btn-danger {
-  height: 28px;
-  padding: 0 12px;
-  border-radius: var(--r-md);
-  font-family: inherit;
-  font-size: var(--fs-modal-label);
-  font-weight: 500;
-  cursor: pointer;
-}
-.btn-ghost {
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text-secondary);
-}
-.btn-ghost:hover {
-  background: var(--fill);
-  color: var(--text-primary);
-}
-.btn-primary {
-  border: 1px solid var(--primary);
-  background: var(--primary);
-  color: var(--tone-fg);
-}
-.btn-primary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.btn-danger {
-  border: 1px solid var(--danger);
-  background: var(--danger);
-  color: #fff;
-}
-.btn-ghost:focus-visible,
-.btn-primary:focus-visible,
-.btn-danger:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 1px;
-}
+/* 按钮一律走全局 `.btn` 族（基类 + 修饰类 + 尺寸档），本文件不再自建。
+   这里曾有一份私有的 `.btn-ghost / .btn-primary / .btn-danger`：
+   只有这个组件在用，且绕开了 `.btn` 基类，于是高度、内边距、圆角、字号全靠
+   这几条临时声明，与弹窗底部那排按钮对不上。删掉，别再长回来。 */
 .cf-text {
   margin: 0 0 var(--sp-3);
   font-size: var(--fs-modal-body);
