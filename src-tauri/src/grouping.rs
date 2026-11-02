@@ -436,9 +436,9 @@ mod tests {
             source_key("https://rsshub.rssforever.com/anthropic/research", base).as_deref(),
             Some("anthropic")
         );
-        // 非 rsshub.* 前缀的实例也在候选清单里，同样要识别
+        // 候选清单里的实例（当前池全部以 rsshub. 开头）也要识别
         assert_eq!(
-            source_key("https://rss.qiuyuair.com/twitter/user/elonmusk", "").as_deref(),
+            source_key("https://rsshub.woodland.cafe/twitter/user/elonmusk", "").as_deref(),
             Some("twitter")
         );
         assert_eq!(

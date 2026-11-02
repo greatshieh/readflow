@@ -8,7 +8,8 @@
 //! - 为"按来源自动分组"提供实例主机名判定，见 [`is_rsshub_host`]。
 //!
 //! # 为什么需要探测而不是写死一个实例
-//! RSSHub 的公共实例没有可用性保证：官方 `rsshub.app` 会限流、会短时不可达，
+//! RSSHub 的公共实例没有可用性保证：官方 `rsshub.app` 会限流、会短时不可达
+//! （2026-11-02 起其路由已被人机验证接管，见 [`DEFAULT_INSTANCE`]），
 //! 用户填一条路由时若恰好撞上它掉线，得到的是一个指向死实例的订阅源，
 //! 而且要等后台抓取失败后才知道。提前探测能把"选哪个实例"这件事在落库前解决掉。
 //!
@@ -30,14 +31,28 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// 默认（首选）RSSHub 实例
-pub const DEFAULT_INSTANCE: &str = "https://rsshub.app";
+///
+/// 2026-11-02 实测（经代理、浏览器 UA、以 `/nytimes/dual`、`/latepost/4`、
+/// `/36kr/hot-list` 三条真实路由为准，不是只看根路径）：`rsshub.app` 已被
+/// Cloudflare 人机验证接管（响应头 `cf-mitigated: challenge`，正文 "Just a moment..."），
+/// 程序无论如何都过不去，因此不再作首选。
+pub const DEFAULT_INSTANCE: &str = "https://rsshub.woodland.cafe";
 
 /// 首选实例不可达时按顺序尝试的备选实例
+///
+/// 挑选依据同 [`DEFAULT_INSTANCE`]：**根路径返回 200 不代表能用**，必须打真实路由。
+/// 上一版清单里 `rss.qiuyuair.com`、`rsshub.uneasy.win` 在 TLS 握手阶段就被切断
+/// （直连与经代理表现完全相同，说明断点在目标侧），`rsshub.netlify.app` 是旧版本、
+/// 三条路由全 404——三者已剔除。
+///
+/// `rsshub.app` 与 `rsshub.rssforever.com` 降级保留在末尾：前者会被人机验证拦住
+/// （`rss::http_error_message` 已能单独识别并说清原因），后者只是慢、部分路由仍通。
+/// 保留它们是为了"新实例也倒下时不至于无可用候选"。
 pub const FALLBACK_INSTANCES: [&str; 4] = [
+    "https://rsshub.ktachibana.party",
+    "https://rsshub.liumingye.cn",
+    "https://rsshub.app",
     "https://rsshub.rssforever.com",
-    "https://rss.qiuyuair.com",
-    "https://rsshub.uneasy.win",
-    "https://rsshub.netlify.app",
 ];
 
 // 单次探测的超时（6s）定义在 `crate::net::PROBE_TIMEOUT`：与客户端实例放在一起，
@@ -861,17 +876,20 @@ mod tests {
     use super::*;
 
     /// 候选清单：配置为空时就是内置清单，顺序固定
+    ///
+    /// 顺序即实际尝试顺序，故这条断言是"实例池有没有被误改"的守门测试：
+    /// 首选必须是实测能出内容的那一个，被淘汰的实例不能悄悄回到前列。
     #[test]
     fn candidates_default_order() {
         let list = candidate_instances("");
         assert_eq!(
             list,
             vec![
+                "https://rsshub.woodland.cafe".to_string(),
+                "https://rsshub.ktachibana.party".to_string(),
+                "https://rsshub.liumingye.cn".to_string(),
                 "https://rsshub.app".to_string(),
                 "https://rsshub.rssforever.com".to_string(),
-                "https://rss.qiuyuair.com".to_string(),
-                "https://rsshub.uneasy.win".to_string(),
-                "https://rsshub.netlify.app".to_string(),
             ]
         );
     }
@@ -879,9 +897,10 @@ mod tests {
     /// 候选清单：用户配置的实例提到最前，且与内置项去重（含尾斜杠差异）
     #[test]
     fn candidates_configured_first_and_dedup() {
-        let list = candidate_instances("https://rsshub.app/");
+        // 用首选实例做去重对象：用户把它填进设置后，清单里不能出现两遍
+        let list = candidate_instances("https://rsshub.woodland.cafe/");
         assert_eq!(list.len(), 5, "尾斜杠差异不应产生重复项");
-        assert_eq!(list[0], "https://rsshub.app");
+        assert_eq!(list[0], "https://rsshub.woodland.cafe");
 
         let custom = candidate_instances("https://rss.example.dev/");
         assert_eq!(custom.len(), 6);
@@ -912,15 +931,15 @@ mod tests {
     /// 实例判定：候选清单命中，以及 rsshub.* 的段数启发式
     #[test]
     fn rsshub_host_detection() {
-        // 候选清单精确命中（含非 rsshub.* 前缀的实例）
+        // 候选清单精确命中
         assert!(is_rsshub_host("rsshub.app", ""));
-        assert!(is_rsshub_host("rss.qiuyuair.com", ""));
+        assert!(is_rsshub_host("rsshub.woodland.cafe", ""));
         assert!(is_rsshub_host("rsshub.rssforever.com", ""));
         assert!(is_rsshub_host("rsshub.netlify.app", ""));
         // 通配：rsshub.* 且段数 ≤ 3
         assert!(is_rsshub_host("rsshub.uneasy.win", ""));
         assert!(is_rsshub_host("RSSHub.Some-Mirror.io", ""));
-        // 用户自定义实例
+        // 用户自定义实例（非 rsshub.* 前缀，只能靠配置识别）
         assert!(is_rsshub_host("my.proxy.dev", "https://my.proxy.dev"));
         // 普通站点
         assert!(!is_rsshub_host("wired.com", ""));
@@ -934,8 +953,24 @@ mod tests {
     fn instance_hosts_from_candidates() {
         let hosts = instance_hosts("");
         assert_eq!(hosts.len(), 5);
-        assert!(hosts.contains(&"rss.qiuyuair.com".to_string()));
+        assert!(hosts.contains(&"rsshub.woodland.cafe".to_string()));
         assert!(instance_hosts("https://my.proxy.dev/x").contains(&"my.proxy.dev".to_string()));
+    }
+
+    /// 已淘汰的实例不得回到候选池
+    ///
+    /// 这三个是 2026-11-02 实测后剔除的，各自的原因写在 `FALLBACK_INSTANCES` 的注释里。
+    /// 单独守一道：候选池一旦把它们加回来，用户会重新开始收到 "unexpected EOF"
+    /// 或满屏 404——而那种现象看起来像"网络问题"，极难再定位到这一行。
+    #[test]
+    fn retired_instances_never_come_back() {
+        let list = candidate_instances("");
+        for dead in ["qiuyuair", "uneasy.win", "rsshub.netlify.app"] {
+            assert!(
+                !list.iter().any(|i| i.contains(dead)),
+                "已被实测淘汰的实例回到了候选池: {dead}（原因见 FALLBACK_INSTANCES 注释）"
+            );
+        }
     }
 
     /// 缺浏览器：RSSHub 把「路由内部抛异常」统一回 503，状态码分不出原因，只能认响应体
