@@ -1,7 +1,9 @@
 <template>
-  <!-- 单条订阅源行：未读点 / 首字母头像（含图标叠加回退）/ 名称截断 / 未读数。
+  <!-- 单条订阅源行：首字母头像（含图标叠加回退）/ 名称截断 / 未读数。
        折叠（v-show）与 v-for 由父组件控制，本组件只负责一行的渲染与三个动作
        （选中 / 右键开配置菜单 / 键盘的同名操作）。
+       行首原来的 5px 未读圆点已删除：它是颜色单线索，且以 flex 子项身份恒占
+       `5 + gap 16 = 21px`，已读行也照占——窄栏里这 21px 是从源名宽度里扣的。
 
        本行可聚焦（tabindex=0）：配置入口已由"hover 才出现的「⋯」按钮"改为右键菜单，
        若不给键盘留出等价入口，键盘用户将完全够不到订阅源的配置功能——
@@ -14,7 +16,6 @@
     @contextmenu.prevent="emit('contextmenu', $event)"
     @keydown="onKeydown"
   >
-    <div class="feed-item-dot"></div>
     <div class="feed-item-avatar">
       {{ feed.name.charAt(0) }}
       <!-- 图标叠加层：源有图标时覆盖首字母（仿 Folo 侧边栏 logo）；
@@ -153,8 +154,8 @@ function hideBrokenIcon(e: Event) {
 .feed-item {
   display: flex;
   align-items: center;
-  /* 加大子元素间距：dot / avatar / info / count 四段依次排列，
-     8px 视觉上偏紧，调大让点与文字信息之间有呼吸感 */
+  /* 头像 / 名称 / 未读数三段依次排列。16px 是「头像与文字」之间的呼吸距离；
+     圆点删除后头部少了一段 5px + 16px 的占位，源名净宽因此多出 21px。 */
   gap: var(--sp-4);
   padding: var(--sp-2) var(--sp-15);
   margin-bottom: var(--sp-025);
@@ -169,25 +170,14 @@ function hideBrokenIcon(e: Event) {
 }
 /* transform 在 :active 下生效；hover 不再有位移，避免与 hover 胶囊产生位差 */
 .feed-item:active { transform: scale(0.985); }
-/* 选中态的底色与左侧指示条已移除：改由 FeedPanel 里的滑动胶囊统一表达。
-   左侧竖条与胶囊会重叠成两道标记，且竖条只对源有效、对标签行无效；
-   胶囊则是同一个视觉语言，能在两类条目间连续滑动。 */
+/* 未读只靠三条线索：标题字重（600 / 400）、头像染色（--primary-tint）、
+   右端未读数。三者任一单独出现都能读出"有未读"，不必再补一个颜色单线索的点。 */
 .feed-item.unread .feed-item-title { font-weight: 600; color: var(--text-primary); }
-/* 选中态文字取 --cap-active-fg：与胶囊底配套。
-   浅色主题下胶囊是实色紫罗兰（--cap-solid-bg = --brand-to）、文字为纯白；
-   深色主题下胶囊是淡底、文字保持 --text-primary。 */
+/* 选中态：底色与左侧指示条已移除，改由 FeedPanel 里的滑动胶囊统一表达
+   （竖条与胶囊会重叠成两道标记，且竖条只对源有效、对标签行无效）。
+   文字取 --cap-active-fg：与胶囊底配套——浅色下胶囊是实色紫罗兰
+   （--cap-solid-bg = --brand-to）、文字纯白；深色下胶囊是淡底、文字保持 --text-primary。 */
 .feed-item.active .feed-item-title { color: var(--cap-active-fg); font-weight: 600; }
-
-.feed-item-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--primary);
-  flex-shrink: 0;
-  opacity: 0;
-  transition: opacity 0.15s;
-}
-.feed-item.unread .feed-item-dot { opacity: 1; }
 
 .feed-item-avatar {
   width: 28px;

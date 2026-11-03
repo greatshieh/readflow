@@ -1,8 +1,8 @@
 <template>
   <!-- 文章条目卡片：列表栏的最小渲染单元，自身就是一个可点击的卡片。
-       未读圆点内联在标题行的行首（绝对定位到信息块左侧的预留位），取代原先漂浮在
-       卡片边缘、与内容无对齐关系的做法；元素常驻、靠 opacity 切换，
-       使已读行的标题不被"顶格"而破坏整体左对齐。 -->
+       未读只用两条线索表达：标题字重（未读 600 / 已读 400）+ 标题色。
+       行首那个 5px 圆点已删除——它是颜色单线索，与字重重复；而它的定位基准是
+       信息块、不是卡片，left:8px 实际压在标题首字上（见 .feed-item-title 上方注释）。 -->
   <div
     class="article-item"
     :class="{ active, unread: !article.is_read }"
@@ -10,7 +10,6 @@
     @click="emit('select', article)"
   >
     <div class="feed-item-info">
-      <div class="feed-item-dot"></div>
       <div class="feed-item-title">{{ article.title }}</div>
       <div class="feed-item-meta">
         <!-- 来源名：仅在聚合视图（全部/未读/标签等跨源列表）下显示。
@@ -166,8 +165,8 @@ function onPreferenceClick(preference: 'like' | 'skip') {
   align-items: center;
   /* 与订阅栏 .feed-item 保持一致：加大间距让缩略图 / 标题 / 时间戳之间更透气 */
   gap: var(--sp-4);
-  /* 上下 12（4px 网格），右 16，左 16——左侧多出的 4px 是未读圆点占的槽，
-     这样圆点从不与标题抢位置，未读/已读之间标题也不会水平位移。 */
+  /* 上下 12（4px 网格）、左右 16。四边对称：行首圆点删除后，左侧不再需要
+     额外留槽，标题与上下边缘共用同一条左基线。 */
   padding: var(--sp-3) var(--sp-4);
   /* 外边距 4 → 6：卡片之间的间隙与两侧留白同步放大 */
   margin: 0 var(--sp-05) var(--sp-05);
@@ -184,39 +183,26 @@ function onPreferenceClick(preference: 'like' | 'skip') {
    抬升表达的那点"质感"不值得换来 hover 与 active 不对齐。
    选中态的浮起卡面与左侧竖条也已移除，统一由紫罗兰胶囊表达。 */
 .article-item:active { transform: scale(0.985); }
-/* 未读标题 600 / 已读 500 + 次级色：字重差是"这条读没读过"的第一线索，
-   竖条是第二线索。两条同时存在，扫视时才不依赖颜色（色弱用户也成立）。 */
+/* 未读标题 600 / 已读 400 + 次级色：字重差是"这条读没读过"的第一线索，
+   也是唯一的非颜色线索（色弱用户靠它）；标题色是第二条。 */
 .article-item.unread .feed-item-title { font-weight: 600; }
 .article-item:not(.unread) .feed-item-title { color: var(--text-secondary); font-weight: 400; }
 
-/* 未读标记：左侧一个 5px 实心主色圆点。
-   ── 换过两次，别再往回收 ──
-   ① 6px 圆点（最早）：在 40 行列表里形不成节奏，被判定"单薄"；
-   ② 3px 跨色相渐变竖条（上一版）：竖条确实有节奏，但三段渐变落在 3px 宽的
-      条上，读作"边缘发亮"；而且它贴左缘、又高又窄，会被读成"这条被选中了"。
-   现在：实心圆点 + 颜色 100% 主色。**未读的第一线索是标题字重（500 → 600），
-   圆点是第二线索**——两条并存，色弱用户也分得清，扫视时圆点提供纵向节奏。
-   元素常驻、靠 opacity 切换：未读/已读之间标题不能位移。 */
-.feed-item-dot {
-  position: absolute;
-  left: 8px;
-  top: 50%;
-  width: 5px;
-  height: 5px;
-  margin-top: -2.5px;
-  border-radius: 50%;
-  background: var(--primary);
-  opacity: 0;
-  transition: opacity var(--dur) var(--ease);
-}
-.article-item.unread .feed-item-dot { opacity: 1; }
+/* ── 行首未读标记：三版都删了，不要再加回来 ──
+   ① 6px 圆点：在 40 行列表里形不成节奏，被判定"单薄"；
+   ② 3px 跨色相渐变竖条：三段渐变落在 3px 宽的条上读作"边缘发亮"，
+      且贴左缘又高又窄，会被读成"这条被选中了"；
+   ③ 5px 实心圆点（第三版，本轮删除）：`position: absolute` 的包含块是
+      `.feed-item-info` 而不是卡片，`left: 8px` 实际落在标题首字上（卡片
+      padding-left 16 + 8 = 24，而标题文字从 16 起），`top: 50%` 又让它
+      垂直居中于"标题 + 元信息"整块、比标题首行低约 10px——既压字又不对齐。
+   共同问题：三条都是**颜色单线索**，与已有的字重差（600 / 400）重复；
+   要让它有意义就得给标题留出独立缩进槽，而那个槽会白白吃掉窄栏宽度。
+   结论：未读靠字重 + 标题色，行首不放任何东西。 */
 
 .feed-item-info {
-  position: relative;
   flex: 1;
   min-width: 0;
-  /* 圆点在父级 padding 内，标题不需要额外缩进 */
-  padding-left: 0;
 }
 .feed-item-title {
   font-size: var(--fs-md);
