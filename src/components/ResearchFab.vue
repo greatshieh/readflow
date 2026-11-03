@@ -363,7 +363,7 @@ onUnmounted(() => {
   color: var(--primary);
   font-size: var(--fs-sm);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .rp-action:hover:not(:disabled) {
   border-color: var(--primary);

@@ -166,10 +166,9 @@ function onPreferenceClick(preference: 'like' | 'skip') {
   align-items: center;
   /* 与订阅栏 .feed-item 保持一致：加大间距让缩略图 / 标题 / 时间戳之间更透气 */
   gap: var(--sp-4);
-  /* 左右内边距 12 → 16：卡片被撑得更饱满，标题与卡片边缘之间留出呼吸感。
-     左内边距收回到 12px 以抵消标题区 14px 的圆点悬挂缩进，
-     使"卡片左边缘 → 标题文字"的距离与右侧保持相近 */
-  padding: 11px var(--sp-4) 11px var(--sp-3);
+  /* 上下 12（4px 网格），右 16，左 16——左侧多出的 4px 是未读圆点占的槽，
+     这样圆点从不与标题抢位置，未读/已读之间标题也不会水平位移。 */
+  padding: var(--sp-3) var(--sp-4);
   /* 外边距 4 → 6：卡片之间的间隙与两侧留白同步放大 */
   margin: 0 var(--sp-05) var(--sp-05);
   cursor: pointer;
@@ -185,22 +184,30 @@ function onPreferenceClick(preference: 'like' | 'skip') {
    抬升表达的那点"质感"不值得换来 hover 与 active 不对齐。
    选中态的浮起卡面与左侧竖条也已移除，统一由紫罗兰胶囊表达。 */
 .article-item:active { transform: scale(0.985); }
+/* 未读标题 600 / 已读 500 + 次级色：字重差是"这条读没读过"的第一线索，
+   竖条是第二线索。两条同时存在，扫视时才不依赖颜色（色弱用户也成立）。 */
 .article-item.unread .feed-item-title { font-weight: 600; }
-.article-item:not(.unread) .feed-item-title { color: var(--text-secondary); }
+.article-item:not(.unread) .feed-item-title { color: var(--text-secondary); font-weight: 400; }
 
-/* 未读圆点：定位到 .feed-item-info 左侧的预留位（14px = 圆点 6px + 间距 8px），
-   垂直方向与标题首行居中对齐（标题行高约 19px，故 top 取 6px）。
-   元素常驻、靠 opacity 切换，使已读行的标题不被"顶格"而破坏整体左对齐。 */
+/* 未读标记：左侧一个 5px 实心主色圆点。
+   ── 换过两次，别再往回收 ──
+   ① 6px 圆点（最早）：在 40 行列表里形不成节奏，被判定"单薄"；
+   ② 3px 跨色相渐变竖条（上一版）：竖条确实有节奏，但三段渐变落在 3px 宽的
+      条上，读作"边缘发亮"；而且它贴左缘、又高又窄，会被读成"这条被选中了"。
+   现在：实心圆点 + 颜色 100% 主色。**未读的第一线索是标题字重（500 → 600），
+   圆点是第二线索**——两条并存，色弱用户也分得清，扫视时圆点提供纵向节奏。
+   元素常驻、靠 opacity 切换：未读/已读之间标题不能位移。 */
 .feed-item-dot {
   position: absolute;
-  left: 0;
-  top: 6px;
-  width: 6px;
-  height: 6px;
+  left: 8px;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  margin-top: -2.5px;
   border-radius: 50%;
   background: var(--primary);
   opacity: 0;
-  transition: opacity 0.15s;
+  transition: opacity var(--dur) var(--ease);
 }
 .article-item.unread .feed-item-dot { opacity: 1; }
 
@@ -208,16 +215,14 @@ function onPreferenceClick(preference: 'like' | 'skip') {
   position: relative;
   flex: 1;
   min-width: 0;
-  /* 圆点预留位：标题与元信息整体右移，给行首圆点留出悬挂缩进 */
-  padding-left: var(--sp-35);
+  /* 圆点在父级 padding 内，标题不需要额外缩进 */
+  padding-left: 0;
 }
 .feed-item-title {
   font-size: var(--fs-md);
   color: var(--text-primary);
   font-weight: 500;
   line-height: 1.45;
-  /* 轻微收紧字距：中英混排的现代阅读器观感（负字距让标题更像"标题"） */
-  letter-spacing: -0.01em;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -346,7 +351,7 @@ function onPreferenceClick(preference: 'like' | 'skip') {
   background: transparent;
   cursor: pointer;
   color: var(--text-tertiary);
-  transition: all var(--dur) var(--ease);
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 
 .pref-btn svg { width: 13px; height: 13px; }

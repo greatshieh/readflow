@@ -179,8 +179,8 @@ onBeforeUnmount(() => {
   flex-direction: column;
   padding: 12px 12px 10px;
   background: var(--glass-strong);
-  backdrop-filter: blur(20px) saturate(1.6);
-  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--glass-hair);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-pop);

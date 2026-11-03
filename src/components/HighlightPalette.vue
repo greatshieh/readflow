@@ -83,14 +83,21 @@ const emit = defineEmits<{
   border-radius: 50%;
   border: 2px solid transparent;
   cursor: pointer;
-  transition: transform 0.15s, border-color 0.15s;
+  /* 只过渡描边：色板自己是"可选的颜色"，不该在悬停时变形 */
+  transition: border-color var(--dur) var(--ease);
 }
 /* 四档底色取自全局令牌：随主题切换，组件内不写具体色值 */
 .swatch-yellow { background: var(--hl-yellow); }
 .swatch-green { background: var(--hl-green); }
 .swatch-blue { background: var(--hl-blue); }
 .swatch-pink { background: var(--hl-pink); }
-.palette-swatch:hover { transform: scale(1.2); }
+/* 悬停只把描边加重一档。原先是放大到 1.2 倍——四个色板同时可悬停，
+   每个都跳一下，读作"这几个东西很不稳定"。 */
+.palette-swatch:hover { border-color: var(--text-tertiary); }
+.palette-swatch:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
 .palette-cancel {
   border: none;
   background: none;

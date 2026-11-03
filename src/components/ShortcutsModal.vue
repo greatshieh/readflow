@@ -11,7 +11,7 @@
       <section v-for="g in groups" :key="g" class="sc-group">
         <h4 class="sc-gtitle">{{ g }}</h4>
         <div v-for="s in shortcutsOfGroup(g)" :key="s.display + s.label" class="sc-row">
-          <kbd class="sc-kbd">{{ s.display }}</kbd>
+          <kbd class="kbd kbd-block">{{ s.display }}</kbd>
           <span class="sc-label">{{ s.label }}</span>
         </div>
       </section>
@@ -22,8 +22,8 @@
            这些守卫之前判定，后者是组合键（表按 KeyboardEvent.key 逐字比较，
            一旦进表，输入框里向左移光标会被 preventDefault 吞掉）。
            两者都走不了统一查表，故只在此处以文字补明 -->
-      <span><kbd class="sc-kbd">esc</kbd> 退出专注模式 / 关弹窗 / 离开关系图、推荐、复盘视图</span>
-      <span><kbd class="sc-kbd">Alt + ←</kbd> 回到刚才读的报告（macOS：Cmd + [）</span>
+      <span><kbd class="kbd kbd-block">esc</kbd> 退出专注模式 / 关弹窗 / 离开关系图、推荐、复盘视图</span>
+      <span><kbd class="kbd kbd-block">Alt + ←</kbd> 回到刚才读的报告（macOS：Cmd + [）</span>
       <span class="sc-note">离开复盘视图不结束本轮复盘：会话留在本地，再按 W 可接着处理</span>
       <span class="sc-note">列表未获焦点、输入框内输入时，快捷键一律不响应</span>
     </div>
@@ -128,21 +128,8 @@ const groups = SHORTCUT_GROUPS
 }
 .sc-row:hover { background: var(--hover-bg); }
 
-.sc-kbd {
-  flex-shrink: 0;
-  min-width: 46px;
-  text-align: center;
-  padding: 2px var(--sp-2);
-  border-radius: var(--r-sm);
-  background: var(--fill);
-  /* 与命令面板底栏的 kbd 保持同一套观感（内描边而非 border） */
-  box-shadow: var(--ring-inset);
-  /* 项目内没有 --font-mono 令牌，写 var() 会让整条声明静默作废，故继承 */
-  font-family: inherit;
-  /* 键帽里的键名属于元信息 */
-  font-size: var(--fs-modal-meta);
-  line-height: 1.6;
-}
+/* 键帽外观来自全局 `.kbd` + `.kbd-block`（对齐用的最小宽度）。
+   这里曾有一份 46px 的私有实现，与命令面板底栏的另一份各写一套。 */
 
 .sc-label {
   font-size: var(--fs-modal-label);

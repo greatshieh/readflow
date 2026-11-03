@@ -1,10 +1,6 @@
 <template>
   <!-- 侧边栏根容器：isOpen 仅在窄屏（配合 .open 样式）下产生抽屉效果，宽屏常驻显示 -->
-  <aside class="feed-panel pane-glow-host" :class="{ open: isOpen }" ref="paneRef">
-    <!-- 跟随边框：靠近指针的那一侧亮起一段。必须是面板的直接子元素才能铺满整栏。
-         亮灭由 useCursorGlow 在面板上切 .is-lit，这里同步给边框层（它自身
-         定位在面板内，需要自己的类名来控制 opacity）。 -->
-    <div class="pane-frame" ref="frameRef" aria-hidden="true"></div>
+  <aside class="feed-panel" :class="{ open: isOpen }">
     <!-- 订阅源搜索区：本地过滤用，不请求后端 -->
     <div class="feed-search-wrap">
       <div class="feed-search">
@@ -305,7 +301,6 @@ import ContextMenu from './ContextMenu.vue'
 import type { ContextMenuItem } from './ContextMenu.vue'
 import SelectCapsule from './SelectCapsule.vue'
 import AppLogo from './AppLogo.vue'
-import { useCursorGlow } from '@/composables/useCursorGlow'
 import type { Article, Feed, Folder } from '@/types'
 
 /**
@@ -417,12 +412,6 @@ const tagSectionCollapsed = ref(false)
 
 /** 订阅源列表容器（滑动胶囊与水滴的定位基准） */
 const feedListRef = ref<HTMLElement | null>(null)
-/** 侧栏面板根元素（光斑与跟随边框的宿主） */
-const paneRef = ref<HTMLElement | null>(null)
-/** 跟随边框层：与光斑层分离，便于各自控制显隐 */
-const frameRef = ref<HTMLElement | null>(null)
-/** 启用面板光斑跟随 + 靠近侧边框亮起 */
-useCursorGlow(paneRef, frameRef)
 /** 选中胶囊组件实例：负责把胶囊滑到当前选中的订阅源 */
 const feedCapsule = ref<InstanceType<typeof SelectCapsule> | null>(null)
 
@@ -1190,11 +1179,10 @@ onUnmounted(() => {
      不能写死像素值：scoped 选择器带 data-v 属性，特异性压过 styles.css 的
      全局 `.feed-panel { width: var(--feed-w) }`，硬编码会让拖拽形同虚设。 */
   width: var(--feed-w, 260px);
-  /* 玻璃化：半透明 + 背景模糊 + 上边缘内高光。厚度感靠 --glass-hi 那条内阴影，
-     不靠投影——栏间窄缝会同时承接相邻面板的投影，投影稍重就在缝里叠成深色凹槽。 */
-  background: var(--glass);
-  backdrop-filter: blur(var(--blur)) saturate(1.5);
-  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.5);
+  /* 不透明面板。三栏都是外壳内的分区，壳本身已是不透明的 --surface，
+     再给分区叠半透明白 + 背景模糊没有任何东西可折射（背后就是壳），
+     纯粹是每帧一次无用的合成。分区只靠右侧一道发丝线。 */
+  background: var(--surface);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -1202,13 +1190,9 @@ onUnmounted(() => {
      否则会形成两层叠加的内边距（两处各一个 --tb-h，视觉上出现大片空白） */
   height: 100%;
   overflow: hidden;
-  border-radius: var(--r-panel);
-  box-shadow:
-    inset 0 1px 0 var(--glass-hi),
-    inset 0 -1px 0 var(--glass-lo),
-    0 2px 6px rgba(31, 45, 70, 0.05),
-    0 10px 30px rgba(31, 45, 70, 0.07);
-  border: 1px solid var(--glass-hair);
+  /* 外壳满窗后无圆角，本栏也不需要 */
+  border-radius: var(--shell-r) 0 0 var(--shell-r);
+  border-right: 1px solid var(--shell-hair);
 }
 
 .feed-search-wrap {
@@ -1314,11 +1298,12 @@ onUnmounted(() => {
   gap: var(--sp-05);
   padding: var(--sp-15) var(--sp-2) var(--sp-1);
   cursor: pointer;
+  /* 分组名用句首大写 + 500 字重，不用全大写 + 加宽字距。
+     全大写加宽字距是"仪表盘标签"的做法：汉语环境下它只对英文分组名生效，
+     中英混排时一行里出现两种字母形态，比不加还乱。 */
   font-size: var(--fs-xs);
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
 }
 .folder-head:hover { color: var(--text-secondary); }
 /* 折叠箭头：改用 SVG 图标（原先用 ▸ / ▾ 字符，宽高随字体渲染不稳定，
@@ -1420,7 +1405,7 @@ onUnmounted(() => {
   background: none;
   color: var(--text-tertiary);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
   font-family: inherit;
 }
 .tool-btn:hover {
@@ -1466,8 +1451,8 @@ onUnmounted(() => {
   transform: translateY(calc(-100% - 8px));
   min-width: 160px;
   background: var(--glass-strong);
-  backdrop-filter: blur(24px) saturate(1.7);
-  -webkit-backdrop-filter: blur(24px) saturate(1.7);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--glass-hair);
   border-radius: var(--r-lg);
   box-shadow:

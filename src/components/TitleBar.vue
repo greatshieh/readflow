@@ -237,20 +237,20 @@ async function closeApp() {
 </script>
 
 <style scoped>
+/* 外框：与外壳同一片实底，满宽、无圆角、只留底边一道发丝线。
+   ── 为什么不再玻璃化 ──
+   标题栏底下没有可被折射的内容（它压着的是外壳本身），模糊它等于模糊一块纯色；
+   之前靠「上边缘内白高光 + 左右内描边」做出玻璃厚度，代价是顶栏与下方之间
+   出现一条 1px 的亮线，在深色主题下尤其像一条接缝。
+   现在它就是一条普通的条：底色同外壳，底边一根线把它和内容分开。 */
 .titlebar {
   position: fixed;
-  top: 0; left: 0; right: 0;
+  top: 0;
+  left: 0;
+  right: 0;
   height: var(--tb-h);
-  /* 主题化底色：--titlebar-bg 在浅色/深色两套变量集中分别取值（见 styles.css） */
-  background: var(--titlebar-bg);
-  /* 玻璃化：与两侧面板同一套玻璃令牌，底色改用 --glass-2（比面板略实，层级更高）。
-     上下各一道内边缘——上方一道是玻璃对天光的高光，下方一道与内容区分界；
-     两道都靠 --glass-* 令牌，暗色主题下自动换成低透明度白线。 */
-  box-shadow:
-    inset 0 1px 0 var(--glass-hi),
-    inset 0 -1px 0 var(--glass-lo);
-  backdrop-filter: blur(16px) saturate(1.5);
-  -webkit-backdrop-filter: blur(16px) saturate(1.5);
+  background: var(--shell-bg);
+  border-bottom: 1px solid var(--shell-hair);
   display: flex;
   align-items: center;
   padding: 0 var(--sp-3);
@@ -264,7 +264,7 @@ async function closeApp() {
   flex-shrink: 0;
 }
 
-.titlebar-name { font-size: var(--fs-md); font-weight: 600; letter-spacing: -0.01em; color: var(--text-primary); }
+.titlebar-name { font-size: var(--fs-md); font-weight: 500; color: var(--text-primary); }
 
 .titlebar-center {
   flex: 1;
@@ -281,7 +281,8 @@ async function closeApp() {
   border-radius: var(--r-md);
   display: flex; align-items: center; justify-content: center;
   cursor: pointer; color: var(--text-tertiary);
-  transition: all 0.15s; border: none; background: none;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+  border: none; background: none;
 }
 
 .tb-btn:hover { background: var(--fill); color: var(--text-primary); }
@@ -296,7 +297,8 @@ async function closeApp() {
   border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
   cursor: pointer; color: var(--text-tertiary);
-  transition: all 0.15s; border: none; background: none;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+  border: none; background: none;
 }
 
 .win-btn:hover { background: var(--fill); }

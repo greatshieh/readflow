@@ -87,11 +87,14 @@ const SORT_OPTIONS: { key: ArticleSortKey; label: string }[] = [
   flex-wrap: wrap;
   gap: var(--sp-2);
   padding: var(--sp-2) var(--sp-3);
-  border-bottom: 1px solid var(--border);
+  /* Aurora：与列表栏其它分区一致改用发丝线，--border 在玻璃面上偏重 */
+  border-bottom: 1px solid var(--shell-hair);
   font-size: var(--fs-sm);
   color: var(--text-tertiary);
   flex-shrink: 0;
-  background: var(--surface-muted);
+  /* 去掉 --surface-muted 实底：三条同色实底叠在一起是"单薄"的来源之一。
+     改为极淡的主色，让排序栏读作"列表栏里的一个次级带"而非另一块面板。 */
+  background: color-mix(in srgb, var(--primary) 3%, transparent);
 }
 /* 隔开「排序」与「分组」两组控件，让它们看起来是两件事而非一串 */
 .sort-sep {
@@ -104,7 +107,7 @@ const SORT_OPTIONS: { key: ArticleSortKey; label: string }[] = [
   padding: 3px var(--sp-2);
   border-radius: var(--r-sm);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
   border: 1px solid transparent;
   background: none;
   font-size: var(--fs-sm);
@@ -112,10 +115,14 @@ const SORT_OPTIONS: { key: ArticleSortKey; label: string }[] = [
   font-family: inherit;
 }
 .sort-btn:hover { background: var(--fill); color: var(--text-primary); border-color: var(--border); }
+/* 选中：从"紫底紫字"改为**淡底 + 描边 + 加粗**。
+   紫色文字压在紫色淡底上是最容易显脏的组合（对比 3.4:1 上下），
+   改用中性主文字色 + 主色描边后对比 12:1，且"选中"由描边而非色块承担，
+   与全局的胶囊体系（浅色实底、深色描边）保持一致。 */
 .sort-btn.active {
-  background: var(--primary-tint);
+  background: var(--primary-soft);
   color: var(--primary);
-  border-color: var(--primary);
-  font-weight: 500;
+  border-color: color-mix(in srgb, var(--primary) 40%, transparent);
+  font-weight: 600;
 }
 </style>

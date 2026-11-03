@@ -3,7 +3,7 @@
     命令面板：Ctrl/⌘+K 全局唤起的搜索与跳转。
 
     遮罩与面板是**两级不同的玻璃**——遮罩 blur(10px)+降饱和+压暗，让整窗退到后面；
-    面板自身 blur(34px)+提饱和，是画面里最"厚"的一层玻璃，从而成为唯一清晰物。
+    面板自身 blur(16px)+提饱和，是画面里最"厚"的一层玻璃，从而成为唯一清晰物。
     两级模糊量必须拉开，否则面板会和背景一样糊，读不出层级。
   -->
   <Teleport to="body">
@@ -96,9 +96,9 @@
 
           <!-- 底栏：键盘约定。与其让用户猜，不如写在这里 -->
           <div class="pal-foot">
-            <span><kbd>↑</kbd><kbd>↓</kbd>选择</span>
-            <span><kbd>↵</kbd>跳转</span>
-            <span><kbd>esc</kbd>关闭</span>
+            <span><kbd class="kbd">↑</kbd><kbd class="kbd">↓</kbd>选择</span>
+            <span><kbd class="kbd">↵</kbd>跳转</span>
+            <span><kbd class="kbd">esc</kbd>关闭</span>
             <!-- 可点入口：`?` 键本身没人能猜到，必须有个可见地方把它带出来 -->
             <span class="pal-hint">标题无命中时自动搜全文</span>
             <button class="pal-action" type="button" @click="openResearch">研究工作台</button>
@@ -886,8 +886,8 @@ onUnmounted(() => {
      面板的白色玻璃（--glass-strong 74% 白）叠上去也只有约 #e4e4e4 的灰，
      深色标题压在上面虽仍可读，但整块玻璃失去"亮"的质感、看起来像脏灰塑料。 */
   background: var(--overlay-scrim);
-  backdrop-filter: blur(8px) saturate(0.95);
-  -webkit-backdrop-filter: blur(8px) saturate(0.95);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 
 /* ── 面板：比遮罩更模糊、更饱和 = 画面里最"厚"的一层玻璃 ────────── */
@@ -900,9 +900,9 @@ onUnmounted(() => {
   overflow: hidden;
   border-radius: var(--r-panel);
   background: var(--glass-strong);
-  backdrop-filter: blur(34px) saturate(1.8);
+  backdrop-filter: blur(16px);
   /* 命令面板是浮在最上层、承载全局搜索的聚焦层，玻璃要比普通弹窗更实一档 */
-  -webkit-backdrop-filter: blur(34px) saturate(1.8);
+  -webkit-backdrop-filter: blur(16px);
   /* 外框用 --glass-hair（冷蓝灰）而非 --glass-hi（白）：
      浅色主题下面板底已是 #f6f7f7，白描边落上去**完全看不见**，
      面板与背后界面糊成一片，正是"输入框边框是白色的、没有区分"的来源。
@@ -1098,15 +1098,8 @@ onUnmounted(() => {
   color: var(--text-secondary);
   flex-shrink: 0;
 }
-.pal-foot kbd {
-  font-family: inherit;
-  font-size: var(--fs-xs);
-  padding: 1px 5px;
-  margin-right: 3px;
-  border-radius: var(--r-sm);
-  background: var(--fill);
-  box-shadow: var(--ring-inset);
-}
+/* 键帽外观来自全局 `.kbd`。底栏只负责间距（两条键帽挨着会黏在一起）。 */
+.pal-foot .kbd { margin-right: 3px; }
 .pal-hint { margin-left: auto; opacity: 0.85; }
 
 /* 底栏里的可点入口：外观贴近 .pal-hint（同为次要信息），但要有可点的反馈 */

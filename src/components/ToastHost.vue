@@ -75,8 +75,8 @@ const toastStore = useToastStore()
   background: var(--glass-strong);
   border: 1px solid var(--glass-hair);
   box-shadow: var(--shadow-pop);
-  backdrop-filter: blur(var(--blur)) saturate(1.6);
-  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.6);
+  backdrop-filter: blur(var(--blur));
+  -webkit-backdrop-filter: blur(var(--blur));
 }
 .toast-text {
   /* 长源名会撑破胶囊：单行截断，完整内容靠 title 兜底 */

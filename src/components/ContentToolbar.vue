@@ -423,7 +423,7 @@ onUnmounted(() => {
   font-size: var(--fs-sm);
   color: var(--text-secondary);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
   font-family: inherit;
 }
 .tb-btn:hover { border-color: var(--border); color: var(--text-primary); background: var(--fill); }

@@ -312,8 +312,8 @@ onBeforeUnmount(deactivate)
   justify-content: center;
   background: var(--overlay-scrim);
   /* 遮罩也要压暗 + 模糊，才能让弹窗"浮起来"；4px 太浅、玻璃感出不来 */
-  backdrop-filter: blur(10px) saturate(0.92);
-  -webkit-backdrop-filter: blur(10px) saturate(0.92);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   opacity: 0;
   visibility: hidden;
   /* pointer-events 基础态为 none：关闭瞬间即让出点击，**不依赖 visibility 的过渡时序**。
@@ -382,16 +382,16 @@ onBeforeUnmount(deactivate)
   /* 玻璃化：比面板玻璃更实（--glass-strong），因为弹窗是**浮在最上层**的聚焦层，
      需要比下层玻璃更明确边界；模糊半径也更大（28 vs 20px），视觉上"更靠近眼睛"。 */
   background: var(--glass-strong);
-  backdrop-filter: blur(28px) saturate(1.7);
-  -webkit-backdrop-filter: blur(28px) saturate(1.7);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--glass-hair);
-  border-radius: var(--r-xl);
-  /* 玻璃厚度由上下两道内高光承担（浅色下外框靠 --glass-hair 的冷蓝灰勾边，
-     白描边落在近白底上等于没有边界）。--shadow-pop 提供浮起感。 */
-  box-shadow:
-    inset 0 1px 0 var(--glass-hi),
-    inset 0 -1px 0 var(--glass-lo),
-    var(--shadow-pop);
+  /* 弹窗圆角 16px（--r-panel）。**不要用 --shell-r**：外壳满窗后那个令牌是 0，
+     用了会让弹窗变直角。 */
+  border-radius: var(--r-panel);
+  /* 一道中性投影 + 一圈发丝描边。浮起感来自投影与遮罩的明度差，
+     不靠顶部那 2px 的彩色内描边（那条在内阴影里出现一次，肉眼只会读到
+     "顶边有点发紫"，说不出是什么）。 */
+  box-shadow: inset 0 0 0 1px var(--shell-border), var(--shadow-pop);
   overflow: hidden;
   outline: none;
   /* 进出场两个方向都走 transition：基础态即「退场终点」，撤掉 .show 是一次有前值的

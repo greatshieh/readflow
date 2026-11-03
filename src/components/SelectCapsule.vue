@@ -581,7 +581,7 @@ defineExpose({ hover, sync, pulse, reposition })
 }
 
 /* 位移为什么用 transform 而不用 top：
-   top 是**布局属性**，每一帧都会触发重排。面板自身带 backdrop-filter: blur(20px)，
+   top 是**布局属性**，每一帧都会触发重排。面板自身带 backdrop-filter: blur(16px)，
    重排会让它重新采样并模糊背后的像素——这部分开销与动画同频发生，列表稍长就
    明显掉帧，读起来是"没动直接到了"。transform 走合成器（GPU），不触发重排、
    也不重绘背景模糊，动画始终跟手。
@@ -624,13 +624,14 @@ defineExpose({ hover, sync, pulse, reposition })
     0 1px 3px var(--cap-shadow),
     0 6px 16px var(--cap-shadow);
 }
-/* 文章列表的选中胶囊用独立的紫罗兰档位（描边更亮一档），与订阅栏拉开一点差异 */
+/* 文章列表的选中胶囊：与订阅栏同一套淡底 + 描边，只是描边更亮一档。
+   曾有一层 `inset 2px 0` 的左侧紫内阴影，用来与未读竖条对齐——未读标记已改成
+   圆点，那条轴线不存在了，留着会让选中行的左缘凭空多一道边。 */
 .capsule.active.accent {
   background: var(--cap-accent-bg);
   box-shadow:
     inset 0 0 0 1px var(--cap-accent-line),
-    0 1px 3px var(--cap-accent-shadow),
-    0 4px 12px var(--cap-accent-shadow);
+    0 1px 3px var(--cap-accent-shadow);
 }
 
 /* 定位脉冲：一次性，播完即止。用品牌紫罗兰描边扩散，表达"就是这一项" */

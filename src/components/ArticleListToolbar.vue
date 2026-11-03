@@ -213,7 +213,7 @@ function toggleStarred() {
   justify-content: center;
   cursor: pointer;
   color: var(--text-tertiary);
-  transition: all 0.15s;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
   border: none;
   background: none;
   flex-shrink: 0;

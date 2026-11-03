@@ -456,8 +456,8 @@ onUnmounted(() => {
   max-height: 70vh;
   overflow-y: auto;
   background: var(--glass-strong);
-  backdrop-filter: blur(24px) saturate(1.7);
-  -webkit-backdrop-filter: blur(24px) saturate(1.7);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--glass-hair);
   border-radius: var(--r-lg);
   box-shadow:

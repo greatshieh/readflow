@@ -280,7 +280,7 @@ const streak = computed(() => {
 .ins-num {
   /* 原为 1.5rem（=24px，阶梯里没有这一档，也无法随界面缩放联动） */
   font-size: var(--fs-modal-num);
-  font-weight: 700;
+  font-weight: 500;
   line-height: var(--lh-modal-num);
   color: var(--text-primary);
   /* 负字距是给拉丁字母排紧的手法；汉字字面本身满格，压字距会让笔画粘连 —— 删除 */
@@ -380,7 +380,7 @@ const streak = computed(() => {
 }
 .ins-derived b {
   color: var(--text-primary);
-  font-weight: 700;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
 </style>

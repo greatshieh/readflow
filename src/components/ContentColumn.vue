@@ -5,10 +5,7 @@
        未选中文章时显示空状态引导页。
        四个子组件各管一块：ContentToolbar（顶栏）、ArticleSummaryCard（摘要卡）、
        ResearchFab（研究事件 FAB + 面板）、HighlightPalette（高亮调色板）。 -->
-  <div class="content-column" ref="paneRef">
-    <!-- 跟随边框：正文区保留这一层，但**不加光斑**——
-         正文是实底（--read-bg，见 .content-column），透不出光，光斑只会糊成脏斑。 -->
-    <div class="pane-frame" ref="frameRef" aria-hidden="true"></div>
+  <div class="content-column">
     <!-- 报告上下文栏：从报告引用跳到文章后出现，回到报告「送达成功」后消失。
          它必须是 `.content` 的**兄弟**而不是子级：栏的可见条件只有一个（`sourceContext`
          非空），与是否选中文章无关——文章被清理 / 被筛选掉 / 用户取消选中时，正文栏回到
@@ -199,28 +196,66 @@
       <img :src="lightboxSrc" alt="图片预览" @click.stop />
     </div>
 
-    <!-- 空状态：未选中文章时的引导页。骨架屏 / 空态 / 错误态的视觉语言
-         来自全局 .state-block + .state-logo，与订阅栏、文章列表共用一套。 -->
+    <!-- 空状态：未选中文章时的引导页。
+         ── Aurora 主视觉 ──
+         旧版是一个 logo + 一句话 + 两个文字链接，视觉重量撑不起整块正文区，
+         宽屏下读作"没加载出来"。现在改为有构图的主视觉：背后两团柔光、
+         渐变描边的大圆徽、标题层级拉开的标题组，以及**带键帽的快捷入口卡**
+         （快捷键是这款应用的核心操作方式，空态是唯一能从容教它的地方）。 -->
     <div class="empty-state" v-if="!selectedArticle">
-      <!-- 标志复用 AppLogo，与标题栏同源；此处放大到 80px 作为主空状态的视觉锚点 -->
-      <span class="state-logo"><AppLogo :size="80" /></span>
-      <p class="empty-title">接下来读点什么？</p>
-      <p class="empty-hint">选择一篇未读文章，或从订阅源中探索</p>
-      <div class="empty-actions">
-        <button class="empty-action" @click="readRandom" v-if="articlesStore.displayArticles.length > 0">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
-          </svg>
-          随机读一篇
+      <!-- 只有标志、一句事实、三个入口。空态不需要"氛围"：
+           它是用户还没选文章的那一秒，用柔光和渐变环去填充它，
+           等于在用户最不需要装饰的时刻给装饰。 -->
+      <AppLogo :size="40" />
+      <p class="empty-title">选一篇开始读</p>
+      <p class="empty-hint">左侧列表里挑一篇，或直接用下面的入口</p>
+
+      <!-- 快捷入口卡：三块，各带一个键帽。键帽用 <kbd> 语义，同时承担
+           "这就是键盘上那个键"的视觉暗示——比写「按 Ctrl+K」更容易被记住。 -->
+      <div class="es-cards">
+        <button class="es-card" @click="readRandom" v-if="articlesStore.displayArticles.length > 0">
+          <span class="es-card-ico">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+            </svg>
+          </span>
+          <span class="es-card-text">
+            <span class="es-card-title">随机读一篇</span>
+            <span class="es-card-desc">从列表随机打开一篇</span>
+          </span>
         </button>
-        <button class="empty-action" @click="refreshAll">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="23 4 23 10 17 10"></polyline>
-            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
-          </svg>
-          刷新订阅源
+
+        <button class="es-card" @click="openCommandPalette">
+          <span class="es-card-ico">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="7"></circle>
+              <line x1="20" y1="20" x2="16.2" y2="16.2"></line>
+            </svg>
+          </span>
+          <span class="es-card-text">
+            <span class="es-card-title">搜索与命令</span>
+            <span class="es-card-desc">跳转订阅源、切换视图</span>
+          </span>
+          <kbd class="kbd">{{ cmdKey }}K</kbd>
+        </button>
+
+        <button class="es-card" @click="refreshAll">
+          <span class="es-card-ico">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="23 4 23 10 17 10"></polyline>
+              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+            </svg>
+          </span>
+          <span class="es-card-text">
+            <span class="es-card-title">刷新订阅源</span>
+            <span class="es-card-desc">拉取所有源的最新文章</span>
+          </span>
+          <kbd class="kbd">R</kbd>
         </button>
       </div>
+
+      <!-- 底部提示：指出还有更多入口，避免用户以为这就是全部 -->
+      <p class="es-foot">按 <kbd class="kbd">?</kbd> 查看全部快捷键</p>
     </div>
   </div>
 </template>
@@ -263,7 +298,6 @@ import HighlightPalette from '@/components/HighlightPalette.vue'
 import ResearchFab from '@/components/ResearchFab.vue'
 import SourceBar from '@/components/report/SourceBar.vue'
 import { useHighlights, HIGHLIGHT_COLORS } from '@/composables/useHighlights'
-import { useCursorGlow } from '@/composables/useCursorGlow'
 import { useArticlesStore } from '@/stores/articles'
 import { useThesesStore, type EvidenceStance } from '@/stores/theses'
 import { useToastStore } from '@/stores/toast'
@@ -276,12 +310,6 @@ import { youtubeEmbedUrl } from '@/utils/videoEmbed'
 import { collectTocItems, type TocItem } from '@/utils/articleToc'
 import type { Article } from '@/types'
 
-/** 正文栏根元素（跟随边框的宿主；光斑层未挂 .pane-glow-host，故不生效） */
-const paneRef = ref<HTMLElement | null>(null)
-/** 跟随边框层：靠近指针的那一侧亮起一段 */
-const frameRef = ref<HTMLElement | null>(null)
-/** 只启用跟随边框。正文是实底，加光斑会糊成脏斑，故不传 .pane-glow-host 的宿主用法 */
-useCursorGlow(paneRef, frameRef)
 
 const articlesStore = useArticlesStore()
 const feedsStore = useFeedsStore()
@@ -810,6 +838,39 @@ async function refreshAll() {
   }
 }
 
+/**
+ * 快捷键修饰键的展示字符
+ *
+ * macOS 用 ⌘、其它平台用 Ctrl：空态卡上的键帽要写得和用户手上那个键一致，
+ * 否则提示本身就是一次误导。
+ */
+const cmdKey = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent) ? '⌘' : 'Ctrl+'
+
+/**
+ * 打开命令面板（空态"搜索与命令"卡的点击入口）
+ *
+ * # 为什么要发合成键盘事件
+ * `CommandPalette` 的开关是组件内部状态，唯一入口是它自己挂在 window 上的
+ * `Ctrl/⌘+K` 监听，没有对外方法、也没有 store 状态可以拨。
+ * 三条路里：把开关提升到 store 属过度设计（弹窗还能用 Esc/遮罩自关，状态会发散）；
+ * 再加一个 `open-command-palette` 事件要在弹窗里维护第二条判定分支（易与键盘路径
+ * 不同步）；合成事件最省且**天然复用同一条判定逻辑**——所见即所按。
+ *
+ * @returns 无返回值；副作用为派发一次 keydown
+ */
+function openCommandPalette() {
+  const isMac = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent)
+  window.dispatchEvent(
+    new KeyboardEvent('keydown', {
+      key: 'k',
+      ctrlKey: !isMac,
+      metaKey: isMac,
+      bubbles: true,
+      cancelable: true
+    })
+  )
+}
+
 /** 切换文章时重置随文章清除的视图态，并自动触发摘要生成 */
 watch(
   () => selectedArticle.value?.id,
@@ -900,12 +961,8 @@ onUnmounted(() => {
   height: 100%;
   /* 定位上下文：研究事件悬浮按钮（.research-fab-wrap）以此为基准固定在右下角 */
   position: relative;
-  border-radius: var(--r-panel);
-  box-shadow:
-    inset 0 1px 0 var(--glass-hi),
-    0 2px 6px rgba(31, 45, 70, 0.04),
-    0 10px 30px rgba(31, 45, 70, 0.06);
-  border: 1px solid var(--glass-hair);
+  /* 本栏是壳内最右分区；外壳满窗后无圆角，这里也不画 */
+  border-radius: 0 var(--shell-r) var(--shell-r) 0;
 }
 
 .content {
@@ -934,8 +991,9 @@ onUnmounted(() => {
 }
 .content-title {
   font-size: calc(24px * var(--reading-scale, 1));
-  font-weight: 700;
-  color: var(--text-primary);
+  font-weight: 600;
+  /* 与正文同一个墨色。纸上若标题走中性黑、正文走暖黑，两种黑并排会显得标题"发灰"。 */
+  color: var(--read-fg);
   margin-bottom: var(--sp-15);
   line-height: 1.4;
   /* 负字距 + 收紧的字距让标题真正成为视觉中心（原先 600 字重偏"列表项"气质） */
@@ -1061,7 +1119,7 @@ onUnmounted(() => {
 .content-body :deep(p) { margin: 0 0 var(--sp-4); line-height: 1.85; }
 /* 标题刻意用 --text-primary 而非 --read-fg：正文已降到略暗的一档，
    标题再与之同色会失去层级。h5/h6 用 secondary，是正文与标题之间的过渡层。 */
-.content-body :deep(h1) { font-size: var(--fs-2xl); font-weight: 600; line-height: 1.3; margin: var(--sp-6) 0 var(--sp-3); color: var(--text-primary); }
+.content-body :deep(h1) { font-size: var(--fs-2xl); font-weight: 600; line-height: 1.3; margin: var(--sp-6) 0 var(--sp-3); color: var(--read-fg); }
 .content-body :deep(h2) { font-size: var(--fs-lg); font-weight: 500; margin: var(--sp-5) 0 var(--sp-15); color: var(--text-primary); }
 .content-body :deep(h3) { font-size: var(--fs-base); font-weight: 500; margin: var(--sp-4) 0 var(--sp-2); color: var(--text-primary); }
 .content-body :deep(h4) { font-size: var(--fs-base); font-weight: 500; margin: var(--sp-35) 0 var(--sp-05); color: var(--text-primary); }
@@ -1138,8 +1196,10 @@ onUnmounted(() => {
 @keyframes lightboxIn { from { opacity: 0; } to { opacity: 1; } }
 .lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: var(--r-md); box-shadow: var(--shadow-pop); cursor: default; }
 
-/* 主空状态：撑满剩余高度并居中，垂直间距比列表型空态略大——
-   正文栏是应用的视觉主角，标志与双按钮需要更从容的呼吸感。 */
+/* 空状态：标志 + 一句事实 + 三个入口，居中。
+   视觉重量由**留白**承担而不是装饰：这一块占满正文栏，
+   只要边距给足，logo 与标题自然读作"这里在等你选"。
+   宽度上限交给 .es-cards（520px）——铺满整宽会让标题与卡片之间空出一大条。 */
 .empty-state {
   flex: 1;
   min-height: 0;
@@ -1148,41 +1208,104 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   color: var(--text-tertiary);
-  padding: var(--sp-10) var(--sp-5);
+  padding: var(--sp-10) var(--sp-6);
   text-align: center;
 }
-.empty-state .state-logo {
-  margin-bottom: 18px;
-  opacity: 0.9;
-}
+.empty-state > :deep(.app-logo) { margin-bottom: var(--sp-4); }
+/* 柔光层与渐变徽章环已删除。
+   那里是两团 380/320px 的径向色斑 + 一个 84px 的跨色相渐变圆环（mask 挖空）。
+   在"还没选文章"的一瞬间铺两块彩光，是典型的用装饰填空白——
+   而这块界面真正缺的是留白，不是光。 */
+
 .empty-title {
   font-size: var(--fs-xl);
   font-weight: 500;
+  line-height: 1.3;
+  margin-bottom: var(--sp-1);
   color: var(--text-primary);
-  margin-bottom: var(--sp-2);
 }
 .empty-hint {
   font-size: var(--fs-md);
   color: var(--text-tertiary);
   margin-bottom: var(--sp-6);
+  max-width: 34em;
 }
-.empty-actions { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-15); margin-top: var(--sp-5); }
-.empty-action {
+
+/* 入口卡容器：单列 520px。
+   单列而非三列——正文栏宽度随窗口变化，三列在 620px 时描述文字会被压成两行。 */
+.es-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-15);
+  width: 100%;
+  max-width: 520px;
+}
+.es-card {
   display: flex;
   align-items: center;
-  gap: var(--sp-05);
-  padding: var(--sp-05) var(--sp-3);
-  border: none;
-  background: none;
-  border-radius: var(--r-md);
-  font-size: var(--fs-md);
-  color: var(--primary);
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-3) var(--sp-35);
+  border-radius: var(--r-lg);
+  border: 1px solid var(--border);
+  background: var(--surface);
   cursor: pointer;
   font-family: inherit;
-  transition: background 0.15s;
+  text-align: left;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
-.empty-action:hover { background: var(--primary-tint); }
-.empty-action svg { width: 14px; height: 14px; flex-shrink: 0; }
+/* hover：描边换成身份色 + 上浮 1px + 带主色的微投影。
+   三层同时变化才读得出"这张卡是活的"；只改底色在浅色面上几乎看不见。 */
+/* hover：描边加深一档 + 底色抬一档。不上浮、不加光环——
+   这两张卡是空态里的三个平级入口，谁都不该在悬停时"跳"起来。 */
+.es-card:hover {
+  border-color: color-mix(in srgb, var(--text-primary) 22%, transparent);
+  background: var(--surface-muted);
+}
+.es-card:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.es-card:active { transform: scale(0.99); }
+
+.es-card-ico {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-md);
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+.es-card-ico svg { width: 16px; height: 16px; }
+.es-card-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.es-card-title {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.es-card-desc {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 键帽样式已提到全局 `.kbd`（styles.css）：空态、命令面板、快捷键提示
+   三处都要用，留在组件里必然长出三份走样的副本。 */
+
+/* 矮窗口：内容可能超出视口，改为顶部对齐（否则徽章会被压扁或溢出被裁） */
+@media (max-height: 640px) {
+  .empty-state { justify-content: flex-start; overflow-y: auto; }
+}
 
 /* 移动端：正文占满 */
 @media (max-width: 768px) {

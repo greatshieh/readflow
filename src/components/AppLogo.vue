@@ -1,32 +1,23 @@
 <template>
   <!--
-    应用标志：紫罗兰渐变徽章 + 白色流动箭头。
-    徽章底色取自全局 --brand-from / --brand-to，是品牌锚点，与 --primary 分属两套语义；
-    深色主题下由 styles.css 的暗色段整体提亮一档。
-    标题栏与正文栏空状态共用本组件，避免两处各写一份 SVG 导致改色不同步。
+    应用标志：一个平涂的单色符号（不是渐变圆形徽章）。
+    「一道弧 + 一个指向左的回钩」＝ 把内容拉回来自己读，这是本地优先阅读器的形状。
   -->
   <span class="app-logo" :style="logoStyle" aria-hidden="true">
     <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <!-- 渐变 id 随组件实例生成，防止同页多实例互相覆盖同一 id -->
-        <linearGradient :id="gradId" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" style="stop-color: var(--brand-from)" />
-          <stop offset="100%" style="stop-color: var(--brand-to)" />
-        </linearGradient>
-      </defs>
-      <circle cx="32" cy="32" r="24" :fill="`url(#${gradId})`" />
-      <!-- 流动箭头：由 R 形弧线收笔，与"ReadFlow"的流字呼应 -->
+      <!-- 弧：从左上起笔，绕过右侧，落回下方 -->
       <path
-        d="M32 16 C22 16 16 24 16 32 C16 40 22 48 32 48"
-        stroke="white"
-        stroke-width="3.5"
+        d="M32 14 C21 14 14 23 14 32 C14 41 21 50 32 50"
+        stroke="currentColor"
+        stroke-width="6"
         stroke-linecap="round"
         fill="none"
       />
+      <!-- 回钩：指向左，与弧的收笔同一点出发 -->
       <path
-        d="M38 28 L32 34 L38 40"
-        stroke="white"
-        stroke-width="3"
+        d="M40 27 L32 34 L40 41"
+        stroke="currentColor"
+        stroke-width="6"
         stroke-linecap="round"
         stroke-linejoin="round"
         fill="none"
@@ -40,16 +31,18 @@
  * 应用标志组件
  *
  * # 职责
- * 提供全应用唯一的品牌标志图形，供标题栏与正文栏空状态复用。
+ * 提供全应用唯一的标志图形，供标题栏与正文栏空状态复用。
  *
- * # 设计意图
- * - **单一来源**：此前标题栏与空状态各内联一份完整 SVG，渐变色值也各写一遍；
- *   改一次品牌色要动两个文件，极易不同步。本组件把这些收敛到一处。
- * - **与主题色解耦**：品牌色走独立的 `--brand-*` 变量，不挂在 `--primary` 上。
- *   应用图标是品牌锚点，`--primary` 是界面装饰色，两者语义不同；
- *   当前取值同属紫罗兰色族，但改动其一不会连带另一处。
- * - **id 唯一**：SVG `<linearGradient>` 的 id 是文档级的，同页多实例若共用一个
- *   固定 id，后挂载的实例会覆盖前者的定义。这里按实例生成唯一 id。
+ * # 为什么从「渐变圆徽章」改成一个平涂符号
+ * 旧版是 64px 圆 + 斜向紫罗兰渐变填充 + 白色描边箭头，等于一个**渐变球**。
+ * 它是"一眼 AI"清单里排在最前的形状之一：圆、渐变、白图形，
+ * 三个特征叠加后在任何产品上都成立，因此不携带任何产品信息。
+ * 现在去掉圆底与渐变，只留两道 6px 圆头笔画，用 `--primary` 单一色。
+ * 在标题栏 24px、空态 40px 两个尺寸下都仍然清楚。
+ *
+ * # 与主题色的关系
+ * 走 `currentColor` + `--primary`：标志不再单独持有一套品牌色变量
+ * （原 `--brand-from` / `--brand-to` 已随之退化为同值，保留仅为兼容引用）。
  */
 
 import { computed } from 'vue'
@@ -61,11 +54,6 @@ const props = withDefaults(
   }>(),
   { size: 24 },
 )
-
-/**
- * 渐变 id：组件实例内唯一，避免同页多实例互相覆盖 `<linearGradient>` 定义
- */
-const gradId = `app-logo-grad-${Math.random().toString(36).slice(2, 9)}`
 
 /** 外层容器的尺寸样式：size 单一来源，SVG 内部靠 viewBox 自适应 */
 const logoStyle = computed(() => ({
@@ -79,19 +67,8 @@ const logoStyle = computed(() => ({
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  /* 圆形裁切：徽章本就是正圆，外层再切一次可避免 SVG 边缘抗锯齿时
-     在主题色背景上露出 1px 底色缝隙 */
-  border-radius: 50%;
-  overflow: hidden;
-  /* 投影走全局 token：暗色主题下自动换成更重的浓度，不会显脏 */
-  box-shadow: var(--shadow-sm);
-  /* 标题栏与空状态都用它，缩小不产生布局抖动 */
+  color: var(--primary);
   flex-shrink: 0;
-  transition: transform var(--dur) var(--ease);
-}
-
-.app-logo:hover {
-  transform: scale(1.08);
 }
 
 .app-logo svg {

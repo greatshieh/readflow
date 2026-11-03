@@ -223,7 +223,7 @@ async function handleExportOpml() {
 /* 统计大数走 num 档（22/700）。右侧内容列宽约 660px、5 等分后每格内宽约 104px，
    6 位数（22px 约 78px）仍不溢出；tabular-nums 让五格数字位数不同也对齐。 */
 .stat-num {
-  font-size: var(--fs-modal-num); font-weight: 700;
+  font-size: var(--fs-modal-num); font-weight: 500;
   line-height: var(--lh-modal-num); font-variant-numeric: tabular-nums;
   color: var(--text-primary);
 }

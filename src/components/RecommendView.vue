@@ -181,18 +181,34 @@ onMounted(async () => {
               </div>
             </div>
             <div class="rv-card-actions">
+              <!-- 投票用线性图标，不用 👍 / 👎 表情：
+                   表情的字形由系统字体决定，Windows / macOS / Linux 三处是三种画法，
+                   而且它是彩色的——一列卡片里出现两抹黄，比按钮本身还显眼。
+                   换成 16px / 1.5 描边的同集图标，颜色跟随文字角色。 -->
               <button
                 class="rv-act"
                 :class="{ active: a.user_preference === 'like' }"
                 title="喜欢"
+                aria-label="喜欢"
                 @click="applyPreference(a, 'like')"
-              >👍</button>
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M7 10v10H4V10h3z"></path>
+                  <path d="M7 10l4.5-7a2 2 0 0 1 3.4 2.1L13.5 10H19a2 2 0 0 1 2 2.3l-1.2 6A2 2 0 0 1 17.8 20H7"></path>
+                </svg>
+              </button>
               <button
                 class="rv-act"
                 :class="{ active: a.user_preference === 'skip' }"
                 title="跳过"
+                aria-label="跳过"
                 @click="applyPreference(a, 'skip')"
-              >👎</button>
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M7 14V4H4v10h3z"></path>
+                  <path d="M7 14l4.5 7a2 2 0 0 0 3.4-2.1L13.5 14H19a2 2 0 0 0 2-2.3l-1.2-6A2 2 0 0 0 17.8 4H7"></path>
+                </svg>
+              </button>
             </div>
           </li>
         </ul>
@@ -221,7 +237,7 @@ onMounted(async () => {
 .rv-title {
   margin: 0;
   font-size: 18px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text-primary, #111);
 }
 .rv-sub {
@@ -282,7 +298,7 @@ onMounted(async () => {
   border-bottom: 1px dashed var(--border, #eee);
 }
 .rv-entity {
-  font-weight: 700;
+  font-weight: 500;
   font-size: 15px;
   color: var(--text-primary, #111);
 }
@@ -358,23 +374,33 @@ onMounted(async () => {
   flex-direction: column;
   gap: 4px;
 }
+/* 32×32 命中区（原 32×28，高度低于舒适区），图标 16px / 1.5 描边，
+   与全站图标同一档。默认低对比，悬停显形——这是卡片上的次要动作。 */
 .rv-act {
-  border: 1px solid var(--border, #eee);
-  background: var(--surface, #fff);
-  border-radius: 8px;
+  display: grid;
+  place-items: center;
   width: 32px;
-  height: 28px;
-  font-size: 14px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--text-tertiary);
   cursor: pointer;
-  opacity: 0.55;
-  transition: all 0.15s ease;
+  opacity: 0.7;
+  transition: opacity var(--dur) var(--ease), background var(--dur) var(--ease),
+    color var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
-.rv-act:hover {
+.rv-act svg { width: 16px; height: 16px; }
+.rv-act:hover { opacity: 1; color: var(--text-primary); }
+.rv-act:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
   opacity: 1;
 }
 .rv-act.active {
   opacity: 1;
-  border-color: var(--primary, #3b82f6);
-  background: color-mix(in srgb, var(--primary, #3b82f6) 12%, var(--surface, #fff));
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--primary-tint);
 }
 </style>
