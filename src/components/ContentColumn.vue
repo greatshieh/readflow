@@ -996,8 +996,8 @@ onUnmounted(() => {
   color: var(--read-fg);
   margin-bottom: var(--sp-15);
   line-height: 1.4;
-  /* 负字距 + 收紧的字距让标题真正成为视觉中心（原先 600 字重偏"列表项"气质） */
-  letter-spacing: -0.02em;
+  /* 不加负字距：拉丁标题收紧是对的（字形自带侧距），中文标题收紧则字形互相挤压，
+     24px 上尤其明显。这里的文章标题以中文为主，所以放弃那 0.02em。 */
   font-family: var(--reading-font, inherit);
 }
 .content-meta {
@@ -1401,8 +1401,8 @@ onUnmounted(() => {
 /* 选中态才上色：三个按钮常年带色会让人以为已经选好了 */
 .tp-stance.on { background: var(--surface); font-weight: 500; }
 .tp-stance.on.bad { color: var(--danger); }
-.tp-stance.on.mixed { color: var(--warning); }
-.tp-stance.on.ok { color: var(--success); }
+.tp-stance.on.mixed { color: var(--warning-text); }
+.tp-stance.on.ok { color: var(--success-text); }
 .tp-ok {
   border: none;
   cursor: pointer;

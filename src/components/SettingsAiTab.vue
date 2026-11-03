@@ -219,5 +219,5 @@ defineExpose({ save: saveAi, saving })
   font-weight: 400;
   color: var(--text-tertiary);
 }
-.key-status.is-set { color: var(--success); }
+.key-status.is-set { color: var(--success-text); }
 </style>

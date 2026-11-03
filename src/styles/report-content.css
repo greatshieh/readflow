@@ -155,7 +155,7 @@
   border-left-color: var(--warning, #f59e0b);
 }
 .rc .md-callout-warning .md-callout-badge {
-  color: var(--warning, #f59e0b);
+  color: var(--warning-text, #b45309);
 }
 .rc .md-callout-note {
   border-left-color: var(--info, #0ea5e9);

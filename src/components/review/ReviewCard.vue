@@ -258,7 +258,7 @@ function shortDate(ts: string): string {
   white-space: nowrap;
 }
 .rv-badge-due {
-  color: var(--warning);
+  color: var(--warning-text);
   background: color-mix(in srgb, var(--warning) 12%, transparent);
 }
 
@@ -306,7 +306,7 @@ function shortDate(ts: string): string {
   border-left-color: var(--danger);
 }
 .rv-hit-mid {
-  color: var(--warning);
+  color: var(--warning-text);
   background: color-mix(in srgb, var(--warning) 8%, transparent);
   border-left-color: var(--warning);
 }

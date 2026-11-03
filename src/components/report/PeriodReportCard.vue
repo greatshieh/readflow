@@ -172,7 +172,7 @@ function onExport(e: MouseEvent) {
 }
 .card-tag.week {
   background: color-mix(in srgb, var(--info) 14%, transparent);
-  color: var(--info);
+  color: var(--info-text);
 }
 .card-tag.month {
   background: color-mix(in srgb, var(--tone-violet) 14%, transparent);

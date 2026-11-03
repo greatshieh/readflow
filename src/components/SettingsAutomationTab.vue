@@ -643,7 +643,7 @@ onMounted(() => {
 .status-success .status-dot { background: var(--success); }
 .status-failed { color: var(--danger); }
 .status-failed .status-dot { background: var(--danger); }
-.status-unconfigured { color: var(--warning); }
+.status-unconfigured { color: var(--warning-text); }
 .status-unconfigured .status-dot { background: var(--warning); }
 .status-never { color: var(--text-tertiary); }
 .status-never .status-dot { background: var(--border); }

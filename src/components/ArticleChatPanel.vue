@@ -339,7 +339,7 @@ defineExpose({
   margin: 0;
   padding: var(--sp-1) var(--sp-3);
   background: var(--danger);
-  color: var(--danger-fg);
+  color: var(--tone-fg);
   font-size: var(--fs-xs);
   line-height: 1.5;
 }
@@ -415,7 +415,7 @@ defineExpose({
 }
 .cp-bubble.error {
   background: var(--danger);
-  color: var(--danger-fg);
+  color: var(--tone-fg);
   border-color: transparent;
 }
 .cp-note {
@@ -423,7 +423,7 @@ defineExpose({
   font-size: var(--fs-xs);
 }
 .cp-bubble.error .cp-note {
-  color: var(--danger-fg);
+  color: var(--tone-fg);
 }
 
 /* 等待首字：三点呼吸，明确表达"模型正在写"而不是界面卡死 */

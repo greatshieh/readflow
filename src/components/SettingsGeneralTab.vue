@@ -801,11 +801,14 @@ defineExpose({ save: saveGeneral })
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
-/* 未启用任何领域且无自定义类型时的提示（warn token 缺失时回退琥珀色，深浅主题通用）。
+/* 未启用任何领域且无自定义类型时的提示。
+   原先写 var(--warn, #b45309)：`--warn` 这个令牌**从来不存在**，于是一直在走回退，
+   深浅两套主题里都固定成同一个 #b45309 —— 暗底上它只有 3.39:1，正是"暗色下这段字
+   反而看不清"的来源，而且谁也看不出是令牌缺失导致的。改用语义层的文字档。
    整句提示走正文档 14，不用 meta 11 —— 这是要读的句子，不是脚注。 */
 .event-type-warn {
   margin-top: var(--sp-2);
   font-size: var(--fs-modal-body); line-height: var(--lh-modal-body);
-  color: var(--warn, #b45309);
+  color: var(--warning-text);
 }
 </style>

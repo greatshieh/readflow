@@ -436,7 +436,7 @@ onMounted(() => {
 }
 .st.ok {
   background: color-mix(in srgb, var(--success) 14%, transparent);
-  color: var(--success);
+  color: var(--success-text);
 }
 .st.bad {
   background: color-mix(in srgb, var(--danger) 12%, transparent);
@@ -490,10 +490,10 @@ onMounted(() => {
   color: var(--danger);
 }
 .cnt.mixed {
-  color: var(--warning);
+  color: var(--warning-text);
 }
 .cnt.ok {
-  color: var(--success);
+  color: var(--success-text);
 }
 .cnt.none {
   color: var(--text-tertiary);
@@ -558,14 +558,14 @@ onMounted(() => {
   font-variant-numeric: tabular-nums;
 }
 .cf-count.near {
-  color: var(--warning);
+  color: var(--warning-text);
 }
 /* 字段级说明（如"还没有实体"）：与错误分开——它是引导，不是失败 */
 .cf-note {
   margin: 0;
   font-size: var(--fs-modal-meta);
   line-height: 1.6;
-  color: var(--warning);
+  color: var(--warning-text);
 }
 .cf-conf {
   display: flex;

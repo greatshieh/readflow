@@ -518,7 +518,7 @@ watch(
 }
 .cv-tier.t-exit {
   background: color-mix(in srgb, var(--warning) 16%, transparent);
-  color: var(--warning);
+  color: var(--warning-text);
 }
 .cv-name {
   flex-shrink: 0;
@@ -550,10 +550,10 @@ watch(
   color: var(--text-tertiary);
 }
 .cv-line.warn {
-  color: var(--warning);
+  color: var(--warning-text);
 }
 .cv-line.warn b {
-  color: var(--warning);
+  color: var(--warning-text);
 }
 
 .cv-edit {

@@ -1011,11 +1011,11 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
    此前是 22px 自建药丸，比所有行内小钮都矮 2px。三类立场只在**悬停**时透出颜色
    且只变描边——这一行是次要动作，不该抢过事件正文。 */
 .act.bad:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
-.act.mixed:hover:not(:disabled) { border-color: var(--warning); color: var(--warning); }
-.act.ok:hover:not(:disabled) { border-color: var(--success); color: var(--success); }
+.act.mixed:hover:not(:disabled) { border-color: var(--warning); color: var(--warning-text); }
+.act.ok:hover:not(:disabled) { border-color: var(--success); color: var(--success-text); }
 .acts-done {
   font-size: var(--fs-modal-meta);
-  color: var(--success);
+  color: var(--success-text);
 }
 
 /* ═══ 选论点弹层内容 ═══ */

@@ -112,16 +112,16 @@ watch(() => props.thesisId, load)
   color: var(--text-primary);
 }
 .div.warn .div-line b {
-  color: var(--warning);
+  color: var(--warning-text);
 }
 .div-line.muted {
   color: var(--text-tertiary);
 }
 .div-hint {
-  color: var(--warning);
+  color: var(--warning-text);
 }
 .div-hint.ok {
-  color: var(--success);
+  color: var(--success-text);
 }
 .div-hint.muted {
   color: var(--text-tertiary);

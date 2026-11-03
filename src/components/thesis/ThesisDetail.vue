@@ -574,7 +574,7 @@ onMounted(() => {
 }
 .st.ok {
   background: color-mix(in srgb, var(--success) 14%, transparent);
-  color: var(--success);
+  color: var(--success-text);
 }
 .st.bad {
   background: color-mix(in srgb, var(--danger) 12%, transparent);
@@ -724,10 +724,10 @@ onMounted(() => {
   color: var(--danger);
 }
 .td-sec-head h2.mixed {
-  color: var(--warning);
+  color: var(--warning-text);
 }
 .td-sec-head h2.ok {
-  color: var(--success);
+  color: var(--success-text);
 }
 .td-sec-head h2 {
   color: var(--text-primary);
