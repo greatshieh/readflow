@@ -363,7 +363,9 @@ watch(() => props.entityId, load)
   border: 1px solid var(--tech-line);
   border-left: 3px solid var(--tech-rail);
   border-radius: var(--r-lg);
-  background: linear-gradient(180deg, var(--tech-glow), transparent);
+  /* 原先是「12% 主色 → 透明」的竖向渐隐，等于给这块贴了一条顶光。
+     现在是一层平的主色水洗——深浅均匀，边界由左侧 3px 竖条交代。 */
+  background: color-mix(in srgb, var(--primary) 6%, transparent);
 }
 /* 主价格：大数字角色（22/700/1.1 + 等宽数字） */
 .mp-price {
