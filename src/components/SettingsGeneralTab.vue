@@ -135,6 +135,17 @@
       <AppSwitch v-model="eventAlertEnabled" label="事件预警" />
     </div>
 
+    <!-- 价格预警：写入 settings.price_alert_enabled，缺省开启。
+         与「事件预警」分开的理由：两者看的东西不同（新闻 vs 价格），
+         用户完全可能白天盯盘时关掉价格重复提醒、但希望新闻照常通知。 -->
+    <div class="setting">
+      <div class="setting-info">
+        <h4>价格预警</h4>
+        <p>在实体行情面板为证券设置价格阈值后，价格突破时推送通知（同一标的 2 小时内只提醒一次；需在面板内先关联证券代码）</p>
+      </div>
+      <AppSwitch v-model="priceAlertEnabled" label="价格预警" />
+    </div>
+
     <!-- 复盘提醒：写入 settings.thesis_review_reminder_enabled，缺省开启。
          与「系统通知」总开关是两级：总开关关掉则一律不发；这里只控制复盘那一条。
          关掉后不会消耗 7 天去重窗口（见 research/review/remind.rs 的 disabled 分支），
@@ -411,6 +422,8 @@ const keepUnread = ref(true)
     const notifyEnabled = ref(true)
     /** 事件预警开关：缺省开启，落库为 settings.event_alert_enabled（"1" / "0"） */
     const eventAlertEnabled = ref(true)
+    /** 价格预警开关：缺省开启，落库为 settings.price_alert_enabled（"1" / "0"） */
+    const priceAlertEnabled = ref(true)
     /** 复盘提醒开关：缺省开启，落库为 settings.thesis_review_reminder_enabled（"1" / "0"） */
     const reviewReminderEnabled = ref(true)
 /** 关闭到托盘开关：缺省开启，落库为 settings.close_to_tray（"1" / "0"） */
@@ -584,6 +597,8 @@ watch(
     notifyEnabled.value = settingsStore.getSetting('notify_enabled') !== '0'
     // 事件预警：缺省开启，只有显式存过 "0" 才算关闭（与 Rust 侧 notify.rs 判据一致）
     eventAlertEnabled.value = settingsStore.getSetting('event_alert_enabled') !== '0'
+    // 价格预警：同上判据（与 Rust 侧 notify.rs 的 price_alert_enabled 一致）
+    priceAlertEnabled.value = settingsStore.getSetting('price_alert_enabled') !== '0'
     // 复盘提醒：缺省开启，只有显式存过 "0" 才算关闭（与 Rust 侧 review/remind.rs 判据一致）
     reviewReminderEnabled.value = settingsStore.getSetting('thesis_review_reminder_enabled') !== '0'
     // 关闭到托盘：缺省开启，只有显式存过 "0" 才算关闭（与 Rust 侧 win_close 判据一致）
@@ -660,6 +675,7 @@ async function saveGeneral() {
       settingsStore.setSetting('retention_keep_unread', keepUnread.value ? '1' : '0'),
       settingsStore.setSetting('notify_enabled', notifyEnabled.value ? '1' : '0'),
       settingsStore.setSetting('event_alert_enabled', eventAlertEnabled.value ? '1' : '0'),
+      settingsStore.setSetting('price_alert_enabled', priceAlertEnabled.value ? '1' : '0'),
       settingsStore.setSetting(
         'thesis_review_reminder_enabled',
         reviewReminderEnabled.value ? '1' : '0'
