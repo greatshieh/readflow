@@ -39,12 +39,12 @@
 }
 .rc h1 {
   font-size: 1.45em;
-  font-weight: 700;
+  font-weight: 600;
   margin-top: 0;
 }
 .rc h2 {
   font-size: 1.15em;
-  font-weight: 700;
+  font-weight: 600;
   padding-bottom: 0.25em;
   border-bottom: 1px solid var(--border, #e6eaf0);
 }
@@ -58,7 +58,7 @@
   color: var(--text-secondary, #565d6b);
 }
 .rc strong {
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text-primary, #191c22);
 }
 .rc em {

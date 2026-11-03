@@ -15,10 +15,30 @@
      它的旧名是 --primary-fg，名字里的 "fg" 曾诱导三处把它写成 `color:`——
      结果是紫底上放一层 10% 透明的紫字，文字近乎不可见。
      实心主色块上的文字色一律用 --tone-fg。 */
-  --primary: #7c6ff0;
-  --primary-hover: #5b4fe0;
-  --primary-soft: #f0eeff;
-  --primary-tint: rgba(124, 111, 240, 0.1);
+  --primary: #6c5ce7;
+  --primary-hover: #5546d6;
+  --primary-soft: #efedfe;
+  --primary-tint: rgba(108, 92, 231, 0.1);
+  /* 实心主按钮的底色。与 --primary 分开的原因只有一个：**白字的对比度**。
+     --primary 要同时承担"浅底上的紫字"（需要够深）和"深底上的紫字"（需要够亮），
+     深色主题下它被提亮到 #8b7cf6，配白字只有 3.33:1，不达 AA。
+     故实心填充单独取值，两套主题都能让白字过 4.5:1。
+     浅色 #6c5ce7 + 白 = 4.86:1；深色 #6f63c6 + 白 = 4.92:1。 */
+  --primary-solid: #6c5ce7;
+  --primary-solid-hover: #5546d6;
+
+  /* ── 关于「第二色相」：已移除，不要再加回来 ─────────────────────
+     这里曾有一组极光令牌（--aurora-a/b/c + --grad-brand + --grad-hairline），
+     用靛紫 → 淡紫 → 青蓝的三段跨色相渐变做"身份标识"，铺在未读竖条、
+     空态徽章环、概览顶线、列宽抓手上，并用于空态标题的渐变文字。
+
+     移除原因（不是审美口味，是可读性）：
+     ① 跨色相渐变在 1~3px 宽的细条上只剩过渡区，读作「边缘在发亮」而非品牌色；
+     ② 三段里最亮的 #a78bfa 落在浅底上对比度只有 2.72:1，作为文字不达标；
+     ③ 一个界面里出现紫、淡紫、青三个色相，等于没有主色。
+
+     现在**只有 --primary 一个色相**，且只在四处使用：主按钮、选中态、
+     待处理数字、未读标记。要在别处用色，先问"这里是否需要它比周围重要"。 */
 
   /* ── 色调板（彩色标记的唯一色值来源）──
      徽章、类型标签、状态点这些"传达状态而非品牌"的元素此前各自写死 hex，
@@ -51,8 +71,8 @@
      与主题色同源，统一为紫罗兰：全局单色体系下 logo 不另立色相。
      深色主题下提亮一档，保证在近黑标题栏上的对比度。
      组件一律通过 AppLogo.vue 消费这两个变量，禁止再写字面色值。 */
-  --brand-from: #7c6ff0;
-  --brand-to: #5b4fe0;
+  --brand-from: #6c5ce7;
+  --brand-to: #5546d6;
 
   /* ── 状态色（语义别名，指向色调板）── */
   --success: var(--tone-green);
@@ -108,25 +128,32 @@
   --hl-pink: #fbcfe8;
   --hl-fg: #1f2328;
 
-  /* ── 中性色 ──
-     --bg 刻意比 --surface 深一档：让三栏白色面板"浮"在底色之上形成层级，
-     这是整套现代化观感的基础。底色取冷调浅蓝而非中性灰（实测参考 WorkBuddy
-     为 #f5f9ff），蓝色底让白色面板的边界更清晰、整体更通透。 */
-  --bg: #f5f9ff;
+  /* ── 中性色阶（石墨，向紫偏 2%）──
+     为什么偏紫而不是偏蓝：整套界面唯一的主色是紫罗兰，中性色向它偏极少量
+     （2% 左右）能让白、灰、紫读作同一套材料；此前取冷蓝（#f5f9ff / #dce8ff）
+     是典型的"冷调 SaaS"模板色，与品牌色分属两个色系。
+
+     三档文字，只有三档：
+       primary   正文与标题
+       secondary 次级说明、行内标签
+       tertiary  时间戳、计数、占位——**这一档必须 ≥4.5:1**，
+                 它是小字，此前 #8b93a3 只有 3.2:1，等于把日期写在雾里。 */
+  --bg: #f7f7f9;
   --surface: #ffffff;
-  --surface-muted: #f7f9fb;
-  --text-primary: #191c22;
-  --text-secondary: #565d6b;
-  --text-tertiary: #8b93a3;
-  --border: #e6eaf0;
-  --fill: #f2f5f8;
-  --fill-secondary: #e8ecf2;
-  /* 面板 hairline 描边：浮岛分隔的主手段——投影只负责"微浮起"，
-     真正的边界由这根冷蓝色细线勾出（仿 WorkBuddy 实测色 #dce8ff）。
-     好处是不依赖投影浓度，栏间缝隙不会被压成深色凹槽。 */
-  --panel-border: #dce8ff;
-  /* 自绘标题栏的底色：毛玻璃材质，与新版冷调底色融合 */
-  --titlebar-bg: rgba(245, 249, 255, 0.86);
+  --surface-muted: #f4f4f6;
+  --text-primary: #17171c;
+  --text-secondary: #55555f;
+  --text-tertiary: #767680;
+  --border: #e7e7ec;
+  --fill: #f2f2f5;
+  --fill-secondary: #e9e9ee;
+  /* 壳内分区发丝线：边界由亮度差承担，不用带色相的描边
+     （此前是冷蓝 #dce8ff，在暖白面上会显出一条淡蓝缝）。 */
+  --panel-border: #e3e3e9;
+
+  /* 注：标题栏底色令牌 --titlebar-bg 已随 Aurora 骨架移除——TitleBar 现在直接
+     消费 --shell-bg，与外壳同材质。若再引入一份标题栏专用底色，
+     顶部接缝会立刻显出一条色差。 */
 
   /* ── 液态玻璃令牌组 ────────────────────────────────────────────────
      玻璃只用于「铬件」：顶栏 / 侧栏 / 浮层 / 选中胶囊。正文阅读区**刻意不玻璃化**
@@ -167,24 +194,28 @@
      应用身份的锚，主色是界面装饰色，两者语义不同——当前虽同属紫罗兰色族，
      但改动其一不应连带另一处。
 
-     浅色 / 深色取**不同策略**，这不是审美偏好而是对比度约束：
-     - 浅色面上可以走**实色块 + 反白字**：--brand-to 比 --brand-from 深一档，
-       配纯白文字的对比度充足，锚点最强；
-     - 深色面上实色块配浅字对比度不足，底色越实字越难读，
-       故深色只能走**淡底 + 描边**，靠形状而非底色表达"选中"。 */
+     两套主题现在走**同一套策略**（淡底 + 主色字 + 发丝描边）：
+     浅色此前用实色块配反白字，问题是屏幕上已有实心主按钮，
+     两个同强度的高饱和块并存会互相抵消。 */
   /* 悬停：只给淡底。两套主题同值——hover 是"路过"，不需要区分强弱。 */
-  --cap-hover-bg: color-mix(in srgb, var(--brand-from) 12%, transparent);
-  /* 浅色选中：实色块 + 反白字 */
-  --cap-solid-bg: var(--brand-to);
-  --cap-active-fg: #ffffff;
-  --cap-line: transparent;                /* 实色块不需要描边 */
-  --cap-shadow: rgba(91, 79, 224, 0.28);
+  --cap-hover-bg: color-mix(in srgb, var(--brand-from) 8%, transparent);
+  /* 浅色选中：淡底 + 主色字 + 发丝描边。
+     ── 从"实色块 + 反白字"改过来 ──
+     实色块确实最醒目，但屏幕上已经有主按钮是实心主色；再加一个实心紫胶囊，
+     两处同强度的高饱和块互相抵消，反而都不突出了。
+     现在选中态靠"底色有一层极淡的紫 + 文字变紫 + 一道发丝描边"表达，
+     识别度不减（三者同时变化），但强度退回主按钮之后。 */
+  --cap-solid-bg: var(--primary-soft);
+  --cap-active-fg: var(--primary-hover);
+  --cap-line: color-mix(in srgb, var(--brand-from) 26%, transparent);
+  /* 胶囊投影：中性一档。带主色的投影（曾是 28% 紫）在浅底上会晕出一圈紫光。 */
+  --cap-shadow: rgba(17, 17, 22, 0.08);
   /* 输入框聚焦态底色：比常态更实的一层白玻璃（控件自身的聚焦反馈，与胶囊体系无关） */
   --cap-feed: rgba(255, 255, 255, 0.82);
   /* 文章列表的选中胶囊：与订阅栏同一套品牌色，只是弱一档（见下方暗色档） */
   --cap-accent-bg: color-mix(in srgb, var(--brand-from) 12%, transparent);
   --cap-accent-line: color-mix(in srgb, var(--brand-from) 42%, transparent);
-  --cap-accent-shadow: rgba(91, 79, 224, 0.18);
+  --cap-accent-shadow: rgba(85, 70, 214, 0.18);
   /* 命令面板结果行的悬停底：比选中（12% + 描边）更淡一档，
      因为面板底是浅色玻璃，悬停若与选中同强度会分不出主次。 */
   /* 浮层内的行悬停/选中要比列表内**更强**：面板底更白（约 #f6f7f7），
@@ -192,30 +223,25 @@
      这里提到 10% / 20% 才能在白底上读出主次。 */
   --pal-row-hover: color-mix(in srgb, var(--brand-from) 10%, transparent);
 
-  /* ── 面板光斑与跟随边框 ────────────────────────────────────────────
-     两层都由 useCursorGlow 驱动（见 src/composables/useCursorGlow.ts）：
-     --mx/--my 是光标相对面板的百分比，供面板 ::before 的 radial-gradient 定位；
-     --ang 是光标相对面板中心的角度，供 .pane-frame 的 conic-gradient 定位。 */
-  --mx: 50%;
-  --my: 50%;
-  --ang: 0deg;
-  /* 光斑半径：故意大于面板宽度，由宿主的 overflow:hidden 裁掉溢出部分。
-     这正是"光漫过边界"与"面板内跟着一个圆点跑"的区别所在。 */
-  --pane-glow-size: 340px;
-  /* 亮色主题下光斑必须**加深**而非加亮：面板本身已是 58% 白叠在 #f5f9ff 上，
-     实际底色约 #f9fcff。再叠白光（白色 50%）与面板的对比只有 1.02:1，等于没加——
-     这正是此前"暗色下明显、亮色下看不见"的原因。
-     改为叠主色的低透明度：13% 时面板与光斑差 1.19:1，肉眼清晰可辨，
-     而正文对比度仍有 14:1（远高于 4.5:1门槛）。 */
-  --pane-glow: color-mix(in srgb, var(--primary) 13%, transparent);
-  --pane-glow-mid: color-mix(in srgb, var(--primary) 6%, transparent);
-  --pane-edge: color-mix(in srgb, var(--brand-from) 55%, transparent);
-  --blur: 20px;
+  /* ── 面板光斑与跟随边框：已删除 ──────────────────────────────────
+     这里曾有 --mx/--my/--ang + --pane-glow* + --pane-edge，由 useCursorGlow
+     驱动两层叠加：面板上跟着指针跑的双色径向光斑，以及沿边框走的一段 conic
+     渐变亮边。两者都是"颜色随交互流动"的装饰。
 
-  /* 正文阅读区：**独立令牌，不复用 --surface**。深色下若与侧栏同色，
-     阅读区就失去"沉到界面之下"的层次，正文面积是侧栏三倍，同色会显得整块贴脸。 */
-  --read-bg: #f7f8fa;
-  --read-fg: #1f2328;
+     删除原因：它是全库最贵的一笔（每帧写 CSS 变量 + 两层 mask 合成），
+     却只在外壳上发光；而真正需要质感的地方（正文排版）没有分到任何预算。
+     装饰挪到壳上、内容留在默认样式，是这类界面最常见的资源错配。 */
+  /* 浮层模糊半径：12px。原先 20px 会把底下的正文糊成一整片灰雾，
+     看起来像"蒙了层塑料"；12px 只够把文字打散成纹理，仍能感知下方有内容。 */
+  --blur: 12px;
+
+  /* 正文阅读面：**纸**。
+     全应用唯一有材质的地方，也是这套界面的"那一刻"——
+     底色比外壳暖一档（米白而非纯白），配暖墨色正文，读起来像纸而不像屏幕。
+     深色主题下对应"墨"：近黑但带一点暖，不是冷灰。 */
+  --read-bg: #faf8f4;
+  --read-fg: #24221e;
+
 
   /* ── 圆角阶梯（整体放宽，圆润是现代 UI 的关键直觉）── */
   --r-sm: 6px;
@@ -317,33 +343,71 @@
   --dur-slide: 0.32s;
   --ease-slide: cubic-bezier(0.34, 0.62, 0.2, 1);
   /* 阅读区最大宽度：限制正文/标题/摘要卡片的列宽，让宽屏下两侧自然留白（仿 Folo 居中阅读列） */
-  --read-max: 760px;
+  /* 正文最大行宽 640px。760px 在 15px 字号下是每行 50 个汉字 / 90 个西文字符，
+     两者都超过舒适上限（西文 66–75、汉字 35–45）——读长文时眼睛换行要找位置。
+     640px 落在 42 汉字 / 78 西文，是这套字号下两种语言都不难看的宽度。 */
+  --read-max: 640px;
   /* 界面字体缩放：由「设置 → 常规 → 界面字体大小」写入（zoom 作用于整个应用根节点） */
   --ui-zoom: 1;
   /* 正文阅读字体族：由「设置 → 常规 → 内容字体」写入。
      默认 inherit = 跟随界面字体（即继承 body 的 --ui-font）。 */
   --reading-font: inherit;
+
+  /* ── 外壳：整个应用唯一的"底"，三栏嵌在其上 ─────────────────────────
+     旧骨架是三块各自带投影的面板 + 一圈 12px 的"露底"，壳后铺极光。
+     投影在栏缝里叠加成暗槽，而露底那圈纯粹是背景板的位置——现在没有背景板了，
+     它就成了白扔的 24px 阅读面积。
+
+     现在：**外壳填满窗口、不带圆角、只有一道投影级别的亮度差**。
+     分区由 --shell-hair 一根发丝线完成，层级从"三个平级对象"变成"一个对象 + 三个区"。 */
+  --shell-bg: var(--surface);
+  --shell-border: var(--border);
+  --shell-hair: var(--border);
+  /* 中性小投影：看得见边界即可。浅色主题下深投影在大面积白底上会显脏。 */
+  --shell-shadow: 0 1px 2px rgba(17, 17, 22, 0.04);
+  /* 满窗铺满 ⇒ 外壳无圆角。用 0 而不是删掉令牌：三栏的
+     `border-radius: var(--shell-r) 0 0 var(--shell-r)` 之类表达式仍在引用它。
+     注意：弹窗**不要**再用这个令牌（会变成直角），用 --r-panel。 */
+  --shell-r: 0px;
 }
+
 
 /* ─── 暗黑主题（html[data-theme="dark"]）─────────────────────────────────────
    仅覆盖颜色类变量：圆角 / 字号 / 布局尺寸与主题无关，无需重复声明。
    由 src/utils/appearance.ts 依据 settings.theme（light/dark/system）切换。
    主色在此给出紫罗兰的暗色取值（提亮一档保证深底对比度）。 */
 html[data-theme="dark"] {
-  --primary: #8e83f5;
-  --primary-hover: #7c6ff0;
+  --primary: #8b7cf6;
+  --primary-hover: #a091f9;
   --primary-soft: #241f3a;
-  --primary-tint: rgba(142, 131, 245, 0.16);
-  /* 危险色：暗底上需要更高明度才够对比，底色相应提高透明度 */
+  --primary-tint: rgba(139, 124, 246, 0.16);
+  /* 实心主按钮在暗色下压深一档：--primary 提亮是为了当"暗底上的紫字"，
+     配白字只有 3.33:1；#6f63c6 + 白 = 4.92:1，达 AA。 */
+  --primary-solid: #6f63c6;
+  --primary-solid-hover: #5e53b0;
+
+  /* 暗色极光令牌（--aurora-* / --grad-brand / --grad-hairline）已随浅色主题一并删除。
+     原因见浅色主题里的说明：跨色相渐变 + 三色并存会吃掉主色。 */
+
+  /* ── 深底上的中性色阶 ──
+     比原先的 #1b2129（冷蓝板岩）去掉蓝味：底色、面板、描边都从同一根石墨轴取，
+     只向紫偏极少量，与 --primary 同源。 */
+  --bg: #131417;
+  --shell-bg: var(--surface);
+  --shell-border: var(--border);
+  --shell-hair: var(--border);
+  /* 暗色下深度靠面板台阶与发丝线，不靠投影（暗底上投影几乎不可见，只留噪点） */
+  --shell-shadow: none;
+
   --danger: #ff6369;
   --danger-fg: rgba(255, 99, 105, 0.16);
   /* 模态遮罩：暗色主题下底色本就深，遮罩需要更重才能拉开层级 */
   --overlay-scrim: rgba(0, 0, 0, 0.6);
   --scrim-heavy: rgba(0, 0, 0, 0.88);
   --ring-inset: inset 0 0 0 1px rgba(255, 255, 255, 0.09);
-  /* 品牌色的暗色取值：整体提亮一档，避免在近黑标题栏上与底色同频闪烁 */
-  --brand-from: #8e83f5;
-  --brand-to: #7c6ff0;
+  /* 品牌色的暗色取值（logo）：只保留一个色值，见 AppLogo.vue */
+  --brand-from: #8b7cf6;
+  --brand-to: #8b7cf6;
   /* 正文高亮色：暗底上改用低透明度叠色（纯浅底会刺眼），文字色交回主题文本色 */
   --hl-yellow: rgba(253, 230, 138, 0.26);
   --hl-green: rgba(187, 247, 208, 0.24);
@@ -352,13 +416,9 @@ html[data-theme="dark"] {
   /* 高亮块内的文字色：比 --text-primary 偏暖一点。用主题灰会在黄底上显脏。 */
   --hl-fg: #f0e6cd;
 
-  /* ── 暗色玻璃令牌（冷调深蓝板岩）──────────────────────────
-     底色从原先的近黑 #121212 抬到 #1b2129：不是"变浅"，而是给玻璃提供可被折射的内容。
-     深色下玻璃的难点不是"够不够亮"，而是面板与底色几乎同色；本组靠三条「加光」
-     （--glass-hi 上边缘内高光 / --glass-hair 1px 描边 / --glass 半透明白）撑厚度，
-     不依赖底色对比——这正是底色可以抬高一档而不失"深"的前提。
-     色相延续浅色主题的冷调倾向，亮暗切换时色温不跳。 */
-  --bg: #1b2129;
+  /* ── 暗色中性色阶 ──
+     底色 / 面板 / 描边 / 填充全部取自同一根石墨轴（#131417 → #2b2c32），
+     不再带冷蓝色相。深度由面板台阶与发丝线给出。 */
   --glass: rgba(255, 255, 255, 0.055);
   --glass-2: rgba(255, 255, 255, 0.042);      /* 顶栏比面板更透：下方就是内容区，需看清 */
   --glass-strong: rgba(255, 255, 255, 0.075); /* 命令面板比侧栏更实，确保结果文字可读 */
@@ -386,36 +446,22 @@ html[data-theme="dark"] {
   /* 文章列表的紫罗兰胶囊：深色下描边再亮一档，否则在暗底上立不住 */
   --cap-accent-bg: color-mix(in srgb, var(--brand-from) 14%, transparent);
   --cap-accent-line: color-mix(in srgb, var(--brand-from) 55%, transparent);
-  --cap-accent-shadow: rgba(124, 111, 240, 0.2);
+  --cap-accent-shadow: rgba(0, 0, 0, 0.24);
   --pal-row-hover: color-mix(in srgb, var(--brand-from) 8%, transparent);
-  /* 暗色下光斑仍用白光——暗底上加光才有"发光感"，加深只会让暗底更暗（反直觉且看不见）。
-     这与亮色必须加深正好相反，两套主题的取值逻辑不可互相套用。
-     数值比亮色低是因为暗底对亮斑更敏感，16% 已足够明显，再高会形成脏污亮斑。 */
-  --pane-glow: rgba(255, 255, 255, 0.16);
-  --pane-glow-mid: rgba(255, 255, 255, 0.06);
-  --pane-edge: color-mix(in srgb, var(--brand-from) 50%, transparent);
-  /* 底色比 --bg 再压暗一档，让阅读区"沉"到界面之下：正文面积是侧栏三倍，
-     与侧栏同色会显得整块贴脸。 */
-  --read-bg: #161b21;
-  --read-fg: #c6ccd5;
+  /* 正文阅读面：暗色下对应"墨"——近黑但偏暖，与冷石墨的 --surface 拉开色温差 */
+  --read-bg: #181614;
+  --read-fg: #d8d3c9;
 
-  --surface: #20262e;
-  --surface-muted: #252b33;
-  --text-primary: #e6e8ec;
-  --text-secondary: #a8b0bd;
-  /* 三级文字必须从原先的 #737373 提上来：它在玻璃面（底色叠 5.5% 白 ≈ #282d35）上
-     只有 3.47:1，不达无障碍标准；提到 #8b93a1 后为 4.47:1，达标。 */
-  --text-tertiary: #8b93a1;
-  /* 边框与填充跟随新底色的冷调：原先的中性灰 #333 / #2a2a2a 是配 #121212 的，
-     放到 #1b2129 上会让 hover 反馈与分隔线显脏。 */
-  --border: #2e353f;
-  --fill: #262d36;
-  --fill-secondary: #2f3742;
-  /* 暗色下的面板 hairline：冷蓝描边在此不可见，改用低透明度白线勾边 */
-  --panel-border: rgba(255, 255, 255, 0.08);
-  /* 顶栏底改用 --glass-2：标题栏与侧栏同属铬件，两者用同一套玻璃令牌，
-     这里不再单独给深色取值（原先写死 rgba(18,18,18,.88) 会与新底色脱钩）。 */
-  --titlebar-bg: var(--glass-2);
+  --surface: #1b1c20;
+  --surface-muted: #202126;
+  --text-primary: #e8e8ec;
+  --text-secondary: #a5a5b0;
+  /* 三级文字在小字号也必须 ≥4.5:1；在 --surface 上为 4.98:1 */
+  --text-tertiary: #8a8a95;
+  --border: #2a2b31;
+  --fill: #232429;
+  --fill-secondary: #2b2c32;
+  --panel-border: #2a2b31;
   /* 暗色下阴影不可见，改用更深的不透明度制造"浮起"错觉；
      同样收窄作用域（16px/.28），避免栏间缝隙被压得更黑 */
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.24);
@@ -451,34 +497,86 @@ body {
   /* 界面字体缩放：CSS zoom 整体缩放应用 UI（含布局），由「界面字体大小」设置驱动；
      正文阅读区另有独立的 --reading-scale 字号缩放，两者互不影响 */
   zoom: var(--ui-zoom, 1);
+  /* 底色即外壳色：满窗铺满，露出的只有边框那 1px */
+  background: var(--bg);
 }
 
-/* 三栏主体：订阅栏 | 文章列表栏 | 正文栏，真正并列（对齐 Folo）。
-   padding-top 让位 fixed 定位的 TitleBar（高度由 --tb-h 统一控制）。
-   左右与底部各留 10px —— 配合灰底 --bg 让三块白色圆角面板形成"浮岛"，
-   取代原先"白底 + 1px 边框"的扁平拼贴观感。 */
+/* ── 背景层：已删除（原 .aurora-backdrop 三团柔光 + 24px 网格）──────────
+   一屏大的径向色斑在阅读器里是最不该有的东西：它的作用只是让空的地方
+   "不那么空"，而阅读器空的地方应该是留白。三团光还各自带 24~32s 的无限漂移，
+   等于让一个静止的界面永远在动 —— 这两点都是"一眼 AI"的典型特征。
+
+   现在背景就是 --bg 纯色，界面靠排版、留白和发丝线分层。 */
+
+/* 三栏主体：订阅栏 | 文章列表栏 | 正文栏，满窗铺满。
+   外壳只有一个：.app-body。三栏是壳内的三个区，靠一条 1px 发丝线分区，
+   谁都不再自带投影（三份投影在栏缝里叠加会压成暗槽）。
+   padding-top 让位 fixed 定位的 TitleBar（高度由 --tb-h 统一控制）。 */
 .app-body {
   flex: 1;
   display: flex;
   min-width: 0;
-  background: var(--bg);
-  padding: var(--tb-h) var(--sp-15) var(--sp-15);
+  padding-top: var(--tb-h);
   height: 100vh;
   overflow: hidden;
+  position: relative;
+  background: var(--shell-bg);
+  /* 不再有 border / 圆角 / 大投影：满窗时它们只会画在屏幕边缘上，
+     用户看不到，却参与每帧合成。 */
+  isolation: isolate;
+}
+
+
+/* ── 首屏入场：外壳微上浮 + 三栏依次淡入 ──────────────────────────────
+   只播一次（无 iteration），总时长 0.62s 以内，绝对延迟不超过 0.16s。
+   为什么值得做：应用启动后整块界面同时"啪"地出现，是最典型的"静态网页感"；
+   让外壳先落定、再让三栏错开 60ms 跟上，读起来才像"一个界面被组装出来"。
+   位移只有 6px：位移超过 12px 会让启动显慢（人眼会把动画时长算进加载时间）。 */
+@keyframes shell-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pane-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.app-body {
+  animation: shell-rise 0.44s var(--ease) both;
+}
+.feed-panel,
+.article-column,
+.content-column {
+  animation: pane-fade-in 0.34s var(--ease) both;
+}
+.feed-panel { animation-delay: 0.1s; }
+.article-column { animation-delay: 0.16s; }
+.content-column { animation-delay: 0.22s; }
+
+/* 关掉动效时不播入场：`both` 的填充态会让元素先透明再显现，
+   在"减少动态效果"下这就是一次不必要的闪烁。 */
+@media (prefers-reduced-motion: reduce) {
+  .app-body,
+  .feed-panel,
+  .article-column,
+  .content-column {
+    animation: none;
+  }
 }
 
 /* 订阅栏在 flex 行中不压缩，宽度由拖拽分隔条控制（默认 260px，对齐 Folo 的 feedColWidth） */
 .feed-panel { flex-shrink: 0; width: var(--feed-w, 260px); }
 
 /* 列宽拖拽分隔条：位于"订阅栏 ↔ 文章列表栏"、"文章列表栏 ↔ 正文栏"之间，可拖拽调整列宽（对齐 Folo 的 PanelSplitter）。
-   浮岛布局下它同时充当"栏间空隙"，因此自身加宽到 18px（仿 WorkBuddy 实测 16~24px 的缝宽）：
-   缝越宽，相邻面板的投影越有机会衰减掉，缝隙中心才露得出底色本身；常态全透明（看不出造物），
-   hover / 拖拽时才滑出一条主色圆角细条作为抓手提示。 */
+   ── Aurora 骨架下它变成了"壳内的复合缝" ──
+   旧实现里这条缝是 18px 宽的空白，作用是给相邻面板的投影留衰减距离。
+   现在投影归外壳所有，缝隙里不该再有"空档"——于是宽度收到 2px，视觉上就是
+   一条比发丝线略粗的分区线；指针落到 ±7px 范围内即可拖拽（::before 扩大命中区），
+   保证 2px 的视觉与 14px 的可用性同时成立。 */
 .col-resizer {
   flex-shrink: 0;
-  width: 18px;
+  width: 2px;
   cursor: col-resize;
-  background: transparent;
+  background: var(--shell-hair);
   position: relative;
   z-index: 5;
   display: flex;
@@ -486,25 +584,37 @@ body {
   justify-content: center;
   transition: background 0.2s ease;
 }
-.col-resizer:hover {
-  background: var(--fill);
-  border-radius: var(--r-md);
+/* 扩大命中区：视觉 2px，实际可抓 14px。左右各 6px 探入相邻栏的 padding 区，
+   那里没有可点击内容，不会抢列表行的点击。 */
+.col-resizer::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -6px;
+  right: -6px;
 }
+.col-resizer:hover,
+.col-resizer.active {
+  background: var(--cap-accent-line);
+}
+/* 抓手：3px 宽的圆角竖条，仅 hover / 拖拽时出现，抓住时长度从 32px 长到 48px。
+   用 --text-tertiary 而不是主色：它表达"这里可以抓"，不是"这里被选中"。 */
 .col-resizer::after {
   content: '';
   position: absolute;
   top: 50%;
   width: 3px;
-  height: 36px;
+  height: 32px;
   border-radius: var(--r-pill);
-  background: var(--primary);
+  background: var(--text-tertiary);
   opacity: 0;
   transform: translateY(-50%);
   transition: opacity var(--dur) var(--ease), height var(--dur) var(--ease);
 }
 .col-resizer:hover::after,
 .col-resizer.active::after {
-  opacity: 0.45;
+  opacity: 1;
   height: 64px;
 }
 /* 专注模式下隐藏分隔条（订阅栏与文章列表栏已隐藏，无可拖拽列宽） */
@@ -557,13 +667,21 @@ body {
   background: transparent;
 }
 
+/* 滚动条 thumb：从纯 --border 改为"主色微调过的中性色"。
+   纯灰 thumb 在极光玻璃面上读作一条不属于任何体系的黑边；
+   掺 12% 主色后它仍是中性色（不抢注意力），但归属到界面色系里。
+   hover 才转主色：滚动条是"要用时才注意到"的元素，常态不该有颜色。 */
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: color-mix(in srgb, var(--text-tertiary) 34%, transparent);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--fill-secondary);
+  background: color-mix(in srgb, var(--primary) 55%, transparent);
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: var(--primary);
 }
 
 /* ─── 微交互基线 ────────────────────────────────────────────────────────────
@@ -614,8 +732,16 @@ select {
 
    使用约定：
    - `.btn` 基类**自身即次级按钮外观**，可单独使用（如各弹窗的「取消」）；
-   - `.btn-primary` / `.btn-danger` / `.btn-danger-text` 为修饰类，必须与 `.btn` 同用；
-   - 尺寸档 `.btn-sm` / `.btn-mini` 同样叠加在 `.btn` 之上。 */
+   - 配色修饰类：`.btn-primary` 实心（纯色，不用渐变）/ `.btn-soft` 浅底主色 /
+     `.btn-danger` / `.btn-danger-text`，必须与 `.btn` 同用；
+   - 形态类：`.btn-icon`（方形）/ `.btn-quiet`（幽灵，可叠 `-danger`）/ `.btn-round`（圆形）；
+   - 尺寸档 `.btn-sm` / `.btn-mini` / `.btn-form` 同样叠加在 `.btn` 之上。
+
+   四条硬约束（违反任何一条都会让按钮族重新退化成分散的自建样式）：
+   ① 组件里**不得**再定义 `.btn` / `.btn-*`——需要新形态就往这里加角色类；
+   ② 不写死宽高，尺寸只走尺寸档（`.btn-icon` 靠 `aspect-ratio` 从高度推宽度）；
+   ③ 禁用态不自己写 `opacity`，继承 `button:disabled` 的基线 0.5；
+   ④ 组件内只保留布局性声明（`opacity` 渐显、`position`、`flex-shrink`、对齐）。 */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -632,6 +758,9 @@ select {
   line-height: 1;
   white-space: nowrap;
   cursor: pointer;
+  /* 统一过渡：主按钮按下有位移、次级按钮换描边色，都需要它才有"响应感" */
+  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease), box-shadow var(--dur) var(--ease), transform 0.1s var(--ease);
 }
 /* 默认（次级）按钮的悬浮反馈：描边与文字转主色，与列表项 hover 语言一致。
    过场动画继承上方全局 `button` 基线的 transition，无需在此重复声明。 */
@@ -639,8 +768,10 @@ select {
   border-color: var(--primary);
   color: var(--primary);
 }
+/* 禁用态与 `button:disabled` 的全局基线同值（0.5）。此前这里是 0.6，而各处自建
+   按钮又各自写了 .4 / .5 / .55，同一个弹窗里三种"变灰程度"，读起来像三种禁用语义。 */
 .btn:disabled {
-  opacity: 0.6;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
@@ -661,17 +792,36 @@ select {
   color: var(--text-primary);
 }
 
-/* 主操作按钮：实心主色。悬浮统一用 --primary-hover 而非 filter 提亮，
-   这样明暗主题各自的取值都能自动生效（filter 会在两种主题下给出同一结果）。 */
+/* 主按钮：纯色实心。
+   ── 为什么不用跨色相渐变（这版之前是渐变 + 发光投影，被读作"霓虹"）──
+   ① 三段渐变落在 32px 高的色块上，过渡区只有一两个像素，人眼读到的不是
+      "颜色过渡"而是"边缘在发亮"；
+   ② hover 靠叠 12% 白色高光提亮，会让色相滑一次——鼠标扫过一排按钮时
+      整片界面在变色；
+   ③ 旧版用 28% 主色的带色投影，在浅底上会晕出一圈紫光。
+   三点叠起来就是"霓虹"。纯色版只剩一个稳定的色块，"主操作"由
+   **它是页面上唯一的实心块**来表达，不需要发光也不需要变色相。
+
+   投影改用中性微投影 `--shadow-xs`：只压住边缘，不产生颜色外溢。
+   注意 hover 必须把 `border-color` / `color` 写全——`.btn:hover:not(:disabled)`
+   的特异性 (0,3,0) 高于 `.btn-primary` (0,1,0)，漏写会被它抢回主色文字。 */
 .btn-primary {
-  background: var(--primary);
-  border-color: var(--primary);
-  color: #fff;
+  background: var(--primary-solid);
+  border-color: transparent;
+  color: var(--tone-fg);
+  box-shadow: var(--shadow-xs);
 }
 .btn-primary:hover:not(:disabled) {
-  background: var(--primary-hover);
-  border-color: var(--primary-hover);
-  color: #fff;
+  /* 只换档加深，不动色相。用 --primary-solid-hover 而不是 --primary-hover：
+     后者是为"浅底上的紫字"调的档，在暗色下偏亮，白字会掉到 4.5 以下。 */
+  background: var(--primary-solid-hover);
+  border-color: transparent;
+  color: var(--tone-fg);
+}
+.btn-primary:active:not(:disabled) {
+  /* 按下时轻微内缩并收掉投影，表达"按进去了" */
+  transform: translateY(0.5px);
+  box-shadow: none;
 }
 
 /* 危险操作（删除等）：常显危险色描边，提示"这一步不可逆"。
@@ -705,6 +855,124 @@ select {
   height: 24px;
   padding: 0 var(--sp-2);
   font-size: var(--fs-xs);
+}
+
+/* 表单行档（34px）：与 `.as-trigger` / 输入框同高。
+   为什么单独一档而不是压到 32：32 与 34 对应两个不同场景——32 是弹窗底部操作区
+   （旁边没有输入框），34 是"和输入框并排"（全应用表单控件统一 34）。
+   把表单行里的按钮压到 32，会在同一个 flex 行里比输入框矮 2px，看着像没对齐。 */
+.btn-form {
+  height: 34px;
+}
+
+/* 浅底主色：表达"这是主操作，但不必和页面上唯一的实心按钮抢焦点"。
+   用于反复出现的操作（重新评分、跟踪标的）。
+
+   ── 一切用现成 token，不写 `color-mix`（上一版这里混过一轮，别再改回去）──
+   上一版描边是 `color-mix(--primary 45%, transparent)`、hover 底是混合 15%，
+   但**主色与透明色混合的结果是灰紫**，落在浅底上像"脏掉的紫"而不是"淡一点的紫"：
+   `--primary` #6c5ce7 混 55% 透明后饱和度被拉低一大截，同一排按钮里它和
+   `.btn-primary` 的纯紫描边放在一起，会被看成两种不同的颜色而不是同一色的两个浓度。
+   现在描边/文字直接取 `--primary`，底色取现成的 `--primary-tint` / `--primary-soft`，
+   四个值全部来自主题令牌，浅深两套主题各自定义，不存在"算出来的中间色"。
+
+   hover 全部换档、不算中间色：底色 `--primary-tint` → `--primary-soft`（深一档的现成令牌），
+   描边与文字 → `--primary-hover`。文字改用 hover 档是必须的：`--primary-soft` 比
+   `--primary-tint` 叠在浅底上的结果更深，若文字仍是 `--primary`，对比度会从 4.33:1
+   掉到 4.21:1；换成更深一档的 `--primary-hover` 后反而升到 5.6:1。
+   仍然不转实心——"hover 变实心"是此前各处自建按钮留下的分歧，对重复操作扰动过大。 */
+.btn-soft {
+  border-color: var(--primary);
+  background: var(--primary-tint);
+  color: var(--primary);
+}
+.btn-soft:hover:not(:disabled) {
+  border-color: var(--primary-hover);
+  background: var(--primary-soft);
+  color: var(--primary-hover);
+}
+
+/* 方形图标按钮：把 `.btn` 的横向内边距换成正方形，描边 / 底色 / hover 全继承 `.btn`。
+   尺寸只由 `.btn-sm`(28) / `.btn-mini`(24) 决定，本类刻意不写高度——
+   写死高度再叠 `.btn-mini` 会得到"高 24 宽 32"的长方形（`aspect-ratio` 需要
+   高度是确定值才能算出宽度，两者冲突）。 */
+.btn-icon {
+  aspect-ratio: 1 / 1;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+/* 幽灵变体：行内工具栏里"平时别出声"的按钮。无描边、透明底，hover 才浮出浅底。
+   `.btn-quiet-danger` 与它同用，hover 透出危险色（删除类操作）。 */
+.btn-quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-tertiary);
+}
+.btn-quiet:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--fill);
+  color: var(--primary);
+}
+.btn-quiet-danger:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--danger-fg);
+  color: var(--danger);
+}
+
+/* 圆形：启停开关、确认点、药丸式筛选片。 */
+.btn-round {
+  border-radius: var(--r-pill);
+}
+
+/* 文字链式按钮：视觉上是一条链接，行为上是按钮（弹窗内的「← 返回列表」）。
+   刻意不带 `.btn` 基类——它不该有描边、底色和 32px 高度，否则会把标题行推歪。
+   但 `font-family: inherit` 必须显式写：脱离 `.btn` 后会退回系统控件字体。 */
+.link-btn {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--primary);
+  font-family: inherit;
+  font-size: var(--fs-modal-label);
+  cursor: pointer;
+}
+.link-btn:hover {
+  text-decoration: underline;
+}
+
+/* ─── 键帽（全局工具类 · 这套界面的签名细节）───────────────────────────────
+   为什么键帽是这个产品的签名：它的每一次主要操作都有键盘等价物
+   （`⌘K` 命令面板、`D` 关系图、`T` 推荐流、`?` 快捷键总表、`Esc` 专注模式）。
+   把可用键位做成 20px 高的小键帽，比写「按 Ctrl+K 打开命令面板」更容易被记住，
+   也是唯一一个"换个产品就不成立"的细节。
+
+   用 <kbd> 而非 <span>：读屏会念作"键"，语义准确。
+   规格统一为 20px 高 / 5px 圆角 / 11px 等宽字 —— 三处调用（空态入口卡、
+   命令面板入口、快捷键总表）都用同一份，禁止在组件里另写尺寸。 */
+.kbd {
+  flex-shrink: 0;
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--fill);
+  font-family: var(--ui-font);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+/* 需要按键名对齐成一列的场合（快捷键总表）：给一个统一的最小宽度，
+   否则 "K" 与 "Alt + ←" 会让右侧说明文字左右参差。 */
+.kbd-block {
+  min-width: 44px;
+  justify-content: center;
 }
 
 input:focus-visible,
@@ -763,65 +1031,19 @@ select:focus-visible {
   100% { background-position: -50% 0; }
 }
 
-/* ── 面板光斑与跟随边框（全局，被三栏共用）────────────────────────────────
-   两层的坐标都由 src/composables/useCursorGlow.ts 写入 --mx/--my/--ang，
-   JS 只写变量、不做动画；实际的柔化与裁剪交给 CSS。
+/* ── 面板光斑与跟随边框：已删除 ──────────────────────────────────────
+   这里曾有配套的两层（需要宿主加 .pane-glow-host 并放一个 .pane-frame）：
+   一层跟着光标平移的双色径向光斑，一层沿边框走的 conic 渐变亮边。
 
-   为什么要提为全局：订阅栏、文章列表栏、正文栏三处都要这套效果，
-   而各自的 scoped 样式里写一遍会出现三份逐渐走样的副本。
-   类名契约：宿主加 .pane-glow-host（提供定位与裁剪）+ 放一个 .pane-frame 子元素。 */
+   为什么删：
+   ① 每帧写 3 个 CSS 变量 + 两层 mask 合成，是这份样式表里最贵的一处，
+      换来的却只是"外壳在发光"——阅读器最不该发光的地方；
+   ② 光斑外缘用了第二个色相（青蓝），与主色紫并置后主色被稀释；
+   ③ 那圈跟随亮边在暗色主题下会被读成"这行被选中了"，
+      而它其实只是鼠标停在那里。
 
-.pane-glow-host { position: relative; }
-/* 光斑层：径向渐变圆心跟着指针。宽度故意大于面板（--pane-glow-size），
-   超出部分被宿主的 overflow:hidden 裁掉——这样得到"光漫过边界"的效果，
-   而非"面板内跟着一个圆点跑"。 */
-.pane-glow-host::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background: radial-gradient(
-    var(--pane-glow-size, 340px) var(--pane-glow-size, 340px) at var(--mx) var(--my),
-    var(--pane-glow),
-    var(--pane-glow-mid) 42%,
-    transparent 70%
-  );
-  opacity: 0;
-  transition: opacity 0.3s var(--ease-slide);
-}
-.pane-glow-host.is-lit::before { opacity: 1; }
-
-/* 跟随边框：conic-gradient 沿边框铺一段亮色，起点跟着指针相对面板中心的角度。
-   padding:1px + mask-composite:exclude 只留 1px 环（content-box 之外的部分被扣掉），
-   这样无需真的 border 就能做"局部高亮的边框"。 */
-.pane-frame {
-  position: absolute;
-  inset: 0;
-  z-index: 3;
-  border-radius: inherit;
-  padding: 1px;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.25s var(--ease-slide);
-  background: conic-gradient(
-    from calc(var(--ang) - 70deg),
-    transparent 0deg,
-    var(--pane-edge) 40deg,
-    transparent 130deg
-  );
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  mask-composite: exclude;
-}
-.pane-frame.is-lit { opacity: 1; }
-
-/* 无障碍：关掉动效后两层仍是"静态亮起 / 熄灭"，位置与强弱表达不受影响 */
-@media (prefers-reduced-motion: reduce) {
-  .pane-glow-host::before,
-  .pane-frame { transition: opacity 0.12s linear; }
-}
+   三个宿主元素上的 .pane-glow-host / .pane-frame 已一并移除，
+   useCursorGlow 也已删除——不要再引入任何"随光标变色的表面"。 */
 
 /* ── 无障碍：尊重系统的"减少动态效果"设置。
    掠光是纯装饰动画，关掉后骨架屏仍是静态浅条，不影响"正在加载"的表达。 */
@@ -1362,7 +1584,7 @@ select:focus-visible {
 
 .tech-hero-title {
   font-size: var(--fs-2xl);
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text-primary);
   margin-bottom: var(--sp-2);
   overflow-wrap: anywhere;
@@ -1399,7 +1621,7 @@ select:focus-visible {
 
 .tech-kpi-value {
   font-size: var(--fs-xl);
-  font-weight: 700;
+  font-weight: 500;
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
 }
@@ -1420,8 +1642,8 @@ select:focus-visible {
   gap: var(--sp-2);
   padding: var(--sp-2) var(--sp-3);
   background: var(--glass-strong);
-  backdrop-filter: blur(var(--blur)) saturate(1.8);
-  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.8);
+  backdrop-filter: blur(var(--blur));
+  -webkit-backdrop-filter: blur(var(--blur));
   border: 1px solid var(--tech-line-strong);
   border-radius: var(--r-pill);
   box-shadow: var(--shadow-pop);
@@ -1454,7 +1676,7 @@ select:focus-visible {
   background: var(--primary);
   color: var(--tone-fg);
   font-size: var(--fs-xs);
-  font-weight: 700;
+  font-weight: 500;
   line-height: 18px;
   text-align: center;
   flex-shrink: 0;
@@ -1485,7 +1707,7 @@ select:focus-visible {
    为什么用 0.01ms 而不用 0s：0s 时 transitionend 不触发，任何依赖它收尾的逻辑会卡住。
    本轮的弹窗动效是零 JS、不依赖任何事件，但下一个人很可能在这里接 transitionend。
 
-   !important 在这里是正确用法：要压过 `transition: all 0.15s` 这类具体规则与内联样式。
+   !important 在这里是正确用法：要压过各组件里更具体的 transition 规则与内联样式。
 
    注意它改不到 transition-delay：弹窗关闭时 visibility 的 duration 是 0s、delay 是
    --m-out(120ms)，所以仍会在 120ms 后跳 hidden —— 那时面板早已全透明，不可见。
