@@ -59,25 +59,20 @@ defineProps<{
   /* 内边距比正文区更松：摘要卡自带底色与描边，若留白与正文一致会显得局促、
      文字紧贴卡片边缘。22px 横向留白与 --read-max 内缩量搭配后观感更从容。 */
   padding: var(--sp-5) 22px;
-  /* 主色浅底 + 主色半透明叠层：随"主题色"设置自动换色，取代原先硬编码的紫色方案。
-     原先是"纯白 → 极浅主色"的渐变，平均值几乎等于白色、看不出底色，
-     故改为以 --primary-soft 作实心底、再叠一层 --primary-tint（主色约 10% 不透明度），
-     色感明确但不抢正文；135° 渐变只保留极轻微的深浅过渡。 */
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0) 100%),
-    linear-gradient(135deg, var(--primary-tint), var(--primary-tint)),
-    var(--primary-soft);
+  /* 这层底的含义是"纸上的一层主色水洗"，不是一张卡片。
+     原先的三层里有两层是假的：rgba(255,255,255,.12)→0 是"边缘受光"的错觉
+     （白卡上叠白光在浅色主题里根本不可见，只在暗色露出脏边）；而
+     linear-gradient(135deg, var(--primary-tint), var(--primary-tint)) 是
+     **从某个色渐变到它自己**——一条被写成渐变的平色。 */
+  background: var(--primary-tint), var(--primary-soft);
   border: 1px solid var(--border);
   border-radius: var(--r-xl);
   flex-shrink: 0;
   box-shadow: var(--shadow-sm);
 }
 html[data-theme="dark"] .summary-card {
-  /* 暗色下不再叠白色高光（会让卡片显脏），只保留"浅底 + 主色叠层"两层，
-     与浅色主题保持同样的色感强度 */
-  background:
-    linear-gradient(135deg, var(--primary-tint), var(--primary-tint)),
-    var(--primary-soft);
+  /* 底色两套主题共用同一条公式（tint 叠 soft），这里不再重写 background：
+     抄一份只会让以后改一处忘一处。只留暗色真正需要的两项。 */
   border-color: var(--border);
   box-shadow: none;
 }

@@ -388,10 +388,17 @@ onBeforeUnmount(deactivate)
   /* 弹窗圆角 16px（--r-panel）。**不要用 --shell-r**：外壳满窗后那个令牌是 0，
      用了会让弹窗变直角。 */
   border-radius: var(--r-panel);
-  /* 一道中性投影 + 一圈发丝描边。浮起感来自投影与遮罩的明度差，
-     不靠顶部那 2px 的彩色内描边（那条在内阴影里出现一次，肉眼只会读到
-     "顶边有点发紫"，说不出是什么）。 */
-  box-shadow: inset 0 0 0 1px var(--shell-border), var(--shadow-pop);
+  /* 与其余浮层同一套口径：外圈 --glass-hair 定形，顶边一道 --glass-hi 内高光
+     给"厚度"，最外层 --shadow-pop 负责浮起。命令面板、右键菜单、tooltip、
+     订阅栏的「更多」菜单都是这两层。
+
+     此前这里是 `border` + `inset 0 0 0 1px var(--shell-border)`：内外两道 1px
+     线紧挨着画，2px 宽的边上出现两种颜色；而且 --shell-border 是**外壳**的
+     发丝线（= var(--border)），它不该出现在浮层上——浮层浮在内容之上，
+     边界要读成"玻璃的边缘"，不是"窗口的分隔线"。 */
+  box-shadow:
+    inset 0 1px 0 var(--glass-hi),
+    var(--shadow-pop);
   overflow: hidden;
   outline: none;
   /* 进出场两个方向都走 transition：基础态即「退场终点」，撤掉 .show 是一次有前值的
