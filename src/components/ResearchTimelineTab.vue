@@ -80,6 +80,14 @@
               {{ sentimentLabel(ev.sentiment) }}
             </span>
             <span class="event-date">{{ ev.event_date || '日期未知' }}</span>
+            <!-- 价格反应：宽度恒定的窄列（+99.9% 与 — 同宽），紧跟日期 -->
+            <span
+              class="event-market"
+              :class="marketClass(ev.id)"
+              :title="marketTitle(ev.id)"
+            >
+              {{ marketText(ev.id) }}
+            </span>
             <span class="event-fact">{{ ev.fact }}</span>
             <!-- 类型标签放在行尾，而不是行首：它的字数随类型变（财报 2 / 业绩预告 4 /
                  自定义类型可能更长），排在正文前面会把情感、日期、正文的左边缘一起推歪。
@@ -93,7 +101,7 @@
             </span>
             <span class="expand-arrow">{{ expandedEventId === ev.id ? '▾' : '▸' }}</span>
             <button
-              class="event-del"
+              class="btn btn-icon btn-mini btn-quiet btn-quiet-danger event-del"
               :disabled="deletingId === ev.id"
               title="删除该条事件"
               @click.stop="handleDeleteEvent(ev)"
@@ -110,6 +118,21 @@
                 {{ ev.article_title }}
               </a>
             </div>
+            <!-- 市场反应：只有拿到数据才渲染整块（没有就什么都不显示，不留空壳） -->
+            <div v-if="hasMarket(ev.id)" class="event-market-detail">
+              <span class="emd-h">市场反应</span>
+              <span class="emd-item">
+                当日
+                <b :class="marketClass(ev.id)">{{ marketText(ev.id) }}</b>
+                <span v-if="reactionOf(ev.id)?.baseClose"
+                      class="emd-base">（基准收盘 {{ reactionOf(ev.id)!.baseClose!.toFixed(2) }}）</span>
+              </span>
+              <span class="emd-item">
+                5 日累计
+                <b :class="winClass(ev.id)">{{ winText(ev.id) }}</b>
+              </span>
+              <span class="emd-note">数据来自已同步的日线，非实时</span>
+            </div>
             <div class="event-meta">提取模型：{{ ev.source_model || '未知' }}</div>
 
             <!-- 人的反馈落点：机器抽出的事件要能被"认可"或"否证"，
@@ -120,7 +143,7 @@
               <button
                 v-for="s in STANCE_ACTS"
                 :key="s.value"
-                class="act"
+                class="btn btn-mini btn-round act"
                 :class="s.tone"
                 :disabled="evActing === ev.id"
                 :title="`把这条事件作为「${s.label}」证据挂到某个论点`"
@@ -418,6 +441,73 @@ function getSentimentClass(sentiment?: string): string {
   return `sentiment-${SENTIMENT_CLASSES[sentiment] ?? 'neutral'}`
 }
 
+// ─── 价格反应（附加层，数据缺失时一律显示 —）────────────────────────────────
+
+/** 取某事件的反应记录（无则 undefined） */
+function reactionOf(id: number) {
+  return researchStore.priceReactions.get(id)
+}
+
+/** 是否拿到了可展示的反应（当日或 5 日任一有值即算） */
+function hasMarket(id: number): boolean {
+  const r = reactionOf(id)
+  return !!r && (r.dayChange !== null || r.window5d !== null)
+}
+
+/**
+ * 行内价格列文案
+ *
+ * 无数据显示 `—` 而不是 `0%`：**0% 与"没有数据"是两件事**，
+ * 把后者显示成前者会让用户以为"这条新闻市场毫无反应"。
+ */
+function marketText(id: number): string {
+  const v = reactionOf(id)?.dayChange
+  if (v === null || v === undefined) return '—'
+  return `${v > 0 ? '+' : ''}${v.toFixed(2)}%`
+}
+
+/** 5 日累计文案 */
+function winText(id: number): string {
+  const v = reactionOf(id)?.window5d
+  if (v === null || v === undefined) return '数据不足 5 天'
+  return `${v > 0 ? '+' : ''}${v.toFixed(2)}%`
+}
+
+/**
+ * 涨跌配色：**国内惯例，涨红跌绿**
+ *
+ * 与欧美相反，这也是本项目时间线圆点已在用的口径（红=利多/绿=利空）。
+ * 用 `--tone-red` / `--tone-green` 语义色而非新增色板。
+ */
+function trendClass(v: number | null | undefined): string {
+  if (v === null || v === undefined) return 'mk-flat'
+  if (v > 0) return 'mk-up'
+  if (v < 0) return 'mk-down'
+  return 'mk-flat'
+}
+
+function marketClass(id: number): string {
+  return trendClass(reactionOf(id)?.dayChange)
+}
+
+function winClass(id: number): string {
+  return trendClass(reactionOf(id)?.window5d)
+}
+
+/**
+ * 行内价格列的悬停说明
+ *
+ * 把"为什么是 —"讲清楚：未关联代码 / 未同步行情 / 事件日期未知，
+ * 三种原因的用户动作完全不同（去关联 / 去同步 / 无解）。
+ */
+function marketTitle(id: number): string {
+  const r = reactionOf(id)
+  if (!r) return '该实体尚未关联证券代码，无法计算价格反应'
+  if (!r.symbol) return '该实体尚未关联证券代码，无法计算价格反应'
+  if (r.dayChange === null) return `已关联 ${r.symbol}，但没有事件日附近的行情数据（请先在行情面板同步）`
+  return `事件日涨跌（基准收盘 ${r.baseClose?.toFixed(2) ?? '—'}）`
+}
+
 /**
  * 分组前按排序方式排序的副本
  *
@@ -558,11 +648,16 @@ async function handleExtractBatch() {
  */
 async function reload(resetExpanded = true) {
   if (resetExpanded) expandedEventId.value = -1
+  // 先清空旧的价格反应，避免上一次筛选的价格短暂显示在新列表上（错配比没有更糟）
+  researchStore.priceReactions = new Map()
   await researchStore.loadEvents(filterDays.value, filterEntityId.value || undefined, {
     eventType: filterEventType.value,
     sentiment: filterSentiment.value,
     keyword: keyword.value,
   })
+  // 价格是附加层，**不 await 阻塞列表渲染**：先让事件出现，价格算完再补上。
+  // loadPriceReactions 内部吞错，失败只会留在 console。
+  void researchStore.loadPriceReactions()
 }
 
 /** 监听打开状态：打开即重置临时态（拆分前由外壳 close() 手工清零）并加载时间线 */
@@ -766,6 +861,59 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
 }
+/* 行内价格列：固定宽度是硬要求。
+   左边缘只放宽度恒定的元素，这一列若随内容变宽（+9.9% 与 +99.9% 差 7px），
+   整列正文的起始竖线就会变成锯齿。56px 能容下 "+99.99%" 与 "—"。 */
+.event-market {
+  flex-shrink: 0;
+  width: 56px;
+  text-align: right;
+  font-size: var(--fs-modal-meta);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+}
+/* 涨红跌绿：国内惯例，与时间线圆点同一口径（红=利多/绿=利空） */
+.event-market.mk-up,
+.emd-item b.mk-up {
+  color: var(--tone-red);
+}
+.event-market.mk-down,
+.emd-item b.mk-down {
+  color: var(--tone-green);
+}
+/* 市场反应详情卡：展开区内的补充信息，弱化处理避免抢证据引用的视觉重心 */
+.event-market-detail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-1) var(--sp-3);
+  margin-top: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-muted);
+  font-size: var(--fs-modal-meta);
+  color: var(--text-secondary);
+}
+.emd-h {
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.emd-item {
+  font-variant-numeric: tabular-nums;
+}
+.emd-item b {
+  font-weight: 500;
+}
+.emd-base,
+.emd-note {
+  color: var(--text-tertiary);
+}
+/* 窄屏隐藏价格列：手机上横向空间优先给事实正文（价格在展开区仍可看到） */
+@media (max-width: 768px) {
+  .event-market {
+    display: none;
+  }
+}
 /* 事件正文：一次阅读的主体句，用正文档 14 / 1.65（原先 14 + 裸写 1.5，行距偏挤）。
    min-width: 0 是 flex 行里长文本的必需项：默认 min-width:auto 会让它撑到
    max-content，把行尾的类型徽标和箭头顶出行外。 */
@@ -789,37 +937,22 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
    本行行盒由 14/1.65 ≈ 23px 决定，撑到 32 会把每条事件拉高近 10px。
    :focus-visible 必须强制显形 —— 否则键盘 Tab 到这里时按钮仍是 opacity:0，
    焦点落在看不见的元素上。 */
+/* 事件删除钮：外观来自 `.btn .btn-icon .btn-mini .btn-quiet .btn-quiet-danger`
+   （24×24 幽灵图标钮，悬停透危险色）。这里只留"悬停事件行才显形"这个交互，
+   以及 ✕ 字形的字号（它是文字而不是 svg）。 */
 .event-del {
-  flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: none;
-  background: none;
-  border-radius: var(--r-sm);
-  color: var(--text-tertiary);
-  font-size: var(--fs-xl);
+  font-size: var(--fs-lg);
   line-height: 1;
-  cursor: pointer;
   opacity: 0;
-  transition: opacity var(--m-tap) var(--m-ease-out),
-    color var(--m-tap) var(--m-ease-out),
-    background var(--m-tap) var(--m-ease-out);
+  transition: opacity var(--m-tap) var(--m-ease-out);
 }
 .event-item:hover .event-del,
 .event-del:focus-visible {
   opacity: 1;
 }
-.event-del:hover {
-  color: var(--danger);
-  background: var(--fill-secondary);
-}
+/* 禁用时保持可见（"正在删除中"要看得见），这条状态覆盖 `button:disabled` 的 .5 */
 .event-del:disabled {
   opacity: 1;
-  cursor: default;
   color: var(--text-tertiary);
 }
 
@@ -874,22 +1007,9 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
   color: var(--text-tertiary);
   margin-right: var(--sp-05);
 }
-.act {
-  border: 1px solid var(--border);
-  background: var(--surface);
-  cursor: pointer;
-  font-family: inherit;
-  font-size: var(--fs-modal-meta);
-  padding: 2px var(--sp-15);
-  border-radius: 999px;
-  color: var(--text-secondary);
-  /* 命中区不小于 22px：行内小钮在弹窗里用手点也够得着 */
-  min-height: 22px;
-}
-.act:hover:not(:disabled) { background: var(--fill); }
-.act:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
-.act:disabled { opacity: 0.5; cursor: not-allowed; }
-/* 三类立场用边框色区分，不用实心底色：这一行是次要动作，不该抢过事件正文 */
+/* 「支持 / 反驳 / 存疑」：外观来自 `.btn .btn-mini .btn-round`（24px 药丸）。
+   此前是 22px 自建药丸，比所有行内小钮都矮 2px。三类立场只在**悬停**时透出颜色
+   且只变描边——这一行是次要动作，不该抢过事件正文。 */
 .act.bad:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
 .act.mixed:hover:not(:disabled) { border-color: var(--warning); color: var(--warning); }
 .act.ok:hover:not(:disabled) { border-color: var(--success); color: var(--success); }

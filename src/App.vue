@@ -82,6 +82,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useUiStore } from '@/stores/ui'
 import { useModalStore } from '@/stores/modal'
 import { useReportPeriodStore } from '@/stores/reportPeriod'
+import { useWorkbenchStore } from '@/stores/workbench'
 import { applyAppearance } from '@/utils/appearance'
 import { anyDialogOpen } from '@/utils/dialogStack'
 import { SHORTCUT_KEYS } from '@/utils/shortcuts'
@@ -106,6 +107,59 @@ const feedsStore = useFeedsStore()
 const settingsStore = useSettingsStore()
 /** UI 状态 store 实例：专注阅读模式开关，用于联动隐藏订阅栏与文章列表栏 */
 const uiStore = useUiStore()
+/** 今日待办 store 实例：主屏「今天要处理」的数据源与展开状态 */
+const workbenchStore = useWorkbenchStore()
+
+// ─── 「今天要处理」的刷新策略 ──────────────────────────────────────────────
+//
+// 待办是"此刻该做什么"，需要三个时机刷新，缺一不可：
+// 1. 首屏（onMounted）——打开就能看见；
+// 2. 窗口重新获得焦点——用户切走去查了资料再回来，价格与日程可能已变；
+// 3. 定时（5 分钟）——程序常驻前台时也能跟上。
+//
+// 统一用节流闸 `lastWorkbenchLoadAt`：三处都可能同时触发，
+// 没有闸门时一次切换窗口会连打三发同样的查询。
+
+/** 上次实际加载时刻（毫秒）；0 = 从未加载 */
+let lastWorkbenchLoadAt = 0
+/** 最小加载间隔（毫秒）：任一触发早于此值则跳过 */
+const WORKBENCH_MIN_INTERVAL = 30_000
+/** 定时刷新间隔（毫秒） */
+const WORKBENCH_TIMER_INTERVAL = 5 * 60_000
+/** 定时器句柄（卸载时清理） */
+let workbenchTimer: number | undefined
+
+/**
+ * 按节流规则加载一次待办
+ *
+ * @param force - 为 true 时忽略节流（首屏用）
+ */
+function refreshWorkbench(force = false) {
+  const now = Date.now()
+  if (!force && now - lastWorkbenchLoadAt < WORKBENCH_MIN_INTERVAL) return
+  lastWorkbenchLoadAt = now
+  void workbenchStore.load()
+}
+
+/** 窗口重新聚焦时刷新（标签页/Tauri 窗口都走 visibilitychange + focus 两条） */
+function onWindowFocus() {
+  refreshWorkbench()
+}
+
+/** 启动定时刷新与焦点监听 */
+function startWorkbenchRefresh() {
+  window.addEventListener('focus', onWindowFocus)
+  workbenchTimer = window.setInterval(onWindowFocus, WORKBENCH_TIMER_INTERVAL)
+}
+
+/** 停止定时刷新并移除监听（卸载时调用，避免泄漏） */
+function stopWorkbenchRefresh() {
+  window.removeEventListener('focus', onWindowFocus)
+  if (workbenchTimer !== undefined) {
+    window.clearInterval(workbenchTimer)
+    workbenchTimer = undefined
+  }
+}
 /**
  * 文章 store 实例：全局快捷键要操作文章列表与选中文章
  *
@@ -615,10 +669,14 @@ onMounted(async () => {
   if (settingsStore.getSetting('onboarded') === undefined) showOnboarding.value = true
   // 统一应用外观设置（主题 / 界面字体 / 内容字体 / 阅读字号）
   applyAppearance(settingsStore)
+  // 「今天要处理」：不 await，加载失败也不影响主流程（store 内部吞错并保留上次结果）
+  refreshWorkbench(true)
+  startWorkbenchRefresh()
 })
 
 /** 组件卸载时移除全局事件监听，避免泄漏 */
 onUnmounted(() => {
+  stopWorkbenchRefresh()
   window.removeEventListener('open-settings', handleOpenSettings)
   window.removeEventListener('open-shortcuts', handleOpenShortcuts)
   window.removeEventListener('open-entity-dashboard', handleOpenEntityDashboard)

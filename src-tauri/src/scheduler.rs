@@ -259,6 +259,39 @@ impl RefreshManager {
         .map_err(|e| e.to_string())?;
         scheduler.add(retention_job).await.map_err(|e| e.to_string())?;
 
+        // 注册第三个定时任务：价格预警检查（每 5 分钟）。
+        //
+        // 为什么与订阅刷新分开注册：两者时延需求不同——新闻 60 分钟一轮够用，
+        // 价格 60 分钟一轮则预警形同虚设。合成一个 Job 会让用户"把刷新频率
+        // 调到 3 小时省电"时，预警灵敏度被顺带改掉，而且他并不知道。
+        //
+        // 为什么 5 分钟而不是 1 分钟：新浪快照本身有约 15s 延迟，
+        // 更高的轮询频率换不来更准的价格，只换来更多请求。
+        // `check_alerts` 内部还有两道自保：无规则零请求、非交易时段直接返回。
+        let pool3 = self.pool.clone();
+        let alert_job = Job::new_async("0 0/5 * * * ?", move |_uuid, _l| {
+            let pool3 = pool3.clone();
+            Box::pin(async move {
+                match crate::market::check_alerts(&pool3).await {
+                    Ok(hits) if !hits.is_empty() => {
+                        // 顺序不可颠倒：先发通知、再写触发时间。
+                        // 反过来一旦发送成功而写库失败，下一轮会重复提醒；
+                        // 而先发后写的失败最多是"多提醒一次"。
+                        crate::notify::price_alert(&pool3, &hits).await;
+                        let ids: Vec<i64> = hits.iter().map(|h| h.alert_id).collect();
+                        if let Err(e) = crate::market::mark_triggered(&pool3, &ids).await {
+                            eprintln!("回写价格预警触发时间失败: {}", e);
+                        }
+                    }
+                    // 无命中是正常态：绝大多数轮次都走这里，不打印
+                    Ok(_) => {}
+                    Err(e) => eprintln!("价格预警检查失败: {}", e),
+                }
+            })
+        })
+        .map_err(|e| e.to_string())?;
+        scheduler.add(alert_job).await.map_err(|e| e.to_string())?;
+
         scheduler.start().await.map_err(|e| e.to_string())?;
 
         eprintln!("后台定时刷新已启动，cron = {}", cron);

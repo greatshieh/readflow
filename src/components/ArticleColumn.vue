@@ -3,9 +3,14 @@
        顶部是操作条组件与排序栏，下方是分组后的文章列表。
        列表行渲染见 ArticleListItem.vue，头部控件见 ArticleListToolbar.vue。
        窄屏（<=768px）下整列变为抽屉，由 showArticleList 控制滑出。 -->
-  <div class="article-column pane-glow-host" :class="{ open: showArticleList }" ref="paneRef">
-    <!-- 跟随边框：靠近指针的那一侧亮起一段 -->
-    <div class="pane-frame" ref="frameRef" aria-hidden="true"></div>
+  <div class="article-column" :class="{ open: showArticleList }">
+    <!-- 今日概览：列表栏最顶部的一排读数（待读 / 今日新文 / 待处理 + 进度环）。
+         放在 TodayBar 之上：概览回答"现在什么状态"，待办回答"现在做什么"，
+         先状态后动作。无任何数字时整条不渲染。 -->
+    <TodayOverview />
+    <!-- 「今天要处理」摘要条：放在操作条之上，打开应用第一眼是"该处理什么"。
+         无待办时自身整条不渲染（不留 0 项的空壳），收起态只占一行 40px。 -->
+    <TodayBar />
     <!-- 顶部固定操作条：搜索 / 标签范围 / 仅未读 / 仅书签 / 刷新 / 全部已读 -->
     <ArticleListToolbar
       :active-tag="activeTag"
@@ -125,9 +130,10 @@ import { clearThumbnailCache } from '@/utils/articleThumb'
 import ArticleListItem from './ArticleListItem.vue'
 import ArticleListSkeleton from './ArticleListSkeleton.vue'
 import ArticleListToolbar from './ArticleListToolbar.vue'
+import TodayBar from './TodayBar.vue'
+import TodayOverview from './TodayOverview.vue'
 import ArticleSortBar from './ArticleSortBar.vue'
 import SelectCapsule from './SelectCapsule.vue'
-import { useCursorGlow } from '@/composables/useCursorGlow'
 import type { Feed, Article, Tag } from '@/types'
 
 
@@ -419,12 +425,6 @@ watch(
 
 /** 文章列表滚动区（滑动胶囊的定位基准） */
 const articleBodyRef = ref<HTMLElement | null>(null)
-/** 面板根元素（光斑与跟随边框的宿主） */
-const paneRef = ref<HTMLElement | null>(null)
-/** 跟随边框层 */
-const frameRef = ref<HTMLElement | null>(null)
-/** 启用面板光斑跟随 + 靠近侧边框亮起 */
-useCursorGlow(paneRef, frameRef)
 /** 选中胶囊组件实例：把胶囊滑到当前正在读的那一篇 */
 const articleCapsule = ref<InstanceType<typeof SelectCapsule> | null>(null)
 
@@ -733,21 +733,12 @@ onUnmounted(() => {
   width: var(--article-w, 360px);
   /* 作为内部绝对定位元素（操作反馈浮层 .tb-toast、滑动胶囊）的定位基准 */
   position: relative;
-  /* 玻璃化：与订阅栏同一套玻璃令牌（--glass / --glass-hi / --glass-hair），
-     保证两块面板材质一致、看起来像同一片玻璃被裁成两块。 */
-  background: var(--glass);
-  backdrop-filter: blur(var(--blur)) saturate(1.5);
-  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.5);
+  /* 不透明面板，与订阅栏同材质。分区只靠右侧一道发丝线。 */
+  background: var(--surface);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  border-radius: var(--r-panel);
-  box-shadow:
-    inset 0 1px 0 var(--glass-hi),
-    inset 0 -1px 0 var(--glass-lo),
-    0 2px 6px rgba(31, 45, 70, 0.05),
-    0 10px 30px rgba(31, 45, 70, 0.07);
-  border: 1px solid var(--glass-hair);
+  border-right: 1px solid var(--shell-hair);
   height: 100%;
   overflow: hidden;
 }

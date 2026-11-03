@@ -1,7 +1,7 @@
 //! Tauri 命令入口点 - 前端与 Rust 后端之间的 IPC 边界
 //!
 //! # 职责
-//! 本模块是整个后端的**唯一对外 API 层**，[`tauri::generate_handler!`] 中共注册 **100 个命令**，
+//! 本模块是整个后端的**唯一对外 API 层**，[`tauri::generate_handler!`] 中共注册 **103 个命令**，
 //! 按业务域分为二十一组（下方清单需与 [`run`] 里的 `generate_handler!` 保持一致，增删命令时同步）：
 //! 注意 `ai_generate_summary` 同时属于 Feed AI 配置组与 AI 组，下方清单按两组各计一次，
 //! - Feed 命令（11）：[`feeds_list`] / [`feeds_add`] / [`feeds_update`] / [`feeds_delete`] /
@@ -90,6 +90,8 @@ mod research;
 mod tray;
 mod notify;
 mod market;
+// 今日待办聚合：跨域只读（论点/复盘/行情/覆盖），单向依赖其余模块
+mod workbench;
 mod util;
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -472,6 +474,7 @@ pub fn run() {
             remove_custom_event_type,
             research_events_by_article,
             research_events_timeline,
+            research_events_with_price,
             research_event_delete,
             event_sentiment_get,
             financial_data_list,
@@ -537,6 +540,9 @@ pub fn run() {
             market_list_calendar,
             market_add_alert,
             market_list_alerts,
+            market_check_alerts,
+            // 今日待办（跨域只读聚合）
+            workbench_today,
         ])
         // 启动失败属于不可恢复错误，直接 panic 而不是静默退出，
         // 便于在日志里看到明确原因
@@ -2994,6 +3000,56 @@ async fn research_events_timeline(
     Ok(rows)
 }
 
+/// 取一批事件的市场反应（价格对齐）
+///
+/// # 为什么不塞进 `research_events_timeline`
+/// 价格反应依赖 `market_quotes` / `market_symbols`，而时间线命令被报告模块
+/// 与多个视图复用。把两者合并会让"没配行情"的用户也承担一次看似的
+/// 空查询，更糟的是失败会连带把时间线一起弄挂。
+/// 拆开后前端可以**并行调用、价格失败静默降级**（时间线照常显示，价格列显示 `—`）。
+///
+/// # 入参为什么是事件 id 列表而不是 days
+/// 前端已经拿到事件列表，再按同样的 days 查一遍会重复取全量数据；
+/// 更重要的是两次查询之间可能有新事件入库，导致"列表 50 条、反应 52 条"错位。
+/// 按 ID 精确对齐，多出来的查不到就自然少一条，不会串行。
+///
+/// # 参数
+/// * `event_ids` - 事件 ID 列表（前端传入当前已渲染的那一批）
+///
+/// # 返回值
+/// 以 `eventId` 为键的反应映射；未关联证券代码的事件不在其中
+///
+/// # 错误
+/// 数据库读写失败时返回错误信息
+#[tauri::command]
+async fn research_events_with_price(
+    event_ids: Vec<i64>,
+) -> Result<std::collections::HashMap<i64, market::EventReaction>, String> {
+    if event_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+
+    // 一次取出这批事件的身份与日期：entity_id 用来找对应证券代码，
+    // event_date 用作价格对齐的锚点（为空时回退文章发布日期）。
+    let placeholders = vec!["?"; event_ids.len()].join(",");
+    let sql = format!(
+        "SELECT r.id, r.entity_id, \
+                COALESCE(NULLIF(r.event_date, ''), substr(a.published_at, 1, 10), '') AS anchor \
+         FROM research_events r \
+         LEFT JOIN articles a ON a.id = r.article_id \
+         WHERE r.id IN ({})",
+        placeholders
+    );
+    let mut q = sqlx::query_as::<_, (i64, i64, String)>(&sql);
+    for id in &event_ids {
+        q = q.bind(id);
+    }
+    let rows = q.fetch_all(&pool).await.map_err(|e| e.to_string())?;
+
+    market::event_reactions(&pool, &rows).await
+}
+
 /// 删除单条研究事件
 ///
 /// 物理删除；事件不存在时静默成功（幂等），便于前端在删除后直接移出本地列表
@@ -4012,5 +4068,54 @@ async fn market_add_alert(symbol: String, op: String, price: f64, note: String) 
 async fn market_list_alerts() -> Result<Vec<market::MarketAlert>, String> {
     let pool = db_pool().await.map_err(|e| e.to_string())?;
     market::list_alerts(&pool).await
+}
+
+/// 立即执行一次价格预警检查（供前端「测试」按钮使用）
+///
+/// # 为什么需要手动触发
+/// 定时检查每 5 分钟跑一次，且在没有规则、非交易时段、数据源故障时都会静默返回空。
+/// 用户加完规则后无法区分「规则已在工作、只是还没到点」与「功能根本没生效」。
+/// 有了手动触发，一次点击就能验证：命中数会如实返回，通知则按门控照常发送。
+///
+/// # 行为
+/// 命中则发通知并回写触发时间（与定时任务完全同一条路径，不另写一套逻辑），
+/// 返回本次命中条数。**返回空不等于出错**——可能是价格没到阈值，也可能是
+/// 当前不在交易时段，调用方据此给中性文案即可。
+///
+/// # 返回
+/// 本次命中的规则条数
+///
+/// # 错误
+/// 读取规则或写回触发时间失败时返回错误信息
+#[tauri::command]
+async fn market_check_alerts() -> Result<i64, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    let hits = market::check_alerts(&pool).await?;
+    if !hits.is_empty() {
+        // 顺序与定时任务一致：先发通知，再写触发时间
+        notify::price_alert(&pool, &hits).await;
+        let ids: Vec<i64> = hits.iter().map(|h| h.alert_id).collect();
+        market::mark_triggered(&pool, &ids).await?;
+    }
+    Ok(hits.len() as i64)
+}
+
+// ─── 今日待办（跨域只读聚合）──────────────────────────────────────────────
+
+/// 取「今天要处理」清单
+///
+/// 聚合判据到期 / 结构有偏的论点、一周内的财报、24 小时内触发的价格预警、
+/// 该重新定夺的覆盖标的。排序与文案都在 `workbench` 模块内完成，本命令只做取池转发。
+///
+/// # 返回
+/// 排好序的汇总；没有任何待办时 `total` 为 0
+///
+/// # 错误
+/// 任一数据源查询失败即返回错误（**不做部分成功**：少了任何一类的待办清单
+/// 都会误导用户，比整块不显示更危险）
+#[tauri::command]
+async fn workbench_today() -> Result<workbench::TodaySummary, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    workbench::today(&pool).await
 }
 

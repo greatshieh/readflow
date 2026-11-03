@@ -26,6 +26,7 @@ import { readThemeSnapshot } from '@/utils/appearance'
 import type {
   ResearchEvent,
   ResearchEventWithContext,
+  EventReaction,
   AutomationTask,
   ReportMeta,
   ReportGenResult,
@@ -41,6 +42,15 @@ export const useResearchStore = defineStore('research', () => {
 
   /** 带上下文的事件列表（含实体名与来源文章标题/链接） */
   const events = ref<ResearchEventWithContext[]>([])
+
+  /**
+   * 事件 ID → 市场反应
+   *
+   * 与 `events` 分开存而不是塞进行内对象：价格是可选附加层，
+   * 拉取失败时清空本 Map 即可让整个时间线降级为"无价格列"，
+   * 不需要重建事件列表，也不会因为缺字段让类型变成可选。
+   */
+  const priceReactions = ref<Map<number, EventReaction>>(new Map())
 
   /** 事件加载中 */
   const eventsLoading = ref(false)
@@ -90,6 +100,39 @@ export const useResearchStore = defineStore('research', () => {
       })
     } finally {
       eventsLoading.value = false
+    }
+  }
+
+  /**
+   * 拉取当前事件列表的市场反应（价格对齐层）
+   *
+   * # 为什么不并进 loadEvents 的 await 链
+   * 价格是**附加层**：没关联证券代码、没同步行情、后端查询失败时，
+   * 时间线必须照常显示。因此这里独立成一次调用，且**吞掉所有错误**——
+   * 失败只留 console，`priceReactions` 保持空，前端显示 `—`。
+   *
+   * # 为什么按当前已渲染的 event id 精确取
+   * 按 days 再查一遍全量会与 events 列表错位（两次查询之间可能入库新事件），
+   * 出现"列表 50 条、反应 52 条"的串行。
+   */
+  async function loadPriceReactions(): Promise<void> {
+    const ids = events.value.map((e) => e.id)
+    if (ids.length === 0) {
+      priceReactions.value = new Map()
+      return
+    }
+    try {
+      const map = await invoke<Record<string, EventReaction>>('research_events_with_price', {
+        eventIds: ids
+      })
+      // Map 用字符串键返回，转成数字键供模板 ev.id 直接命中
+      priceReactions.value = new Map(
+        Object.entries(map ?? {}).map(([k, v]) => [Number(k), v])
+      )
+    } catch (e) {
+      // 价格层失败不冒泡：时间线本身是主信息，不能因为行情没好就整块不显示
+      console.warn('价格反应获取失败（已降级为不显示）：', e)
+      priceReactions.value = new Map()
     }
   }
 
@@ -529,6 +572,8 @@ export const useResearchStore = defineStore('research', () => {
     loadGraph,
     reloadGraph,
     invalidateGraph,
+    loadPriceReactions,
+    priceReactions,
     getEventSentiment,
     getFinancialData,
     getFinancialDataByEntity,

@@ -152,6 +152,104 @@ async fn event_alert_enabled(pool: &SqlitePool) -> bool {
     }
 }
 
+/// 读取「价格预警」开关（缺省开启）
+///
+/// 与 [`event_alert_enabled`] 同一判据。价格预警单独一个子开关的理由：
+/// 事件预警看的是"有没有新闻"，价格预警看的是"价格有没有动"，
+/// 用户完全可能想留一个关一个（例如白天在盯盘、不需要价格重复提醒，
+/// 但希望新闻照常通知）。
+///
+/// # 参数
+/// * `pool` - 数据库连接池
+///
+/// # 返回值
+/// 开关开启返回 `true`
+async fn price_alert_enabled(pool: &SqlitePool) -> bool {
+    match Setting::get(pool, "price_alert_enabled").await {
+        Ok(Some(value)) => value.trim() != "0",
+        _ => true,
+    }
+}
+
+/// 发送价格预警通知（按 symbol 聚合成一条）
+///
+/// # 为什么按 symbol 聚合而不是按规则逐条发
+/// 同一标的常挂三条规则（止损 / 止盈 / 突破），价格一次穿越就可能命中两条。
+/// 逐条发等于连弹两三条，用户第一反应是关掉通知总开关——
+/// 那样连新闻预警也一起没了。聚合成一条后，正文里逐条列出命中的规则。
+///
+/// # 为什么不做进程内限频
+/// 价格预警自带落库冷却（`market_alerts.last_triggered` + 120 分钟），
+/// 比进程内计时更可靠：应用重启不会让"刚提醒过"的记忆消失。
+/// 若这里再加一层进程内限频，两者窗口不一致时会互相干扰，
+/// 出现"落库说没到点、内存说刚到过"的矛盾。
+///
+/// # 三重门
+/// 与 [`send_event_alert`] 完全一致：句柄 → 窗口 → 总开关，之后加子开关。
+/// 顺序按代价从低到高（内存 → 窗口 API → 查库），任一不满足即静默返回。
+///
+/// # 参数
+/// * `pool` - 数据库连接池
+/// * `hits` - 本次命中的规则（空则直接返回）
+pub async fn price_alert(pool: &SqlitePool, hits: &[crate::market::AlertHit]) {
+    if hits.is_empty() {
+        return;
+    }
+    // 启动早期句柄尚未注入，任务不可能已运行，直接返回
+    let Some(app) = APP_HANDLE.get() else {
+        return;
+    };
+    if !window_away(app) {
+        return;
+    }
+    if !enabled(pool).await {
+        return;
+    }
+    if !price_alert_enabled(pool).await {
+        return;
+    }
+
+    // 按 symbol 聚合：符号 → 该标的下命中的规则描述
+    let mut by_symbol: HashMap<String, Vec<String>> = HashMap::new();
+    for h in hits {
+        let desc = if h.note.trim().is_empty() {
+            format!("{} {} → 现价 {}", h.op, h.price, h.current)
+        } else {
+            format!("{}（{} {} → 现价 {}）", h.note, h.op, h.price, h.current)
+        };
+        by_symbol
+            .entry(h.symbol.clone())
+            .or_default()
+            .push(desc);
+    }
+
+    // 标题取第一个标的、正文逐行列出：一个标的一条通知，多个标的合并成一条长正文
+    let title = if by_symbol.len() == 1 {
+        let sym = by_symbol.keys().next().cloned().unwrap_or_default();
+        format!("价格提醒 · {}", sym)
+    } else {
+        format!("价格提醒 · {} 个标的", by_symbol.len())
+    };
+    let mut body = String::new();
+    for (sym, descs) in &by_symbol {
+        if by_symbol.len() > 1 {
+            body.push_str(&format!("{}：", sym));
+        }
+        body.push_str(&descs.join("；"));
+        body.push('\n');
+    }
+
+    if let Err(e) = app
+        .notification()
+        .builder()
+        .title(title)
+        .body(body.trim_end())
+        .show()
+    {
+        eprintln!("发送价格预警通知失败（不影响主流程）: {}", e);
+    }
+}
+
 /// 每个实体的最近一次预警时刻（进程内限频）
 ///
 /// 同一实体在 [`ALERT_COOLDOWN`] 内重复命中的事件只推一次，

@@ -317,6 +317,34 @@ export interface ResearchEventWithContext extends ResearchEvent {
   sentiment_confidence?: number
 }
 
+/**
+ * 一条事件的市场反应（价格对齐层）
+ *
+ * **刻意与 `ResearchEventWithContext` 分开**，不做继承/合并：
+ * 价格只在时间线视图需要，且依赖行情数据是否已同步。
+ * 合成一个大接口会让"价格取不到"变成"整个事件列表取不到"，
+ * 那是把可选的附加信息升级成了关键路径。
+ *
+ * 全部字段可为 `null`——没有关联代码、行情未同步、事件日无数据都会走到这里。
+ * 前端必须显示 `—` 而不是 0%：**0% 与"没有数据"是两件事**。
+ *
+ * ⚠ **字段名是 camelCase**：Rust 侧带 `#[serde(rename_all = "camelCase")]`，
+ * 这里写成 snake_case 不会报错，只会让模板里拿到 `undefined` 并静默显示 `—`。
+ * 契约由 `market::tests::event_reaction_serializes_as_camel_case` 守护。
+ */
+export interface EventReaction {
+  /** 对应事件 ID */
+  eventId: number
+  /** 事件日当天涨跌幅（%），空 = 无数据 */
+  dayChange: number | null
+  /** 事件后 5 个交易日累计涨跌幅（%），不足 5 天时为 null */
+  window5d: number | null
+  /** 基准收盘价（事件日前一交易日） */
+  baseClose: number | null
+  /** 该实体关联的证券代码；null = 未关联 */
+  symbol: string | null
+}
+
 /** 自动化任务（任务即数据：定时提取 / 定时报告等） */
 export interface AutomationTask {
   /** 唯一标识符 */
