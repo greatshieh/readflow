@@ -18,7 +18,7 @@
           <span class="dash-head-name">{{ entityName }}</span>
           <span v-if="entityTypeLabel" class="dash-head-type">{{ entityTypeLabel }}</span>
         </div>
-        <button class="btn-icon" @click="onClose" aria-label="关闭" title="关闭">
+        <button class="btn btn-icon btn-quiet" @click="onClose" aria-label="关闭" title="关闭">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"></line>
             <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -64,7 +64,7 @@
           <!-- 行情面板（外部数据源能力，突出显示） -->
           <section class="dash-card">
             <h4 class="dash-h">行情面板（外部数据源）</h4>
-            <MarketPanel :entity-id="entityId" />
+            <MarketPanel :entity-id="entityId" @toast="onPanelToast" />
           </section>
 
           <!-- 双列紧凑区：综合舆情 + 财务快照 -->
@@ -252,6 +252,7 @@ import MarketPanel from './MarketPanel.vue'
 import { useResearchStore } from '@/stores/research'
 import { useEntitiesStore } from '@/stores/entities'
 import { useEventTypesStore } from '@/stores/eventTypes'
+import { useToastStore } from '@/stores/toast'
 import { entityTypeLabel as labelOf } from '@/utils/entityLabels'
 import type { EventSentiment, FinancialData, CrossReferenceEntry, ArticlePreview, ResearchEventWithContext } from '@/types'
 
@@ -263,6 +264,18 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{ (e: 'close'): void }>()
+
+/** 全局轻提示：行情面板的检查结果等一次性反馈统一走这里 */
+const toastStore = useToastStore()
+
+/**
+ * 行情面板上抛的提示
+ *
+ * 面板自己不做 Toast（保持"只渲染"的分工），由仪表盘决定展示位置。
+ */
+function onPanelToast(message: string) {
+  toastStore.show(message)
+}
 
 /** 通知父组件关闭弹窗（Esc / 点遮罩 / 点关闭钮都走 BaseModal 的 @close） */
 function onClose() {

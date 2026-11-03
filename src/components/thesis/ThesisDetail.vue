@@ -11,7 +11,7 @@
   <div v-else class="td">
     <header class="td-head">
       <div class="td-crumb">
-        <button class="link" type="button" @click="emit('back')">← 论点列表</button>
+        <button class="link-btn" type="button" @click="emit('back')">← 论点列表</button>
         <span class="spacer"></span>
         <button class="btn btn-danger-text btn-sm" type="button" @click="confirmDelete = true">删除</button>
       </div>
@@ -47,8 +47,8 @@
           v-for="s in STATUS_ACTIONS"
           :key="s.value"
           type="button"
-          class="chip"
-          :class="{ on: t.status === s.value }"
+          class="btn btn-mini btn-round chip"
+          :class="{ 'btn-soft': t.status === s.value }"
           :aria-pressed="t.status === s.value"
           @click="setStatus(s.value)"
         >
@@ -99,7 +99,7 @@
          反驳置顶是反直觉设计，不解释会被当成 bug 反馈。 -->
     <p v-if="!guideDismissed && evidence.length > 0" class="td-guide">
       反面证据放在了最上面，这是故意的——收集支持自己的材料很容易，主动看反面才难。
-      <button class="td-guide-x" type="button" aria-label="知道了" @click="dismissGuide">知道了</button>
+      <button class="link-btn td-guide-x" type="button" aria-label="知道了" @click="dismissGuide">知道了</button>
     </p>
 
     <div class="td-body">
@@ -140,7 +140,7 @@
                   <span class="td-ev-gone">原文已清理（证据靠快照保留）</span>
                 </template>
                 <span class="spacer"></span>
-                <button class="td-ev-x" type="button" aria-label="摘掉这条证据" title="摘掉" @click="removeEvidence(ev.id)">
+                <button class="btn btn-icon btn-mini btn-quiet btn-quiet-danger td-ev-x" type="button" aria-label="摘掉这条证据" title="摘掉" @click="removeEvidence(ev.id)">
                   ✕
                 </button>
               </div>
@@ -180,9 +180,9 @@
               <span class="td-tl-fact">{{ ev.fact }}</span>
             </div>
             <div class="td-tl-acts">
-              <button class="mini" type="button" title="作为支持证据" @click="attachTimeline(ev.id, 'support')">支持</button>
-              <button class="mini bad" type="button" title="作为反驳证据" @click="attachTimeline(ev.id, 'oppose')">反驳</button>
-              <button class="mini" type="button" title="作为存疑证据" @click="attachTimeline(ev.id, 'mixed')">存疑</button>
+              <button class="btn btn-mini mini" type="button" title="作为支持证据" @click="attachTimeline(ev.id, 'support')">支持</button>
+              <button class="btn btn-mini mini bad" type="button" title="作为反驳证据" @click="attachTimeline(ev.id, 'oppose')">反驳</button>
+              <button class="btn btn-mini mini" type="button" title="作为存疑证据" @click="attachTimeline(ev.id, 'mixed')">存疑</button>
             </div>
           </li>
         </ul>
@@ -550,18 +550,6 @@ onMounted(() => {
   flex: 1 1 auto;
   min-width: 0;
 }
-.link {
-  border: none;
-  background: none;
-  padding: 0;
-  color: var(--primary);
-  font-family: inherit;
-  font-size: var(--fs-modal-label);
-  cursor: pointer;
-}
-.link:hover {
-  text-decoration: underline;
-}
 .title-row,
 .td-title-row {
   display: flex;
@@ -646,31 +634,9 @@ onMounted(() => {
   flex-wrap: wrap;
   margin-bottom: var(--sp-2);
 }
-.chip {
-  height: 26px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--text-secondary);
-  font-family: inherit;
-  font-size: var(--fs-modal-meta);
-  cursor: pointer;
-}
-.chip:hover {
-  background: var(--fill);
-  color: var(--text-primary);
-}
-.chip.on {
-  background: var(--primary-soft);
-  border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
-  color: var(--primary);
-  font-weight: 500;
-}
-.chip:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 1px;
-}
+/* 状态 chip：外观来自 `.btn .btn-mini .btn-round`，选中态用 `.btn-soft`。
+   此前这里与 `ThesisList.vue` 各有一份**逐字相同**的 `.chip` 定义（26px 药丸），
+   而列表那份还漏了 `:focus-visible`——同一颗 chip 在两个页面焦点表现不同。 */
 .td-edit {
   display: flex;
   flex-direction: column;
@@ -726,15 +692,10 @@ onMounted(() => {
   line-height: 1.6;
   color: var(--text-secondary);
 }
+/* 「知道了」用全局 `.link-btn`，这里只留把它推到行尾的布局。 */
 .td-guide-x {
   flex-shrink: 0;
   margin-left: auto;
-  border: none;
-  background: none;
-  color: var(--primary);
-  font-family: inherit;
-  font-size: var(--fs-modal-meta);
-  cursor: pointer;
 }
 .td-body {
   display: flex;
@@ -847,28 +808,18 @@ onMounted(() => {
 .td-ev-gone {
   font-style: italic;
 }
+/* 摘证据钮：外观来自 `.btn .btn-icon .btn-mini .btn-quiet .btn-quiet-danger`
+   （24×24 幽灵图标钮，悬停透危险色）。这里只留"悬停证据行才显形"这个交互，
+   以及 `font-size`——它是 ✕ 字形而不是 svg，要单独给字号。 */
 .td-ev-x {
-  flex-shrink: 0;
-  width: 20px;
-  height: 20px;
-  display: grid;
-  place-items: center;
-  border: none;
-  background: none;
-  border-radius: var(--r-sm);
-  color: var(--text-tertiary);
-  font-size: 11px;
-  cursor: pointer;
+  font-size: var(--fs-xs);
+  line-height: 1;
   opacity: 0;
-  transition: opacity var(--m-tap, 90ms) ease-out;
+  transition: opacity var(--m-tap) var(--m-ease-out);
 }
 .td-ev:hover .td-ev-x,
 .td-ev-x:focus-visible {
   opacity: 1;
-}
-.td-ev-x:hover {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger);
 }
 .td-rev {
   display: flex;
@@ -931,28 +882,13 @@ onMounted(() => {
   display: flex;
   gap: 2px;
 }
-.mini {
-  height: 22px;
-  padding: 0 7px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--surface);
-  color: var(--text-secondary);
-  font-family: inherit;
-  font-size: var(--fs-modal-meta);
-  cursor: pointer;
-}
-.mini:hover {
-  background: var(--fill);
-  color: var(--text-primary);
-}
-.mini.bad:hover {
-  background: color-mix(in srgb, var(--danger) 10%, transparent);
+/* 时间线上的「支持 / 反驳 / 存疑」是 `.btn .btn-mini`（24px）——此前是 22px 的
+   自建方块，比别处所有行内小钮都矮 2px。这里只留「反驳」本行的危险色反馈：
+   其余配色由 `.btn` 提供，红色只在悬停时透出（常显红会让整列变吵）。 */
+.mini.bad:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: var(--danger-fg);
   color: var(--danger);
-}
-.mini:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 1px;
 }
 /* 按钮一律走全局 `.btn` 族（基类 + 修饰类 + 尺寸档），本文件不再自建。
    这里曾有一份私有的 `.btn-ghost / .btn-primary / .btn-danger`：

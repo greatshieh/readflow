@@ -25,7 +25,7 @@
       <!-- 固定标题栏：标题居中，关闭按钮在右侧，不随内容滚动 -->
       <div class="m-titlebar">
         <span class="m-titlebar-title">{{ tabTitle }}</span>
-        <button class="btn-icon" @click="close" aria-label="关闭" title="关闭">
+        <button class="btn btn-icon btn-quiet" @click="close" aria-label="关闭" title="关闭">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"></line>
             <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -247,29 +247,10 @@ function close() {
   line-height: var(--lh-modal-section);
   color: var(--text-primary);
 }
-.btn-icon {
-  /* 命中区补到 32×32（原 28×28，低于 WCAG 2.5.8 的 24×24 下限的舒适区，
-     也与其余关闭钮统一）。两份副本（Settings / Research）现在同值。 */
-  width: 32px;
-  height: 32px;
-  border: none;
-  background: none;
-  border-radius: var(--r-md);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  color: var(--text-tertiary);
-  /* 显式列出：补 transform 让全局 button 基线的 :active 回弹有过渡 */
-  transition:
-    background var(--m-tap) var(--m-ease-out),
-    color var(--m-tap) var(--m-ease-out),
-    transform var(--m-tap) var(--m-ease-out);
-}
-.btn-icon:hover {
-  background: var(--fill);
-  color: var(--text-primary);
-}
+/* 右上角关闭钮：`.btn .btn-icon .btn-quiet`（32×32 幽灵图标钮）。
+   这里曾有两份逐字相同的私有 `.btn-icon`（本文件与 ResearchModal 各一份），
+   而 `EntityDashboardModal` 只写了 class 没有定义——那个关闭钮一直退化成
+   浏览器原生按钮。现在三处共用全局角色类，缺定义这种事不会再发生。 */
 /* 主体：占满剩余高度并内部滚动，顶部预留标题栏高度。
    overscroll-behavior: contain 与其他五个弹窗的滚动区一致：滚到底不把滚动链
    传给背后的页面（弹窗背后是 overflow:hidden 的 .app，本来也不该动）。 */

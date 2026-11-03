@@ -15,8 +15,8 @@
           v-for="f in STATUS_FILTERS"
           :key="f.value"
           type="button"
-          class="chip"
-          :class="{ on: store.filterStatus === f.value }"
+          class="btn btn-mini btn-round chip"
+          :class="{ 'btn-soft': store.filterStatus === f.value }"
           :aria-pressed="store.filterStatus === f.value"
           @click="setFilter(f.value)"
         >
@@ -147,7 +147,7 @@
               v-for="i in 5"
               :key="i"
               type="button"
-              class="cf-conf-dot"
+              class="btn btn-icon btn-mini btn-round cf-conf-dot"
               :class="{ on: i <= form.confidence }"
               :aria-label="`${i} 分 · ${CONFIDENCE_HINT[i]}`"
               :aria-pressed="i === form.confidence"
@@ -356,31 +356,8 @@ onMounted(() => {
   flex: 1 1 auto;
   min-width: 0;
 }
-.chip {
-  height: 26px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--text-secondary);
-  font-family: inherit;
-  font-size: var(--fs-modal-meta);
-  cursor: pointer;
-}
-.chip:hover {
-  background: var(--fill);
-  color: var(--text-primary);
-}
-.chip.on {
-  background: var(--primary-soft);
-  border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
-  color: var(--primary);
-  font-weight: 500;
-}
-.chip:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 1px;
-}
+/* 状态筛选 chip：外观来自 `.btn .btn-mini .btn-round`，选中态用 `.btn-soft`。
+   此前这里与 `ThesisDetail.vue` 各持一份 26px 药丸定义，且这份漏了焦点环。 */
 .tl-hint {
   margin: 0;
   padding: var(--sp-2) var(--sp-3);
@@ -595,31 +572,19 @@ onMounted(() => {
   align-items: center;
   gap: var(--sp-1);
 }
-/* 刻度里写数字：只有 5 个圆点时，用户既不知道点到了几，也不知道一共几档 */
+/* 刻度里写数字：只有 5 个圆点时，用户既不知道点到了几，也不知道一共几档。
+   外观来自 `.btn .btn-icon .btn-mini .btn-round`（24px 圆形图标钮）；
+   这里只留数字所需的等宽数字排版。 */
 .cf-conf-dot {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text-tertiary);
-  font-family: inherit;
-  font-size: var(--fs-modal-meta);
   font-variant-numeric: tabular-nums;
-  cursor: pointer;
 }
-/* 实心主色块上的文字一律用 --tone-fg，不要用 --primary-tint（那是底色令牌） */
+/* 实心主色块上的文字一律用 --tone-fg，不要用 --primary-tint（那是底色令牌）。
+   这是全按钮族里唯一保留"选中即实心"的地方：1–5 的置信度是一组刻度，
+   选中的那一格必须是一枚实心棋子，浅底在和其它四颗未选中棋子并列时读不出"选定"。 */
 .cf-conf-dot.on {
   background: var(--primary);
   border-color: var(--primary);
   color: var(--tone-fg);
-}
-.cf-conf-dot:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 2px;
 }
 .cf-conf-text {
   margin-left: var(--sp-2);

@@ -1,32 +1,9 @@
 <template>
-  <!-- ═══ Tab 3：实体管理 ═══ -->
+  <!-- ═══ Tab：实体管理 ═══
+       只做一件事：系统要盯谁（增删 / 启停 / 重评分 / 告警规则）。
+       「覆盖」曾是本页签内的第二个视图，已拆成平级页签——两个任务是不同的心智
+       （这里是**配置**，覆盖是**台账/决策记录**），理由见 `ResearchModal` 侧栏注释。 -->
   <div class="m-body">
-    <!-- 视图切换：同一批数据的两个问题——「系统要看谁」（实体：启停 / 评分 / 告警）
-         与「我为什么看它」（覆盖：档位 / 为什么盯 / 退出条件）。
-         做成切换而不是第二个页签：两者共用同一个入口，用户不会在两个页签之间迷路；
-         而覆盖离开"有哪些实体"这个上下文就填不出来（它要选标的）。 -->
-    <div class="ent-seg" role="group" aria-label="视图">
-      <button
-        type="button"
-        class="ent-seg-btn"
-        :class="{ on: view === 'entities' }"
-        :aria-pressed="view === 'entities'"
-        @click="view = 'entities'"
-      >
-        实体
-      </button>
-      <button
-        type="button"
-        class="ent-seg-btn"
-        :class="{ on: view === 'coverage' }"
-        :aria-pressed="view === 'coverage'"
-        @click="view = 'coverage'"
-      >
-        覆盖
-      </button>
-    </div>
-
-    <template v-if="view === 'entities'">
     <!-- 实体列表 -->
     <div class="entity-list" v-if="entitiesStore.entities.length > 0">
       <div
@@ -44,33 +21,38 @@
           <span class="entity-type">{{ entityTypeLabel(entity.entity_type) }}</span>
         </div>
         <div class="entity-actions">
-          <!-- 启用/禁用开关 -->
+          <!-- 启用/禁用开关：一个圆点，开=实心主色，关=空心灰。
+               不用 ✓ / ○ 字形——它们是字体里的字符，字号、基线、粗细都不可控，
+               而且和旁边三个 SVG 图标不是同一套语言。
+               状态色由 `.enabled` 类承载，按钮外观仍是全局 `.btn .btn-icon .btn-round`。 -->
           <button
-            class="toggle-btn"
-            :class="{ active: entity.enabled }"
+            class="btn btn-icon btn-round entity-switch"
+            :class="{ enabled: entity.enabled }"
+            :aria-pressed="entity.enabled"
             @click="handleToggle(entity)"
-            :title="entity.enabled ? '禁用' : '启用'"
+            :title="entity.enabled ? '已启用，点击禁用' : '已禁用，点击启用'"
+            :aria-label="entity.enabled ? '禁用' : '启用'"
           >
-            {{ entity.enabled ? '✓' : '○' }}
+            <span class="entity-switch-dot" aria-hidden="true"></span>
           </button>
-          <!-- 删除按钮 -->
+          <!-- 删除按钮：`.btn-quiet-danger` = 幽灵底 + 悬停透出危险色 -->
           <button
-            class="delete-btn"
+            class="btn btn-icon btn-quiet btn-quiet-danger"
             @click="handleDelete(entity)"
             title="删除"
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="3 6 5 6 21 6"></polyline>
               <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
             </svg>
           </button>
           <!-- 告警规则按钮（实体级告警 P1-F） -->
           <button
-            class="alert-btn"
+            class="btn btn-icon btn-quiet"
             @click="openRuleModal(entity)"
             title="告警规则"
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
               <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
             </svg>
@@ -101,7 +83,7 @@
           width="auto"
           class="type-select"
         />
-        <button class="add-btn" @click="handleAdd" :disabled="!newName.trim()">
+        <button class="btn btn-primary btn-form" @click="handleAdd" :disabled="!newName.trim()">
           添加
         </button>
       </div>
@@ -112,15 +94,10 @@
          例行操作不该弹窗打断，失败也不该只写进控制台 -->
     <div class="batch-actions">
       <span v-if="scoreMsg" class="score-msg" :class="{ err: scoreError }">{{ scoreMsg }}</span>
-      <button class="score-btn" @click="handleScore" :disabled="entitiesStore.loading">
+      <button class="btn btn-soft" @click="handleScore" :disabled="entitiesStore.loading">
         {{ entitiesStore.loading ? '评分中...' : '重新评分' }}
       </button>
     </div>
-    </template>
-
-    <!-- 覆盖清单：与实体列表互斥显示。用 v-if 而不是 v-show：
-         覆盖面板挂载时会拉一次清单，v-show 会让"没打开过覆盖页签"也白跑一次查询 -->
-    <CoveragePanel v-else />
 
     <!-- 实体级告警规则编辑弹窗（P1-F） -->
     <EntityAlertRuleModal
@@ -139,48 +116,30 @@
  * （提取的候选条件是 `entity_score >= 阈值`），因此增删/启停后都紧跟一次评分，
  * 让新状态立刻对存量文章生效（评分为纯本地字符串匹配，不消耗 AI 额度）。
  *
+ * # 职责边界（不要再把覆盖塞回来）
+ * 本页签只回答"系统要盯谁"。「覆盖」（为什么盯、何时退出）是**平级页签**，
+ * 不在这里，也不再受 `entityView` 这类二级状态驱动——那套结构曾让同一个
+ * 二选一在侧栏和页签内各出现一次，且两处都在宣称覆盖从属于实体。
+ *
  * # 与外壳/其它页签的契约
- * - 实体列表的加载由外壳在弹窗打开时统一保证（时间线筛选下拉与这里共用）；
+ * - 实体列表的加载由外壳在弹窗打开时统一保证（时间线筛选下拉、覆盖页签共用）；
  * - 评分/增删/启停会让已加载的关系图过期：本页签只 emit `entities-changed`
  *   通知外壳，由外壳据当前主屏视图决定「立即重算」还是「作废待重算」
  *   （见 `ResearchModal.onEntitiesChanged`），省掉一次看不见的全库扫描。
  */
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
 import AppSelect, { type SelectOption } from './AppSelect.vue'
 import EntityAlertRuleModal from './EntityAlertRuleModal.vue'
-import CoveragePanel from './coverage/CoveragePanel.vue'
 import { useEntitiesStore } from '@/stores/entities'
 import { showConfirm } from '@/stores/modal'
 import { ENTITY_TYPE_LABELS, entityTypeLabel } from '@/utils/entityLabels'
 
-const props = defineProps<{
-  /** 当前视图（`v-model:view`）；不传时本页签自行回落 `entities` */
-  view?: 'entities' | 'coverage'
-}>()
-
 const emit = defineEmits<{
   /** 实体集合或评分已变化，已加载的关系图随之过期（外壳转交失效处理） */
   (e: 'entities-changed'): void
-  /** 视图切换（`v-model:view`）：外壳侧栏的「覆盖」子项据此驱动本页签 */
-  (e: 'update:view', v: 'entities' | 'coverage'): void
 }>()
 
 const entitiesStore = useEntitiesStore()
-
-/**
- * 当前视图：实体（系统要看谁） / 覆盖（我为什么看它）
- *
- * 由外壳 `v-model:view` 受控：侧栏现在有一个「覆盖」子项，点它要能直接
- * 落到本页签的覆盖视图。写成 computed 而不是 ref，是因为两个入口
- * （页签内的分段控件、侧栏子项）必须**同一份状态**——各自持有一个 ref
- * 会立刻出现"侧栏点了覆盖、分段控件还亮着实体"的双高亮。
- *
- * 父组件不传时回落到 `entities`，本页签单独使用时行为与从前一致。
- */
-const view = computed<'entities' | 'coverage'>({
-  get: () => props.view ?? 'entities',
-  set: v => emit('update:view', v),
-})
 
 /** 新实体的名称输入 */
 const newName = ref('')
@@ -365,68 +324,23 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
   gap: var(--sp-05);
   flex-shrink: 0;
 }
-/* 行内三个图标钮：命中区 32×32（原先 28），与各弹窗外壳的图标钮统一；
-   .toggle-btn 里是 ✓ / ○ 文字字形，按图形处理取 14 档（不占六角色位）。
-   三处原先都是 all 过渡，会连尺寸一起过渡，改为显式属性。 */
-.toggle-btn {
-  width: 32px;
-  height: 32px;
+/* 行内三个图标钮（启停 / 删除 / 告警）的尺寸与外观全部来自全局
+   `.btn .btn-icon`（32×32）与 `.btn-quiet`，本文件不再持有任何按钮配色——
+   此前这里有三份逐字复制的 32×32 + 显式 transition，改一个就要改三处。 */
+
+/* 启用开关里的圆点：只有"点"是状态，按钮本体仍是标准图标钮。
+   开 = 10px 实心主色；关 = 10px 空心，1.5px 描边。 */
+.entity-switch-dot {
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  cursor: pointer;
-  font-size: var(--fs-md);
-  color: var(--text-tertiary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: border-color var(--m-tap) var(--m-ease-out),
-    color var(--m-tap) var(--m-ease-out),
-    background var(--m-tap) var(--m-ease-out);
+  border: 1.5px solid var(--text-tertiary);
+  background: transparent;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
-.toggle-btn.active {
+.entity-switch.enabled .entity-switch-dot {
+  background: var(--primary);
   border-color: var(--primary);
-  color: var(--primary);
-  background: var(--primary-tint);
-}
-.toggle-btn:hover {
-  border-color: var(--primary);
-}
-.delete-btn {
-  width: 32px;
-  height: 32px;
-  border-radius: var(--r-sm);
-  border: none;
-  background: none;
-  cursor: pointer;
-  color: var(--text-tertiary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background var(--m-tap) var(--m-ease-out),
-    color var(--m-tap) var(--m-ease-out);
-}
-.delete-btn:hover {
-  background: var(--danger-fg);
-  color: var(--danger);
-}
-.alert-btn {
-  width: 32px;
-  height: 32px;
-  border-radius: var(--r-sm);
-  border: none;
-  background: none;
-  cursor: pointer;
-  color: var(--text-tertiary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background var(--m-tap) var(--m-ease-out),
-    color var(--m-tap) var(--m-ease-out);
-}
-.alert-btn:hover {
-  background: var(--primary-tint);
-  color: var(--primary);
 }
 .add-entity {
   display: flex;
@@ -460,25 +374,8 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
 .type-select {
   flex-shrink: 0;
 }
-.add-btn {
-  height: 34px;
-  padding: 0 var(--sp-35);
-  border: none;
-  border-radius: var(--r-md);
-  background: var(--primary);
-  color: var(--tone-fg);
-  font-size: var(--fs-modal-body);
-  cursor: pointer;
-  transition: opacity var(--m-tap) var(--m-ease-out);
-  white-space: nowrap;
-}
-.add-btn:hover:not(:disabled) {
-  opacity: 0.85;
-}
-.add-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
+/* 「添加」与输入框同一行，所以用 `.btn-form`（34px）而不是默认 32px——
+   这一行的 `.entity-input` / `.type-select` 都是 34px，按钮矮 2px 会读成没对齐。 */
 .batch-actions {
   display: flex;
   align-items: center;
@@ -495,66 +392,10 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
 .score-msg.err {
   color: var(--danger);
 }
-.score-btn {
-  height: 32px;
-  padding: 0 var(--sp-35);
-  border: 1px solid var(--primary);
-  border-radius: var(--r-md);
-  background: var(--primary-tint);
-  color: var(--primary);
-  font-size: var(--fs-modal-label);
-  cursor: pointer;
-  transition: background var(--m-tap) var(--m-ease-out),
-    color var(--m-tap) var(--m-ease-out);
-}
-.score-btn:hover:not(:disabled) {
-  background: var(--primary);
-  color: var(--tone-fg);
-}
-.score-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
 /* 错误提示是必读句子，与成功提示同档 14 */
 .error-msg {
   font-size: var(--fs-modal-body);
   line-height: var(--lh-modal-body);
   color: var(--danger);
-}
-
-/* 视图切换（实体 / 覆盖）。
-   用 role="group" + aria-pressed 而不是半套 ARIA tab：tablist 需要配套的
-   tabpanel 语义与方向键切换，只做一半比不做更糟（读屏会播报"标签页 1/2"
-   然后告诉你没有对应面板）。两个互斥按钮用 group + pressed 语义足够准确。 */
-.ent-seg {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  margin-bottom: var(--sp-3);
-  border-radius: var(--r-md);
-  background: var(--fill);
-}
-.ent-seg-btn {
-  padding: var(--sp-1) var(--sp-3);
-  border: none;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: var(--fs-modal-label);
-  cursor: pointer;
-  transition: background var(--m-tap) var(--m-ease-out),
-    color var(--m-tap) var(--m-ease-out);
-}
-.ent-seg-btn:hover {
-  color: var(--text-primary);
-}
-.ent-seg-btn.on {
-  background: var(--surface);
-  color: var(--text-primary);
-  box-shadow: var(--shadow-xs);
-}
-.ent-seg-btn:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 1px;
 }
 </style>

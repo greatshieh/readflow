@@ -4,11 +4,11 @@
          这样长报告滚到一半也能一眼看到"这是哪一期、底料有多厚"。 -->
     <header class="rd-head">
       <div class="rd-crumb">
-        <button class="link" type="button" @click="emit('back')">← 报告列表</button>
+        <button class="link-btn" type="button" @click="emit('back')">← 报告列表</button>
         <span class="spacer"></span>
         <button
           v-if="!failed"
-          class="btn-ghost"
+          class="btn btn-sm"
           type="button"
           @click="openExport"
           aria-haspopup="menu"
@@ -18,7 +18,7 @@
         </button>
         <!-- 删除是"清掉这条记录"的唯一出口：某期文章后来被清理后 coverage 归零，
              生成按钮会被禁用，那条失败记录否则永远留在列表里 -->
-        <button class="btn-ghost" type="button" @click="emit('delete')">删除</button>
+        <button class="btn btn-sm btn-danger-text" type="button" @click="emit('delete')">删除</button>
       </div>
       <h1 ref="titleRef" class="rd-title" tabindex="-1">{{ detail.summary.title }}</h1>
       <div class="rd-meta">
@@ -83,7 +83,7 @@
               </div>
               <button
                 v-if="f.tracked"
-                class="rf-btn done"
+                class="btn btn-sm rf-btn done"
                 type="button"
                 disabled
                 :title="`已在实体库中（ID ${f.entityId}）`"
@@ -92,7 +92,7 @@
               </button>
               <button
                 v-else
-                class="rf-btn"
+                class="btn btn-soft btn-sm rf-btn"
                 type="button"
                 :disabled="trackingId === f.id"
                 @click="onTrack(f.id)"
@@ -129,7 +129,7 @@
               <div class="ref-src">{{ srcMeta(s) }}</div>
             </div>
             <button
-              class="ref-open"
+              class="btn btn-icon btn-mini btn-quiet ref-open"
               type="button"
               aria-label="预览这篇原文"
               :title="s.articleId === null ? '原文已不在库中' : '预览'"
@@ -602,44 +602,14 @@ onBeforeUnmount(() => {
   flex: 1 1 auto;
   min-width: 0;
 }
-.link {
-  border: none;
-  background: none;
-  padding: 0;
-  color: var(--primary);
-  font-family: inherit;
-  font-size: var(--fs-modal-label);
-  cursor: pointer;
-}
-.link:hover {
-  text-decoration: underline;
-}
-.link:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 2px;
-  border-radius: 3px;
-}
-.btn-ghost {
-  height: 28px;
-  padding: 0 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface);
-  color: var(--text-secondary);
-  font-family: inherit;
-  font-size: var(--fs-modal-label);
-  font-weight: 500;
-  cursor: pointer;
-  transition: background var(--m-tap, 90ms) ease-out;
-}
-.btn-ghost:hover {
-  background: var(--fill);
-  color: var(--text-primary);
-}
-.btn-ghost:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 1px;
-}
+/* 面包屑里的「← 报告列表」用全局 `.link-btn`。
+   此前这里有一份 `.link`，`ThesisDetail.vue` 里还有一份**逐字相同**的副本；
+   两份都在各自组件内维护，改一处就会分叉（当时已经分叉过一次：
+   只有这边写了 `border-radius: 3px` 的焦点环圆角）。 */
+/* 这里曾有一份私有 `.btn-ghost`（28px、字重 500、自己画描边）。
+   它就是 `.btn` 基类的样子，唯一区别是多写了 `font-weight: 500`。
+   同名不同实现的代价：`PeriodReports.vue` 里也有一个 `.btn-ghost`，两处尺寸不同；
+   而全局从来没有这个类，第三处复用会直接退化成浏览器原生按钮。 */
 .rd-title {
   margin: 0 0 6px;
   font-size: var(--fs-modal-title);
@@ -673,7 +643,7 @@ onBeforeUnmount(() => {
 .kpi b {
   display: block;
   font-size: var(--fs-modal-num);
-  font-weight: 700;
+  font-weight: 500;
   line-height: var(--lh-modal-num);
   font-variant-numeric: tabular-nums;
   color: var(--text-primary);
@@ -805,35 +775,19 @@ onBeforeUnmount(() => {
   line-height: 1.55;
   color: var(--text-secondary);
 }
+/* 「跟踪」用 `.btn .btn-soft .btn-sm`：浅底主色 + 28px，与覆盖清单行内操作同档。
+   这里只留两个本文件独有的东西：`flex-shrink` / `nowrap`（引用源栏很窄，
+   按钮不能被压扁或折行）和「已跟踪」的终态。 */
 .rf-btn {
   flex-shrink: 0;
   align-self: center;
-  border: 1px solid var(--primary);
-  background: transparent;
-  color: var(--primary);
-  cursor: pointer;
-  font-family: inherit;
-  font-size: var(--fs-sm);
-  padding: 3px var(--sp-15);
-  border-radius: var(--r-sm);
   white-space: nowrap;
 }
-.rf-btn:hover:not(:disabled) {
-  background: var(--primary-tint);
-}
-.rf-btn:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 1px;
-}
-.rf-btn:disabled {
-  cursor: default;
-  opacity: 0.55;
-}
-/* 已跟踪：去掉边框与主题色，让它明确"不用再点了" */
-.rf-btn.done {
-  border-color: var(--border);
-  color: var(--text-tertiary);
+/* 「已跟踪」是终态，不是"暂时不可用"：不能继承 `button:disabled` 的 .5 透明度，
+   否则它比「跟踪」还弱，读起来像"更点不动"，而语义其实是"已经办完了"。 */
+.rf-btn.done:disabled {
   opacity: 1;
+  color: var(--text-tertiary);
 }
 
 /* 引用源右栏 */
@@ -936,29 +890,10 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* `↗` 只有一个图标，命中区补到 24×24（WCAG 2.5.8 下限的舒适区） */
-.ref-open {
-  flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  display: grid;
-  place-items: center;
-  border: none;
-  background: none;
-  border-radius: var(--r-sm);
-  color: var(--text-tertiary);
-  cursor: pointer;
-}
+/* `↗` 只有一个图标：外观来自 `.btn .btn-icon .btn-mini .btn-quiet`（24×24 幽灵图标钮，
+   命中区满足 WCAG 2.5.8 的舒适下限），本文件只留图标本身的边长。 */
 .ref-open svg {
   width: 12px;
   height: 12px;
-}
-.ref-open:hover {
-  background: var(--primary-tint);
-  color: var(--primary);
-}
-.ref-open:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 1px;
 }
 </style>

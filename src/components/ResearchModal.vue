@@ -16,26 +16,26 @@
         <button class="side-tab" :class="{ active: tab === 'reports' }" @click="tab = 'reports'">
           报告
         </button>
-        <button
-          class="side-tab"
-          :class="{ active: tab === 'entities' && entityView === 'entities' }"
-          @click="showEntityView('entities')"
-        >
+        <button class="side-tab" :class="{ active: tab === 'entities' }" @click="tab = 'entities'">
           实体管理
         </button>
-        <!-- 「覆盖」是实体页签的第二个视图，不是新页签（PRD-05 §0：两者共用同一批
-             实体数据，拆成两个容器会出现"同一实体两处维护"）。但把入口只留在页签
-             内部的分段控件里时，侧栏上完全看不到它存在——这是实测反馈的发现性问题。
-             故加一个子项：点击 = 进实体页签并切到覆盖视图。 -->
-        <button
-          class="side-tab sub"
-          :class="{ active: tab === 'entities' && entityView === 'coverage' }"
-          @click="showEntityView('coverage')"
-        >
+        <!-- 「覆盖」与「实体管理」**平级**（这次改版的结论，别再拆回去）。
+             曾被做成实体页签内的第二个视图 + 侧栏子项，理由是"两者共用同一批实体数据"。
+             那个理由在数据层成立、在界面层不成立：覆盖只能从已有实体里选，只说明它
+             需要一个"去加标的"的空态出口，不说明它该和实体管理挤在一个页签里。
+             两个任务是不同的心智——实体管理是**配置**（系统盯谁，低频一次），
+             覆盖是**台账/决策记录**（为什么盯、何时退出，反复回看）。
+             把记录藏在设置的第二个视图里，等于每次回看都要先进设置；
+             而且论点已是独立页签，覆盖与它同族（都是"我写下的判断"），
+             旧的从属结构把同族的东西拆在了两个层级。
+             ⚠ 「覆盖」的 active 只看 tab，不再有 entityView 这个二级状态。 -->
+        <button class="side-tab" :class="{ active: tab === 'coverage' }" @click="tab = 'coverage'">
           覆盖
         </button>
         <!-- 论点放在最后而不是最前：时间线是全应用的入口（每天开机先看它），
-             论点是自己写下的判断，频率低但深度高，紧邻实体管理更顺（都由实体派生） -->
+             论点是自己写下的判断，频率低但深度高。它紧邻「覆盖」是拆分后的意外收益——
+             两者同族（都是"我写下的判断"：覆盖记标的的持有逻辑，论点记判断本身），
+             现在它们终于相邻了，而旧结构里覆盖藏在实体管理下面就做不到 -->
         <button class="side-tab" :class="{ active: tab === 'theses' }" @click="tab = 'theses'">
           论点
           <span v-if="thesesStore.stats.challenged > 0" class="side-dot" aria-hidden="true"></span>
@@ -59,7 +59,7 @@
       <!-- 固定标题栏：页签名称居中，关闭按钮在右侧，不随内容滚动 -->
       <div class="m-titlebar">
         <span class="m-titlebar-title">{{ tabTitle }}</span>
-        <button class="btn-icon" @click="close" aria-label="关闭" title="关闭">
+        <button class="btn btn-icon btn-quiet" @click="close" aria-label="关闭" title="关闭">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"></line>
             <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -73,11 +73,14 @@
            只有报告页签显示它，且两段内容常驻（v-show），切回来生成参数不丢。 -->
       <ReportSegmentBar v-if="tab === 'reports'" />
 
-      <!-- 右列：页签内容区（三个页签的根元素都带 class="m-body"，占满右列） -->
-      <!-- 三个页签一律 v-show 常驻挂载（不是 v-if）：各页签的筛选参数
+      <!-- 右列：页签内容区（页签根元素都带 class="m-body"，占满右列；
+           覆盖的根是 `.cv`，由外壳套一层 `.m-body` 容器，见下） -->
+      <!-- 五个页签一律 v-show 常驻挂载（不是 v-if）：各页签的筛选参数
            （时间窗 / 实体筛选 / 报告类型与天数）在拆分前的单组件里
            天然跨页签、跨开关持久，v-if 会在每次切换时把这些状态连同 DOM 一起丢掉。
-           页签各自的加载时机由它们 watch `active` / `open` 自行驱动，见各组件文件头。 -->
+           页签各自的加载时机由它们 watch `active` / `open` 自行驱动，见各组件文件头。
+           注：覆盖内部曾用 `v-if` 而不是 `v-show`，理由是"没打开过就不该白跑一次查询"。
+           现在它自己就是一个页签，这个取舍由它自己的 watch 承担（见 CoveragePanel 文件头）。 -->
       <ResearchTimelineTab v-show="tab === 'timeline'" :open="open" @close="close" />
       <ResearchReportsTab
         v-show="tab === 'reports'"
@@ -85,11 +88,14 @@
         :open="open"
         @close="close"
       />
-      <ResearchEntitiesTab
-        v-show="tab === 'entities'"
-        v-model:view="entityView"
-        @entities-changed="onEntitiesChanged"
-      />
+      <ResearchEntitiesTab v-show="tab === 'entities'" @entities-changed="onEntitiesChanged" />
+      <!-- 覆盖：与实体管理平级的页签。根节点套 `.m-body` 是本弹窗的约定——
+           外壳的 scoped 规则按这个类名给内边距与滚动，页签组件自身的根元素
+           通常直接带它；CoveragePanel 的根是 `.cv`（它还要能被单独复用），
+           所以这里由外壳补一层容器 -->
+      <div v-show="tab === 'coverage'" class="m-body">
+        <CoveragePanel :active="tab === 'coverage'" @goto-entities="tab = 'entities'" />
+      </div>
       <ThesisPanel
         v-show="tab === 'theses'"
         @open-article="onOpenThesisArticle"
@@ -143,6 +149,7 @@ import BaseModal from './BaseModal.vue'
 import ResearchTimelineTab from './ResearchTimelineTab.vue'
 import ResearchReportsTab from './ResearchReportsTab.vue'
 import ResearchEntitiesTab from './ResearchEntitiesTab.vue'
+import CoveragePanel from './coverage/CoveragePanel.vue'
 import ThesisPanel from './thesis/ThesisPanel.vue'
 import ReportSegmentBar from './report/ReportSegmentBar.vue'
 import MarkdownPreviewModal from './MarkdownPreviewModal.vue'
@@ -173,27 +180,9 @@ const articlesStore = useArticlesStore()
 const toast = useToastStore()
 
 /** 当前 tab：timeline = 事件时间线；reports = 报告（含周期报告与研究报告两段）；
- *  entities = 实体管理；theses = 论点台账 */
-const tab = ref<'timeline' | 'reports' | 'entities' | 'theses'>('timeline')
-
-/**
- * 实体页签内部的视图（实体清单 / 覆盖清单）
- *
- * 提到外壳持有，是因为侧栏多了一个「覆盖」子项：它要能"进实体页签 + 切到覆盖"。
- * 状态留在这层，两个入口（侧栏子项、页签内的分段控件）才共享同一份——
- * 各自一个 ref 会立刻出现"侧栏点了覆盖、分段控件还亮着实体"的双高亮。
- */
-const entityView = ref<'entities' | 'coverage'>('entities')
-
-/**
- * 切到实体页签并指定视图
- *
- * @param v - 目标视图：`entities` 实体清单 / `coverage` 覆盖清单
- */
-function showEntityView(v: 'entities' | 'coverage') {
-  entityView.value = v
-  tab.value = 'entities'
-}
+ *  entities = 实体管理（配置：盯谁）；coverage = 覆盖（台账：为什么盯、何时退出）；
+ *  theses = 论点台账 */
+const tab = ref<'timeline' | 'reports' | 'entities' | 'coverage' | 'theses'>('timeline')
 
 /** 组装预览：是否打开、内容、加载与失败态 */
 const composeOpen = ref(false)
@@ -210,6 +199,8 @@ const tabTitle = computed(() => {
     timeline: '事件时间线',
     reports: '报告',
     entities: '实体管理',
+    // 覆盖页签内部不再自带标题（CoveragePanel 已删掉那行 h3），页签名只在这里出现一次
+    coverage: '覆盖',
     theses: '论点',
   }
   return titles[tab.value] ?? '研究工作台'
@@ -511,12 +502,15 @@ async function openCompose(thesisId?: number) {
   color: var(--text-tertiary);
 }
 .side-group:first-child { margin-top: 0; }
-/* 子项（「覆盖」）：缩进一格表示从属于上一项，而不是并列页签。
-   不用更小的字号——148px 宽的面板里再缩小会看不清，缩进已足够表达层级 */
-.side-tab.sub {
-  padding-left: var(--sp-6);
-  font-weight: 400;
-}
+/* ── 已删除：`.side-tab.sub`（「覆盖」的子项样式）──
+   它存在的前提是"覆盖从属于实体管理"，而那个前提是错的——两者是平级页签，
+   现在都是普通 `.side-tab`。留着这段会是一条永不命中的死规则。
+   历史（同一处改过四版，别再往回走）：
+   · `padding-left: 24px` → 破坏左对齐轴，读作"被甩出队列"；
+   · L 形引导线 → 竖段被 6px 行距切成短横杠；
+   · 2px 圆头标识竖线 → 被读成"这行有左边框"（其他行都没有，更突兀）；
+   · 无论哪种，根因都在"想在一个 148px 的窄栏里用横向手段表达层级"。
+   最终结论不是换个图形，而是**这个层级本就不该存在**，拆成平级页签。 */
 /* 跳转项（「复盘」「组装」）：它们不在本容器里，故**没有** active 态。
    hover 时给主色，暗示"点了会去别处"而不是"切到本站的另一个视图" */
 .side-tab.action:hover { color: var(--primary); }
@@ -539,9 +533,9 @@ async function openCompose(thesisId?: number) {
 }
 
 /* 右列：页签内容区。页签组件的根元素（class="m-body"）会带上本组件的
-   作用域属性，故这条父级 scoped 规则能命中四个页签的根容器
-   （子组件根元素继承父 scope id）。弹窗已是固定高度（layout="side"），
-   激活的页签靠 flex:1 占满剩余高度即可。 */
+   作用域属性，故这条父级 scoped 规则能命中各页签的根容器（子组件根元素继承
+   父 scope id）。覆盖的根是 `.cv`，由外壳在模板里套一层 `.m-body`。
+   弹窗已是固定高度（layout="side"），激活的页签靠 flex:1 占满剩余高度即可。 */
 .side-main {
   flex: 1;
   min-width: 0;
@@ -566,29 +560,10 @@ async function openCompose(thesisId?: number) {
   line-height: var(--lh-modal-section);
   color: var(--text-primary);
 }
-.btn-icon {
-  /* 命中区补到 32×32（原 28×28，低于 WCAG 2.5.8 的 24×24 下限的舒适区，
-     也与其余关闭钮统一）。两份副本（Settings / Research）现在同值。 */
-  width: 32px;
-  height: 32px;
-  border: none;
-  background: none;
-  border-radius: var(--r-md);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  color: var(--text-tertiary);
-  /* 显式列出：补 transform 让全局 button 基线的 :active 回弹有过渡 */
-  transition:
-    background var(--m-tap) var(--m-ease-out),
-    color var(--m-tap) var(--m-ease-out),
-    transform var(--m-tap) var(--m-ease-out);
-}
-.btn-icon:hover {
-  background: var(--fill);
-  color: var(--text-primary);
-}
+/* 右上角关闭钮：`.btn .btn-icon .btn-quiet`（32×32 幽灵图标钮）。
+   这里曾有两份逐字相同的私有 `.btn-icon`（本文件与 ResearchModal 各一份），
+   而 `EntityDashboardModal` 只写了 class 没有定义——那个关闭钮一直退化成
+   浏览器原生按钮。现在三处共用全局角色类，缺定义这种事不会再发生。 */
 .m-body {
   /* 顶部额外预留 BaseModal side 布局右上角关闭钮的高度（--side-close-reserve），
      参数条 / 工具条等首行内容不再顶进按钮区被遮挡 */

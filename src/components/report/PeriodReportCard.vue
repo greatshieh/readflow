@@ -37,7 +37,7 @@
     <div class="card-actions">
       <button
         v-if="report.status !== 'failed'"
-        class="mini"
+        class="btn btn-icon btn-mini mini"
         type="button"
         title="导出"
         aria-label="导出这份报告"
@@ -50,7 +50,7 @@
         </svg>
       </button>
       <button
-        class="mini"
+        class="btn btn-icon btn-mini mini"
         type="button"
         :title="`重新生成（将覆盖本期已有的${kindLabel}）`"
         aria-label="重新生成（覆盖本期已有内容）"
@@ -222,27 +222,10 @@ function onExport(e: MouseEvent) {
 .card:focus-within .card-actions {
   opacity: 1;
 }
-.mini {
-  width: 26px;
-  height: 26px;
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  border-radius: var(--r-sm);
-  color: var(--text-secondary);
-  cursor: pointer;
-}
+/* 卡片右上两个图标钮：外观来自 `.btn .btn-icon .btn-mini`（24×24 有描边），
+   本文件只留图标尺寸。原先这里是独占一套的 26px 描边方块——比别处图标钮大 2px。 */
 .mini svg {
   width: 13px;
   height: 13px;
-}
-.mini:hover {
-  background: var(--fill);
-  color: var(--text-primary);
-}
-.mini:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 1px;
 }
 </style>

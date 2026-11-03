@@ -1,19 +1,19 @@
 <template>
   <!-- 覆盖清单：回答"我盯哪些标的、为什么盯、什么条件下不盯了"。
-       与上面的实体列表是同一批数据的两副面孔——实体列表管"系统要看谁"，
-       覆盖清单管"我为什么看它"。所以做成视图切换而不是第二个页签：
-       两者共用一个入口，用户不会在"实体"和"覆盖"之间迷路。 -->
+       它是研究工作台里与「实体管理」**平级**的页签（历史：曾嵌在实体页签内做视图切换，
+       已拆出——理由见 `ResearchModal` 侧栏那段注释）。 -->
   <div class="cv">
     <header class="cv-head">
       <div class="cv-head-row">
-        <h3 class="cv-title">覆盖清单</h3>
+        <!-- 不再有内部标题：宿主是独立页签，名称由弹窗标题栏承担（那里已写「覆盖」）。
+             内部再写一遍「覆盖清单」就是同一句话说两次，还占掉首行高度。 -->
         <span v-if="store.rows.length > 0" class="cv-count">{{ store.rows.length }} 个标的</span>
         <span class="cv-spacer"></span>
         <button
           class="btn btn-primary btn-sm"
           type="button"
-          :disabled="availableOptions.length === 0"
-          :title="availableOptions.length === 0 ? '所有实体都已在覆盖清单里' : '把标的加入覆盖'"
+          :disabled="!canAdd"
+          :title="addDisabledHint"
           @click="toggleAdd"
         >
           {{ adding ? '取消' : '+ 加入覆盖' }}
@@ -30,7 +30,8 @@
       <div class="cv-add-row">
         <AppSelect v-model="newEntityId" :options="availableOptions" placeholder="选择标的" />
         <AppSelect v-model="newTier" :options="TIER_OPTIONS" width="120px" />
-        <button class="btn btn-primary btn-sm" type="button" :disabled="newEntityId === ''" @click="submitAdd">
+        <!-- 与两个 AppSelect（触发器 34px）同一行，故用 `.btn-form` -->
+        <button class="btn btn-primary btn-form" type="button" :disabled="newEntityId === ''" @click="submitAdd">
           加入
         </button>
       </div>
@@ -42,8 +43,21 @@
 
     <div v-else-if="store.rows.length === 0" class="cv-empty">
       <p class="cv-empty-title">还没有覆盖清单</p>
-      <p class="cv-empty-desc">
-        覆盖清单记的是"我为什么盯它、什么条件下不盯了"。先从下面已有的实体里挑几个核心的加进来，
+      <!-- 空态分两种，不能只写一句"从下面挑几个加进来"：
+           · 实体库里一个标的都没有时，这句是空话——连"下面"都不存在，
+             用户会去点那个被禁用的按钮，然后没有任何解释；
+           · 有实体时才是"挑几个加进来"。 -->
+      <template v-if="entitiesStore.entities.length === 0">
+        <p class="cv-empty-desc">
+          覆盖清单记的是"我为什么盯它、什么条件下不盯了"。它只能从<b>已有的实体</b>里挑，
+          所以先到「实体管理」加几个你要盯的标的。
+        </p>
+        <button class="btn btn-default btn-sm" type="button" @click="emit('goto-entities')">
+          去实体管理添加
+        </button>
+      </template>
+      <p v-else class="cv-empty-desc">
+        覆盖清单记的是"我为什么盯它、什么条件下不盯了"。先从已有的实体里挑几个核心的加进来，
         退出条件可以先空着——空着比编一个更诚实。
       </p>
     </div>
@@ -119,11 +133,22 @@
 
 <script setup lang="ts">
 /**
- * 覆盖清单面板（研究工作台 · 实体页签的「覆盖」视图）
+ * 覆盖清单面板（研究工作台 · 「覆盖」页签）
  *
  * # 职责
  * 列出覆盖条目、就地编辑（档位 / 为什么盯 / 退出条件 / 产业链位置）、
  * 移出覆盖、触发「生成一页」。
+ *
+ * # 与「实体管理」的关系
+ * **平级页签**，不是它的子视图（曾经是，已拆出，理由见 `ResearchModal` 侧栏注释）。
+ * 数据上仍依赖实体：加入覆盖只能从已有实体里挑（{@link availableOptions}），
+ * 所以空态必须给出「去实体管理」的出口，否则这一页在实体库为空时是死路。
+ *
+ * # 挂载语义（与外壳的契约）
+ * 宿主用 `v-show` 常驻挂载，因此**不能用 `onMounted` 当"进入页签"信号**——
+ * 那样每次打开研究工作台都会白跑一次覆盖清单查询。改用 `active` 首次翻真时加载，
+ * 且只加载一次：本页的增删改都走 store，数据不会在背后被别人改掉。
+ * 不传 `active` 时按"始终可见"处理（独立使用时行为不变）。
  *
  * # 为什么编辑是内联的而不是弹窗
  * 编辑覆盖最常做的事是"补一句为什么盯"。为四个短字段开一个弹窗，
@@ -136,12 +161,22 @@
  * `metaText` 里把"待验判据"数摆出来，让"退出条件往往就是判据里的一条"可见，
  * 而不去伪造一层结构（详见 `research/coverage.rs` 模块注释）。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import AppSelect, { type SelectOption } from '@/components/AppSelect.vue'
 import DossierModal from './DossierModal.vue'
 import { useCoverageStore, type CoverageRow, type CoverageTier, type Dossier } from '@/stores/coverage'
 import { useEntitiesStore } from '@/stores/entities'
 import { useToastStore } from '@/stores/toast'
+
+const props = defineProps<{
+  /** 是否为当前显示的页签：首次翻真时加载清单。不传视为始终可见 */
+  active?: boolean
+}>()
+
+const emit = defineEmits<{
+  /** 空态出口：请求宿主切到「实体管理」页签（本页的标的只能来自实体库） */
+  (e: 'goto-entities'): void
+}>()
 
 const store = useCoverageStore()
 const entitiesStore = useEntitiesStore()
@@ -190,6 +225,25 @@ const availableOptions = computed<SelectOption[]>(() => {
   return entitiesStore.entities
     .filter(e => !covered.has(e.id))
     .map(e => ({ value: e.id, label: e.name }))
+})
+
+/**
+ * 「+ 加入覆盖」是否可用
+ *
+ * 与 {@link addDisabledHint} 成对：按钮不可用却不说明原因，用户只能猜。
+ */
+const canAdd = computed(() => availableOptions.value.length > 0)
+
+/**
+ * 按钮不可用时的说明
+ *
+ * 两种"没有可选项"必须分开说——原先一律写"所有实体都已在覆盖清单里"，
+ * 而实体库为空时那是句假话（一个实体都没有，谈何"都已在"）。
+ */
+const addDisabledHint = computed(() => {
+  if (canAdd.value) return '把标的加入覆盖'
+  if (entitiesStore.entities.length === 0) return '还没有实体：先到「实体管理」添加标的'
+  return '所有实体都已在覆盖清单里'
 })
 
 /**
@@ -318,12 +372,24 @@ async function openDossier(entityId: number) {
   }
 }
 
-// 覆盖清单与实体列表是两套数据：外壳保证实体已加载，覆盖要自己拉
-onMounted(() => {
-  void store.load().catch(() => {
-    /* 错误已写入 store.error，模板会显示；这里不再 toast，避免与外壳提示重复 */
-  })
-})
+// 覆盖清单与实体列表是两套数据：外壳保证实体已加载，覆盖要自己拉。
+//
+// 时机：宿主用 `v-show` 常驻挂载，`onMounted` 会在**打开研究工作台**时就触发，
+// 哪怕用户压根没进覆盖页签——一次多余的全库查询。所以改挂 `active`：
+// 首次翻真才加载，之后不再重复（本页的增删改都走 store，数据不会被背后改掉）。
+// `props.active === undefined`（独立使用）按"始终可见"处理，行为与从前一致。
+let loadedOnce = false
+watch(
+  () => props.active !== false,
+  vis => {
+    if (!vis || loadedOnce) return
+    loadedOnce = true
+    void store.load().catch(() => {
+      /* 错误已写入 store.error，模板会显示；这里不再 toast，避免与外壳提示重复 */
+    })
+  },
+  { immediate: true },
+)
 </script>
 
 <style scoped>
@@ -331,9 +397,9 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
-  padding: var(--sp-4) var(--sp-5);
-  /* 列表长了要能滚：页签容器本身是滚动容器，这里不另开一层，
-     只在内容超出时让父级滚（父级 .m-body 已有 overflow-y:auto） */
+  /* 不设 padding：内边距由宿主的 `.m-body` 统一给（8/20/16/20 + gap:12）。
+     这里再写一份就是双重内边距——左缘会比其它页签多退 20px，且首行离标题栏
+     多出一截。原先它嵌在实体页签里，那份 padding 就是多余的。 */
   min-height: 0;
 }
 
@@ -342,13 +408,8 @@ onMounted(() => {
   align-items: center;
   gap: var(--sp-2);
 }
-.cv-title {
-  margin: 0;
-  font-size: var(--fs-modal-section);
-  font-weight: 500;
-  color: var(--text-primary);
-  flex-shrink: 0;
-}
+/* `.cv-title` 已随"删掉内部标题"一起去掉（宿主标题栏承担页签名）。
+   留着会变成一条永不命中的死规则，且下次有人找标题样式会改到它。 */
 .cv-count {
   font-size: var(--fs-modal-meta);
   color: var(--text-tertiary);
@@ -413,6 +474,9 @@ onMounted(() => {
   color: var(--text-tertiary);
   line-height: 1.6;
 }
+/* 空态里的出口按钮（实体库为空时才有）：说明段之后留一档间距，
+   不然按钮会贴着最后一行字，看起来像段落的一部分 */
+.cv-empty-desc + .btn { margin-top: var(--sp-3); }
 
 .cv-list {
   list-style: none;

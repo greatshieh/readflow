@@ -68,7 +68,20 @@
 
         <!-- 价格预警（基于新浪实时快照） -->
         <div class="mp-section">
-          <div class="mp-h">价格预警</div>
+          <div class="mp-h">
+            价格预警
+            <!-- 手动检查入口：定时任务每 5 分钟跑一次且失败静默，
+                 用户加完规则无法判断"没触发"还是"没生效"，需要一次即时反馈 -->
+            <button
+              v-if="alerts.length"
+              class="btn btn-sm mp-check-btn"
+              :disabled="checking"
+              :title="`立即检查一次全部规则（共 ${alerts.length} 条）`"
+              @click="checkAlerts"
+            >
+              {{ checking ? '检查中…' : '立即检查' }}
+            </button>
+          </div>
           <div class="mp-alert-add" v-if="state.symbol">
             <select v-model="alertOp" class="mp-select">
               <option value=">">&gt;</option>
@@ -81,10 +94,18 @@
           </div>
           <ul v-if="alerts.length" class="mp-alerts">
             <li v-for="a in alerts" :key="a.id">
-              {{ a.symbol }} {{ a.op }} {{ fmt(a.price) }}
+              <span class="mp-alert-rule">{{ a.symbol }} {{ a.op }} {{ fmt(a.price) }}</span>
+              <!-- 上次触发时间：一条永远不触发的规则与一个坏掉的功能，
+                   用户从界面上是分不出来的，这里补上这个信号 -->
+              <span class="mp-alert-time" :title="a.lastTriggered ? '上次触发时间' : '规则尚未触发过'">
+                {{ a.lastTriggered ? `触发于 ${fmtTime(a.lastTriggered)}` : '未触发' }}
+              </span>
             </li>
           </ul>
           <div v-else class="mp-sub">暂无预警规则</div>
+          <div v-if="alerts.length" class="mp-sub">
+            价格突破时发系统通知（同一标的 2 小时内只提醒一次）
+          </div>
         </div>
       </template>
     </template>
@@ -98,6 +119,17 @@ import { invoke } from '@tauri-apps/api/core'
 const props = defineProps<{
   /** 实体 ID（来自实体仪表盘） */
   entityId: number | null
+}>()
+
+/**
+ * 向上抛一条轻提示
+ *
+ * 保持"面板不做全局 UI"的分工：MarketPanel 只负责取数与渲染，
+ * 提示的展示位置由父级（实体仪表盘）决定。这样同一面板将来复用到
+ * 别处时不需要自带一套 Toast。
+ */
+const emit = defineEmits<{
+  (e: 'toast', message: string): void
 }>()
 
 interface MarketState {
@@ -144,6 +176,8 @@ interface MarketAlert {
   price: number
   enabled: boolean
   note: string
+  /** 上次触发时间（UTC 字符串）；null = 从未触发 */
+  lastTriggered: string | null
 }
 
 const state = ref<MarketState | null>(null)
@@ -155,10 +189,48 @@ const calendar = ref<CalItem[]>([])
 const alerts = ref<MarketAlert[]>([])
 const alertOp = ref('>')
 const alertPrice = ref<number>(0)
+/** 「立即检查」进行中：防连点（一次检查会发网络请求） */
+const checking = ref(false)
 
 /** 数值格式化：0/NaN 显示 — */
 function fmt(n: number): string {
   return n && !Number.isNaN(n) ? n.toFixed(2) : '—'
+}
+
+/**
+ * 把后端返回的 UTC 时间串格式化为「MM-DD HH:mm」本地时间
+ *
+ * 库里存的是 `CURRENT_TIMESTAMP`（UTC，形如 `2026-11-03 06:20:11`），
+ * 直接展示会与用户的本地时钟差 8 小时，让"刚触发过"看起来像"昨天触发过"。
+ * 无时区后缀时按 UTC 解析（`Z`），否则 `new Date()` 会当成本地时间。
+ */
+function fmtTime(raw: string): string {
+  const iso = raw.includes('T') ? raw : raw.replace(' ', 'T') + 'Z'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return raw
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+/**
+ * 立即执行一次价格预警检查
+ *
+ * 返回空不等于出错——可能是价格没到阈值，也可能是当前不在交易时段
+ * （后端在非交易时段直接返回空，不发请求）。文案要中立，不能说"检查失败"。
+ */
+async function checkAlerts() {
+  if (checking.value) return
+  checking.value = true
+  try {
+    const n = await invoke<number>('market_check_alerts')
+    alerts.value = await invoke<MarketAlert[]>('market_list_alerts')
+    emit('toast', n > 0 ? `命中 ${n} 条规则，通知已发送` : '本次检查无触发（价格未到阈值或非交易时段）')
+  } catch (e) {
+    // Tauri 的 reject 是字符串而非 Error 对象
+    emit('toast', `检查失败：${String(e)}`)
+  } finally {
+    checking.value = false
+  }
 }
 
 /** 价格涨跌色：仅以是否有快照决定中性，具体涨跌需对比昨收（此处简版取中性） */
@@ -296,7 +368,7 @@ watch(() => props.entityId, load)
 /* 主价格：大数字角色（22/700/1.1 + 等宽数字） */
 .mp-price {
   font-size: var(--fs-modal-num);
-  font-weight: 700;
+  font-weight: 500;
   line-height: var(--lh-modal-num);
   font-variant-numeric: tabular-nums;
   color: var(--text-primary);
@@ -363,6 +435,28 @@ watch(() => props.entityId, load)
 }
 .mp-num {
   color: var(--text-primary);
+}
+/* 预警规则行：左规则右时间。
+   规则文本可能较长（含备注），给 flex:1 + min-width:0 让它自己省略，
+   时间列 flex-shrink:0 保证不被挤掉——「上次触发」是判断规则是否活着的关键信息。 */
+.mp-alert-rule {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mp-alert-time {
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-size: var(--fs-modal-meta);
+  color: var(--text-tertiary);
+}
+/* 「立即检查」按钮靠右，与分段标题同一行；用 margin-left:auto 而不是
+   在标题上加 justify-content: space-between，后者会让 ::before 色块的间距也变化 */
+.mp-check-btn {
+  margin-left: auto;
+  flex-shrink: 0;
 }
 .mp-alert-add {
   display: flex;

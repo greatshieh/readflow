@@ -23,7 +23,9 @@
           :title="genChannel === 'app' ? '输出通道' : '输出通道（含 Obsidian 的报告不在应用内查看器显示）'"
           @change="onChannelChange"
         />
-        <button class="btn btn-primary btn-sm" :disabled="generating" @click="handleGenerate">
+        <!-- 「生成报告」与左侧三个 AppSelect 同一行，所以用 `.btn-form`（34px）：
+             下拉触发器统一 34px，按钮用默认 32px 会矮一截，行内高差一眼可见。 -->
+        <button class="btn btn-primary btn-form" :disabled="generating" @click="handleGenerate">
           {{ generating ? '生成中…' : '生成报告' }}
         </button>
         <span v-if="genMsg" class="extract-msg" :class="{ error: genError }">{{ genMsg }}</span>
@@ -62,7 +64,7 @@
             <span class="report-name">{{ r.name }}</span>
             <span class="report-meta">{{ r.modified }} · {{ formatSize(r.size) }}</span>
             <button
-              class="report-export"
+              class="btn btn-icon btn-mini btn-quiet report-export"
               type="button"
               title="导出"
               aria-label="导出这份报告"
@@ -477,31 +479,17 @@ watch(genKind, kind => {
   color: var(--text-tertiary);
   white-space: nowrap;
 }
-/* 导出钮：常驻但低对比，hover/focus 才显形——旧列表行高 34px，
-   加个常驻高对比按钮会让整列噪声变大。 */
+/* 导出钮：外观全部来自 `.btn .btn-icon .btn-mini .btn-quiet`（24×24 幽灵图标钮）。
+   本文件只留交互态——常驻但低对比，hover / focus 才显形（行高 34px 里挂常驻
+   高对比按钮会让整列噪声变大）。这就是"组件内只保留布局性声明"的例子。 */
 .report-export {
-  flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  display: grid;
-  place-items: center;
-  border: none;
-  background: none;
-  border-radius: var(--r-sm);
-  color: var(--text-tertiary);
-  cursor: pointer;
   opacity: 0;
-  transition: opacity var(--m-tap) var(--m-ease-out), background var(--m-tap) var(--m-ease-out);
+  transition: opacity var(--m-tap) var(--m-ease-out);
 }
 .report-export svg { width: 13px; height: 13px; }
 .report-item:hover .report-export,
 .report-item:focus-within .report-export { opacity: 1; }
-.report-export:hover { background: var(--surface); color: var(--text-primary); }
-.report-export:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 1px;
-  opacity: 1;
-}
+.report-export:focus-visible { opacity: 1; }
 
 /* 报告正文：排版在 `src/styles/report-content.css`（`.rc`），
    与周期报告阅读区、导出 HTML **共用同一份**，这里只管外框。

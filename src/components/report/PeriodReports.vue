@@ -38,7 +38,7 @@
         </div>
         <div class="gen-foot">
           <span class="gen-hint">生成期间暂不能关闭窗口（Esc 会提示）</span>
-          <button class="btn btn-ghost" type="button" @click="store.cancelGenerate()">取消生成</button>
+          <button class="btn" type="button" @click="store.cancelGenerate()">取消生成</button>
         </div>
       </div>
     </div>
@@ -520,44 +520,13 @@ onMounted(() => {
   flex: 1 1 auto;
   min-width: 0;
 }
-.btn {
-  height: 30px;
-  padding: 0 13px;
-  border: 1px solid transparent;
-  border-radius: var(--r-md);
-  cursor: pointer;
-  white-space: nowrap;
-  font-family: inherit;
-  font-size: var(--fs-modal-label);
-  font-weight: 500;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.btn-primary {
-  background: var(--primary);
-  color: var(--tone-fg);
-}
-.btn-primary:hover:not(:disabled) {
-  background: var(--primary-hover);
-}
-.btn-primary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.btn-ghost {
-  background: var(--surface);
-  border-color: var(--border);
-  color: var(--text-secondary);
-}
-.btn-ghost:hover {
-  background: var(--fill);
-  color: var(--text-primary);
-}
-.btn:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 1px;
-}
+
+/* 这里曾有一整套私有 `.btn` / `.btn-primary` / `.btn-ghost`（30px、纯色主色、
+   13px / 字重 500）。删掉的理由值得记下：
+   scoped 样式编译成 `.btn[data-v-xxx]`，特异性高于全局 `.btn`，于是**同一页签里
+   上下两段的"生成"按钮长得不一样**——研究报告段是 32px 极光渐变，周期报告段
+   是 30px 纯色，描边一个可见一个透明。按钮只有一套外观，这是全应用约定；
+   本组件只需要布局，配色和尺寸全部来自全局 `.btn` 族。 */
 
 /* ── 自定义区间 ─────────────────────────────────────────────────────── */
 .range-row {
