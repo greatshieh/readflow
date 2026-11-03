@@ -246,7 +246,7 @@ onBeforeUnmount(() => {
 
 .toc-item.active {
   background: var(--primary-soft);
-  color: var(--primary);
+  color: var(--primary-text);
   font-weight: 500;
 }
 

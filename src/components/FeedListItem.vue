@@ -218,7 +218,7 @@ function hideBrokenIcon(e: Event) {
 }
 .feed-item.unread .feed-item-avatar {
   background: var(--primary-tint);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 .feed-item-info {
@@ -244,7 +244,7 @@ function hideBrokenIcon(e: Event) {
 .feed-error-icon {
   width: 14px;
   height: 14px;
-  color: var(--danger);
+  color: var(--danger-text);
   flex-shrink: 0;
 }
 

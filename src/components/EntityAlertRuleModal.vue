@@ -338,7 +338,7 @@ async function handleSave() {
 }
 .arm-chip.on {
   border-color: var(--primary);
-  color: var(--primary);
+  color: var(--primary-text);
   background: var(--primary-tint);
 }
 .arm-input {
@@ -361,7 +361,7 @@ async function handleSave() {
 .arm-error {
   font-size: var(--fs-modal-body);
   line-height: var(--lh-modal-body);
-  color: var(--danger);
+  color: var(--danger-text);
   margin: 0;
 }
 .arm-actions {

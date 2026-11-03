@@ -219,7 +219,7 @@ function toggleStarred() {
   flex-shrink: 0;
 }
 .tb-icon:hover { background: var(--fill); color: var(--text-primary); }
-.tb-icon.active { background: var(--primary-tint); color: var(--primary); }
+.tb-icon.active { background: var(--primary-tint); color: var(--primary-text); }
 .tb-icon:disabled { opacity: 0.5; cursor: default; }
 .tb-icon svg { width: 15px; height: 15px; }
 /* 标签范围指示条：表明"列表正在按标签过滤"，点击即退出。

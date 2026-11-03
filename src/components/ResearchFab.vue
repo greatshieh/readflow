@@ -404,7 +404,7 @@ onUnmounted(() => {
   color: var(--text-secondary);
 }
 .rp-msg.err {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .rp-empty {
   margin: 0;

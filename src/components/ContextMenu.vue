@@ -510,7 +510,7 @@ onUnmounted(() => {
 .ctx-item.danger:hover,
 .ctx-item.danger.active {
   background: var(--danger-fg, var(--cap-hover-bg));
-  color: var(--danger);
+  color: var(--danger-text);
 }
 /* 图标列恒占宽：子菜单项没有图标，靠这个占位与父菜单文字左对齐 */
 .ctx-icon {

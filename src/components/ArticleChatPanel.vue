@@ -335,11 +335,13 @@ defineExpose({
   color: var(--text-tertiary);
   cursor: default;
 }
+/* 实心红底上的字用 --danger-ink 而不是白字：白压 #e5484d 只有 3.91:1，
+   深字是 4.55:1。这个色托不住白字 —— 与 DigestModal 那两个评分徽章同一个原因。 */
 .cp-error {
   margin: 0;
   padding: var(--sp-1) var(--sp-3);
   background: var(--danger);
-  color: var(--tone-fg);
+  color: var(--danger-ink);
   font-size: var(--fs-xs);
   line-height: 1.5;
 }
@@ -384,7 +386,7 @@ defineExpose({
 }
 .cp-preset:hover {
   border-color: var(--primary);
-  color: var(--primary);
+  color: var(--primary-text);
   background: var(--primary-soft);
 }
 
@@ -415,7 +417,7 @@ defineExpose({
 }
 .cp-bubble.error {
   background: var(--danger);
-  color: var(--tone-fg);
+  color: var(--danger-ink);
   border-color: transparent;
 }
 .cp-note {
@@ -423,7 +425,7 @@ defineExpose({
   font-size: var(--fs-xs);
 }
 .cp-bubble.error .cp-note {
-  color: var(--tone-fg);
+  color: var(--danger-ink);
 }
 
 /* 等待首字：三点呼吸，明确表达"模型正在写"而不是界面卡死 */

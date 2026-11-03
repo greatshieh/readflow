@@ -641,7 +641,7 @@ onMounted(() => {
 }
 .status-success { color: var(--text-secondary); }
 .status-success .status-dot { background: var(--success); }
-.status-failed { color: var(--danger); }
+.status-failed { color: var(--danger-text); }
 .status-failed .status-dot { background: var(--danger); }
 .status-unconfigured { color: var(--warning-text); }
 .status-unconfigured .status-dot { background: var(--warning); }
@@ -702,6 +702,6 @@ onMounted(() => {
   margin-top: var(--sp-1);
 }
 .task-form-error {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 </style>

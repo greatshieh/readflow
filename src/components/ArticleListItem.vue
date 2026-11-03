@@ -262,7 +262,7 @@ function onPreferenceClick(preference: 'like' | 'skip') {
   padding: 1px var(--sp-1);
   font-size: var(--fs-xs);
   line-height: 1.4;
-  color: var(--primary);
+  color: var(--primary-text);
   background: color-mix(in srgb, var(--primary) 10%, transparent);
   border-radius: var(--r-sm);
   flex-shrink: 0;
@@ -364,7 +364,7 @@ function onPreferenceClick(preference: 'like' | 'skip') {
 /* 激活态区分：喜欢高亮主色（积极语义），跳过用中性灰（消极语义不抢眼）。
    data-pref 属性此前缺失导致 skip 分支从未生效，已在模板补上 */
 .pref-btn.active {
-  color: var(--primary);
+  color: var(--primary-text);
   background: color-mix(in srgb, var(--primary) 12%, transparent);
 }
 

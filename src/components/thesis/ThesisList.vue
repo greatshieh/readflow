@@ -343,7 +343,7 @@ onMounted(() => {
   font-size: var(--fs-modal-meta);
   font-weight: 500;
   background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger);
+  color: var(--danger-text);
   border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
 }
 .tl-filters {
@@ -371,7 +371,7 @@ onMounted(() => {
   padding: var(--sp-2) var(--sp-3);
   border-radius: var(--r-md);
   background: color-mix(in srgb, var(--danger) 8%, transparent);
-  color: var(--danger);
+  color: var(--danger-text);
   font-size: var(--fs-modal-label);
 }
 .tl-empty {
@@ -432,7 +432,7 @@ onMounted(() => {
 }
 .st.active {
   background: var(--primary-soft);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 .st.ok {
   background: color-mix(in srgb, var(--success) 14%, transparent);
@@ -440,7 +440,7 @@ onMounted(() => {
 }
 .st.bad {
   background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .st.muted {
   background: var(--fill);
@@ -487,7 +487,7 @@ onMounted(() => {
   flex-shrink: 0;
 }
 .cnt.bad {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .cnt.mixed {
   color: var(--warning-text);
@@ -594,7 +594,7 @@ onMounted(() => {
 .cf-error {
   margin: 0;
   font-size: var(--fs-modal-label);
-  color: var(--danger);
+  color: var(--danger-text);
 }
 /* 按钮区与内容之间要有一条线：否则整块白到底，取消/创建看起来像第 4 个字段 */
 .cf-foot {

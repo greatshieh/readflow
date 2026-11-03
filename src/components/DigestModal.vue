@@ -309,7 +309,7 @@ watch(() => props.open, async (val) => {
 .entity-tag {
   font-size: var(--fs-md);
   font-weight: 600;
-  color: var(--primary);
+  color: var(--primary-text);
   background: var(--primary-tint);
   padding: var(--sp-1) var(--sp-15);
   border-radius: var(--r-sm);
@@ -348,12 +348,14 @@ watch(() => props.open, async (val) => {
   padding: var(--sp-025) var(--sp-2);
   border-radius: var(--r-sm);
 }
+/* 实色徽章：这两个色太亮，托不住白字（白压 #f59e0b 只有 2.15:1），只能反过来压深字。
+   深字压 #f59e0b 6.76:1 / 压 #e5484d 4.55:1。 */
 .score-high {
-  color: var(--tone-fg);
+  color: var(--danger-ink);
   background: var(--danger);
 }
 .score-medium {
-  color: var(--tone-fg);
+  color: var(--warning-ink);
   background: var(--warning);
 }
 .score-low {

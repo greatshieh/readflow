@@ -361,7 +361,7 @@ function backToArticles(): void {
 .rv-error {
   margin: 0;
   font-size: var(--fs-xs);
-  color: var(--danger);
+  color: var(--danger-text);
   background: color-mix(in srgb, var(--danger) 8%, transparent);
   border-left: 2px solid var(--danger);
   border-radius: var(--r-sm);

@@ -455,7 +455,7 @@ watch(
   padding: var(--sp-2) var(--sp-3);
   border-radius: var(--r-sm);
   background: color-mix(in srgb, var(--danger) 10%, transparent);
-  color: var(--danger);
+  color: var(--danger-text);
   font-size: var(--fs-modal-label);
 }
 .cv-empty {
@@ -510,7 +510,7 @@ watch(
    用色区分档位而不是只靠文字，是为了让"这一列里哪些是核心"一眼可数 */
 .cv-tier.t-core {
   background: color-mix(in srgb, var(--primary) 16%, transparent);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 .cv-tier.t-watch {
   background: var(--hover-bg);
@@ -533,7 +533,7 @@ watch(
   white-space: nowrap;
 }
 .cv-danger {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 
 .cv-line {
@@ -582,6 +582,6 @@ watch(
 }
 .cv-edit-error {
   font-size: var(--fs-modal-label);
-  color: var(--danger);
+  color: var(--danger-text);
 }
 </style>

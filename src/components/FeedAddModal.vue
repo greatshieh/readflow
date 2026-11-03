@@ -178,7 +178,7 @@ async function handleAdd() {
 }
 .add-close:hover { color: var(--text-primary); }
 .add-msg {
-  color: var(--primary);
+  color: var(--primary-text);
   background: var(--primary-tint);
   /* 这是给用户看的失败原因，必须能读——按元信息 11px 处理是错的 */
   font-size: var(--fs-modal-body);

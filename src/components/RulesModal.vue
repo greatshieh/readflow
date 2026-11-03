@@ -449,7 +449,7 @@ function actionText(r: FilterRule): string {
 }
 .manage-close:hover { color: var(--text-primary); }
 .manage-msg {
-  color: var(--primary);
+  color: var(--primary-text);
   background: var(--primary-tint);
   /* 失败原因，用户要读懂才知道怎么改 —— 属于正文 */
   font-size: var(--fs-modal-body);

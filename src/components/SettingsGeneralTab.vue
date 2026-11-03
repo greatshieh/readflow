@@ -771,7 +771,7 @@ defineExpose({ save: saveGeneral })
   padding: 0 var(--sp-1); min-width: 18px; text-align: center;
 }
 .domain-chip.active .domain-count {
-  color: var(--primary);
+  color: var(--primary-text);
   background: color-mix(in srgb, var(--primary) 16%, transparent);
 }
 
@@ -798,7 +798,7 @@ defineExpose({ save: saveGeneral })
     background var(--m-tap) var(--m-ease-out);
 }
 .tag-remove:hover {
-  color: var(--danger);
+  color: var(--danger-text);
   background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 /* 未启用任何领域且无自定义类型时的提示。

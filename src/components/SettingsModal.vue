@@ -220,7 +220,7 @@ function close() {
     color var(--m-tap) var(--m-ease-out);
 }
 .side-tab:hover { background: var(--fill); color: var(--text-primary); }
-.side-tab.active { background: var(--primary-tint); color: var(--primary); font-weight: 500; }
+.side-tab.active { background: var(--primary-tint); color: var(--primary-text); font-weight: 500; }
 
 /* 右列：固定标题栏 + 滚动内容区 + 底部操作区 */
 .side-main {

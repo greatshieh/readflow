@@ -602,7 +602,7 @@ onMounted(() => {
 }
 .rp-error {
   font-size: var(--fs-modal-label);
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .rp-first {
   font-size: var(--fs-modal-label);

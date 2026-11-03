@@ -570,7 +570,7 @@ onMounted(() => {
 }
 .st.active {
   background: var(--primary-soft);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 .st.ok {
   background: color-mix(in srgb, var(--success) 14%, transparent);
@@ -578,7 +578,7 @@ onMounted(() => {
 }
 .st.bad {
   background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .st.muted {
   background: var(--fill);
@@ -721,7 +721,7 @@ onMounted(() => {
   font-weight: 600;
 }
 .td-sec-head h2.bad {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .td-sec-head h2.mixed {
   color: var(--warning-text);
@@ -888,7 +888,7 @@ onMounted(() => {
 .mini.bad:hover:not(:disabled) {
   border-color: var(--danger);
   background: var(--danger-fg);
-  color: var(--danger);
+  color: var(--danger-text);
 }
 /* 按钮一律走全局 `.btn` 族（基类 + 修饰类 + 尺寸档），本文件不再自建。
    这里曾有一份私有的 `.btn-ghost / .btn-primary / .btn-danger`：

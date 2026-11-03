@@ -679,7 +679,7 @@ onBeforeUnmount(() => {
 .rd-failed-title {
   font-size: var(--fs-modal-section);
   font-weight: 600;
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .rd-failed-msg {
   margin: 0;

@@ -491,7 +491,7 @@ async function openCompose(thesisId?: number) {
     color var(--m-tap) var(--m-ease-out);
 }
 .side-tab:hover { background: var(--fill); color: var(--text-primary); }
-.side-tab.active { background: var(--primary-tint); color: var(--primary); font-weight: 500; }
+.side-tab.active { background: var(--primary-tint); color: var(--primary-text); font-weight: 500; }
 /* 分组标题（「台账」/「工作流」）：只切分语义，不该看起来像能点。
    比页签小一号、无 hover、不可聚焦——它没有 role，本来也不是控件 */
 .side-group {

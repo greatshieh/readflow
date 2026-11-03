@@ -214,7 +214,7 @@ async function saveAs() {
   font-size: var(--fs-modal-body);
 }
 .pv-state.error {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .pv-state-title {
   margin: 0 0 var(--sp-2);

@@ -19,6 +19,11 @@
   --primary-hover: #5546d6;
   --primary-soft: #efedfe;
   --primary-tint: rgba(108, 92, 231, 0.1);
+  /* 主色的**文字档**：压在 --primary-soft（选中页签、命令面板高亮行、TOC 当前项）
+     或 10% tint 上时的颜色。--primary 本身在 --primary-soft 上只有 4.21:1，
+     在这两处又不方便加深底色，于是把字加深一档：--primary-hover 到位 5.63:1。
+     与 --warning-text / --success-text 同一套规矩：500 级当底，-text 当字。 */
+  --primary-text: var(--primary-hover);
   /* 实心主按钮的底色。与 --primary 分开的原因只有一个：**白字的对比度**。
      --primary 要同时承担"浅底上的紫字"（需要够深）和"深底上的紫字"（需要够亮），
      深色主题下它被提亮到 #8b7cf6，配白字只有 3.33:1，不达 AA。
@@ -126,9 +131,19 @@
   /* ── 危险色（语义色，不随主题主色变化）──
      此前项目里从未定义过 --danger / --danger-fg，各组件只能写
      `var(--danger, #ef4444)` 各自兜底，同一个"删除"语义在不同弹窗里取到不同色值。
-     这里补上正式定义：--danger 用于描边与文字，--danger-fg 用于悬浮底色。 */
+     这里补上正式定义：--danger 用于描边与**实色填充**，--danger-fg 用于悬浮底色。
+
+     --danger 本身不当文字色用：在纸底 3.66:1、白面 3.91:1、压在自己那层
+     12% 浅红上只有 3.23:1（全仓 45 处正是这个组合——删除钮、失效标记、负向立场）。
+     文字一律走 --danger-text（#c0272d，5.50 / 5.14 / 4.86）。 */
   --danger: var(--tone-red);
+  --danger-text: #c0272d;
   --danger-fg: rgba(229, 72, 77, 0.1);
+  /* 实色语义块上的**字**（不是白字）：白字压 --warning #f59e0b 只有 2.15:1，
+     压 --danger #e5484d 3.91:1。这两个色太亮，托不住白字，只能反过来压深字。
+     取值固定、不随主题变——两套主题下 --warning / --danger 都是同一批亮色。 */
+  --warning-ink: #3a2503;   /* 压 #f59e0b = 6.76:1 */
+  --danger-ink: #2b0f10;    /* 压 #e5484d = 4.55:1 */
 
   /* ── 正文高亮色（语义色，不随主题主色变化）──
      4 档柔光底色，供「选中正文 → 高亮」使用。高亮块内的文字统一用 --hl-fg：
@@ -148,13 +163,17 @@
        primary   正文与标题
        secondary 次级说明、行内标签
        tertiary  时间戳、计数、占位——**这一档必须 ≥4.5:1**，
-                 它是小字，此前 #8b93a3 只有 3.2:1，等于把日期写在雾里。 */
+                 它是小字，此前 #8b93a3 只有 3.2:1，等于把日期写在雾里。
+                 第二遍：#767680 在 --bg 上 4.20、在白面上 4.49，又是"看着还行"
+                 的一档，全仓 180 处用它当文字。现在 #6c6c76 = 4.85 / 5.19。
+                 代价是与 secondary 的层级差从 1.64 收到 1.42——可以接受：
+                 11px 的字谈"安静"没有意义，读不清才叫吵。 */
   --bg: #f7f7f9;
   --surface: #ffffff;
   --surface-muted: #f4f4f6;
   --text-primary: #17171c;
   --text-secondary: #55555f;
-  --text-tertiary: #767680;
+  --text-tertiary: #6c6c76;
   --border: #e7e7ec;
   --fill: #f2f2f5;
   --fill-secondary: #e9e9ee;
@@ -392,6 +411,10 @@ html[data-theme="dark"] {
   --primary-hover: #a091f9;
   --primary-soft: #241f3a;
   --primary-tint: rgba(139, 124, 246, 0.16);
+  /* 暗色不需要加深：#8b7cf6 在 --primary-soft 上已有 4.74:1。
+     但这一行必须有——浅色把 -text 指向了 --primary-hover（更深），
+     不覆盖的话暗色界面上的选中页签会变成比背景还暗的字。 */
+  --primary-text: var(--primary);
   /* 实心主按钮在暗色下压深一档：--primary 提亮是为了当"暗底上的紫字"，
      配白字只有 3.33:1；#6f63c6 + 白 = 4.92:1，达 AA。 */
   --primary-solid: #6f63c6;
@@ -411,6 +434,9 @@ html[data-theme="dark"] {
   --shell-shadow: none;
 
   --danger: #ff6369;
+  /* 暗底上 #ff6369 本身就是"亮字"（压 12% 红底 5.45:1），直接沿用；
+     不覆盖的话会继承浅色那个 #c0272d，在深色界面上等于黑字。 */
+  --danger-text: var(--danger);
   --danger-fg: rgba(255, 99, 105, 0.16);
   /* 暗底上 500 级色本身就够亮（#f59e0b 7.9:1 / #10b981 6.7:1 / #0ea5e9 6.1:1，
      底为 --surface #1b1c20），文字档直接沿用，不另调色值。
@@ -847,11 +873,11 @@ select {
    的特异性（0,3,0）高于 `.btn-danger`（0,1,0），只写 background 会被它抢走配色。 */
 .btn-danger {
   border-color: var(--danger);
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .btn-danger:hover:not(:disabled) {
   border-color: var(--danger);
-  color: var(--danger);
+  color: var(--danger-text);
   background: var(--danger-fg);
 }
 
@@ -859,7 +885,7 @@ select {
    整列常显红字会造成视觉噪音，这里刻意"安静"。 */
 .btn-danger-text:hover:not(:disabled) {
   border-color: var(--danger);
-  color: var(--danger);
+  color: var(--danger-text);
   background: var(--danger-fg);
 }
 
@@ -902,7 +928,7 @@ select {
 .btn-soft {
   border-color: var(--primary);
   background: var(--primary-tint);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 .btn-soft:hover:not(:disabled) {
   border-color: var(--primary-hover);
@@ -935,7 +961,7 @@ select {
 .btn-quiet-danger:hover:not(:disabled) {
   border-color: transparent;
   background: var(--danger-fg);
-  color: var(--danger);
+  color: var(--danger-text);
 }
 
 /* 圆形：启停开关、确认点、药丸式筛选片。 */
@@ -1170,7 +1196,7 @@ select:focus-visible {
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.extract-msg.error { color: var(--danger); }
+.extract-msg.error { color: var(--danger-text); }
 
 /* 空态（时间线 / 报告 / 实体管理） */
 .empty-state { text-align: center; padding: var(--sp-10) 0; color: var(--text-tertiary); }
@@ -1199,7 +1225,7 @@ select:focus-visible {
 .graph-error {
   margin: 0;
   font-size: var(--fs-sm);
-  color: var(--danger);
+  color: var(--danger-text);
 }
 
 /* 画布舞台：flex:1 + min-height:0 是画布能在容器内正确收缩的关键；
@@ -1228,7 +1254,7 @@ select:focus-visible {
   background: var(--primary-soft);
   font-size: var(--fs-xs);
   font-weight: 600;
-  color: var(--primary);
+  color: var(--primary-text);
   line-height: 1.5;
   font-variant-numeric: tabular-nums;
 }
@@ -1262,7 +1288,7 @@ select:focus-visible {
   opacity: 0.8;
 }
 /* 错误态：语义色优先于中性灰，让"出错了"和"这里是空的"在余光里就能区分 */
-.state-block.is-error { color: var(--danger); }
+.state-block.is-error { color: var(--danger-text); }
 
 /* ─── 标签 chip（全局工具类）──────────────────────────────────────────────────
    标签的颜色由后端存"颜色名"，调用方通过内联自定义属性 `--tag-c`（见 `stores/tags.ts`

@@ -783,7 +783,7 @@ onUnmounted(() => {
 }
 .load-more:hover:not(:disabled) {
   border-color: var(--primary);
-  color: var(--primary);
+  color: var(--primary-text);
   background: var(--primary-tint);
 }
 .load-more:disabled { cursor: default; opacity: 0.6; }

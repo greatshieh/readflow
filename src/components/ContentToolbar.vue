@@ -427,7 +427,7 @@ onUnmounted(() => {
   font-family: inherit;
 }
 .tb-btn:hover { border-color: var(--border); color: var(--text-primary); background: var(--fill); }
-.tb-btn.on { background: var(--primary-tint); border-color: var(--primary); color: var(--primary); }
+.tb-btn.on { background: var(--primary-tint); border-color: var(--primary); color: var(--primary-text); }
 .tb-btn:disabled { opacity: 0.5; cursor: default; }
 .tb-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
 

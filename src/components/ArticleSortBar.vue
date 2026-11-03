@@ -121,7 +121,7 @@ const SORT_OPTIONS: { key: ArticleSortKey; label: string }[] = [
    与全局的胶囊体系（浅色实底、深色描边）保持一致。 */
 .sort-btn.active {
   background: var(--primary-soft);
-  color: var(--primary);
+  color: var(--primary-text);
   border-color: color-mix(in srgb, var(--primary) 40%, transparent);
   font-weight: 600;
 }

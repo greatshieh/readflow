@@ -1078,7 +1078,7 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .ai-status.error {
-  color: var(--primary);
+  color: var(--primary-text);
   background: var(--primary-tint);
   border: 1px solid var(--primary);
   border-radius: var(--r-sm);
@@ -1276,7 +1276,7 @@ onUnmounted(() => {
   height: 32px;
   border-radius: var(--r-md);
   background: var(--primary-soft);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 .es-card-ico svg { width: 16px; height: 16px; }
 .es-card-text {
@@ -1400,7 +1400,7 @@ onUnmounted(() => {
 }
 /* 选中态才上色：三个按钮常年带色会让人以为已经选好了 */
 .tp-stance.on { background: var(--surface); font-weight: 500; }
-.tp-stance.on.bad { color: var(--danger); }
+.tp-stance.on.bad { color: var(--danger-text); }
 .tp-stance.on.mixed { color: var(--warning-text); }
 .tp-stance.on.ok { color: var(--success-text); }
 .tp-ok {

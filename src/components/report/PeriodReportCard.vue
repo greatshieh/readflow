@@ -168,7 +168,7 @@ function onExport(e: MouseEvent) {
   font-size: var(--fs-modal-meta);
   font-weight: 500;
   background: var(--primary-soft);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 .card-tag.week {
   background: color-mix(in srgb, var(--info) 14%, transparent);
@@ -207,7 +207,7 @@ function onExport(e: MouseEvent) {
   color: var(--text-tertiary);
 }
 .card-sub .fail {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .card-actions {
   position: absolute;

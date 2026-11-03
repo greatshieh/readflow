@@ -780,7 +780,7 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
   font-size: var(--fs-modal-section);
   font-weight: 600;
   line-height: var(--lh-modal-section);
-  color: var(--primary);
+  color: var(--primary-text);
   background: var(--primary-tint);
   padding: var(--sp-1) var(--sp-15);
   border-radius: var(--r-sm);
@@ -1010,7 +1010,7 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
 /* 「支持 / 反驳 / 存疑」：外观来自 `.btn .btn-mini .btn-round`（24px 药丸）。
    此前是 22px 自建药丸，比所有行内小钮都矮 2px。三类立场只在**悬停**时透出颜色
    且只变描边——这一行是次要动作，不该抢过事件正文。 */
-.act.bad:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+.act.bad:hover:not(:disabled) { border-color: var(--danger); color: var(--danger-text); }
 .act.mixed:hover:not(:disabled) { border-color: var(--warning); color: var(--warning-text); }
 .act.ok:hover:not(:disabled) { border-color: var(--success); color: var(--success-text); }
 .acts-done {
@@ -1049,7 +1049,7 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
   line-height: var(--lh-modal-label);
 }
 .at-empty { color: var(--text-tertiary); }
-.at-error { color: var(--danger); }
+.at-error { color: var(--danger-text); }
 .at-foot {
   display: flex;
   justify-content: flex-end;

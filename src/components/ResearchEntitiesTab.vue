@@ -390,12 +390,12 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
   color: var(--text-secondary);
 }
 .score-msg.err {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 /* 错误提示是必读句子，与成功提示同档 14 */
 .error-msg {
   font-size: var(--fs-modal-body);
   line-height: var(--lh-modal-body);
-  color: var(--danger);
+  color: var(--danger-text);
 }
 </style>

@@ -715,7 +715,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   font-size: var(--fs-base);
 }
 .dash-error {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 /* 分区卡片化：每区包成浅色卡片，整体从「设置页列表」变「仪表盘」 */
 .dash-card {

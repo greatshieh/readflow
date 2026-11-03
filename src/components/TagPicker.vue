@@ -313,7 +313,7 @@ async function removeTag(t: Tag) {
   cursor: pointer;
 }
 .tp-tab:hover { color: var(--text-primary); }
-.tp-tab.active { background: var(--primary-tint); color: var(--primary); font-weight: 600; }
+.tp-tab.active { background: var(--primary-tint); color: var(--primary-text); font-weight: 600; }
 .tp-close {
   border: none;
   background: none;
@@ -419,7 +419,7 @@ async function removeTag(t: Tag) {
   padding: 0;
   flex-shrink: 0;
 }
-.tp-del:hover { color: var(--danger); }
+.tp-del:hover { color: var(--danger-text); }
 
 /* 新建区：始终钉在浮层底部，不随列表滚动 */
 .tp-new {
@@ -459,5 +459,5 @@ async function removeTag(t: Tag) {
   font-size: var(--fs-xs);
   color: var(--text-tertiary);
 }
-.tp-msg.error { color: var(--danger); }
+.tp-msg.error { color: var(--danger-text); }
 </style>

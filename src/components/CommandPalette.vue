@@ -951,7 +951,7 @@ onUnmounted(() => {
   padding: 2px var(--sp-2);
   border-radius: var(--r-pill);
   background: var(--primary-soft);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 .pal-mode.full { background: var(--cap-accent-bg); color: var(--cap-accent-line); }
 
@@ -1027,7 +1027,7 @@ onUnmounted(() => {
    颜色在这里是"分类标记"而不是装饰，所以三种必须明显不同——
    否则用户在一条混排列表里分不清哪行是文章、哪行是自己写的东西。 */
 .pal-av.note {
-  color: var(--primary);
+  color: var(--primary-text);
   background: color-mix(in srgb, var(--primary) 14%, transparent);
   box-shadow: none;
 }

@@ -301,7 +301,7 @@ function shortDate(ts: string): string {
   border-left: 2px solid transparent;
 }
 .rv-hit-high {
-  color: var(--danger);
+  color: var(--danger-text);
   background: color-mix(in srgb, var(--danger) 8%, transparent);
   border-left-color: var(--danger);
 }
@@ -396,7 +396,7 @@ function shortDate(ts: string): string {
 }
 .rv-btn-on {
   border-color: var(--primary);
-  color: var(--primary);
+  color: var(--primary-text);
   background: var(--primary-soft, color-mix(in srgb, var(--primary) 10%, transparent));
 }
 

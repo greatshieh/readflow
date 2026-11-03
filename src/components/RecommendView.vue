@@ -270,7 +270,7 @@ onMounted(async () => {
   line-height: 1.7;
 }
 .rv-error {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .rv-groups {
   flex: 1;
@@ -400,7 +400,7 @@ onMounted(async () => {
 .rv-act.active {
   opacity: 1;
   border-color: var(--primary);
-  color: var(--primary);
+  color: var(--primary-text);
   background: var(--primary-tint);
 }
 </style>
