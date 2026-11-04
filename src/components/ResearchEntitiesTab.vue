@@ -10,6 +10,7 @@
         v-for="entity in entitiesStore.entities"
         :key="entity.id"
         class="entity-item"
+        :class="{ 'is-disabled': !entity.enabled }"
       >
         <div
           class="entity-info clickable"
@@ -18,7 +19,14 @@
           @click="openDashboard(entity)"
         >
           <span class="entity-name">{{ entity.name }}</span>
-          <span class="entity-type">{{ entityTypeLabel(entity.entity_type) }}</span>
+          <!-- 类型与状态同占一行：`.entity-info` 是纵向两行（名字 / 元信息），
+               如果「已禁用」再单独占一行，每一行会变成三行高，列表密度骤降 -->
+          <span class="entity-meta">
+            <span class="entity-type">{{ entityTypeLabel(entity.entity_type) }}</span>
+            <!-- 禁用态必须给文字标记，不能只靠降色：降色在低对比与色觉差异下都读不出
+                 "它为什么不参与评分"。列表改成含禁用项之后，这一行才第一次可见。 -->
+            <span v-if="!entity.enabled" class="entity-off">已禁用</span>
+          </span>
         </div>
         <div class="entity-actions">
           <!-- 启用/禁用开关：一个圆点，开=实心主色，关=空心灰。
@@ -99,6 +107,27 @@
       </button>
     </div>
 
+    <!-- 已删除（屏蔽）的实体：删除的"持久"部分就落在这里。
+         用原生 <details>：summary 天然可聚焦、可键盘展开、读屏会播报展开状态，
+         自己写一套折叠要额外补 aria-expanded 与键盘处理，还容易半套。 -->
+    <details v-if="entitiesStore.blocked.length" class="blocked-box">
+      <summary class="blocked-summary">
+        已删除的实体（{{ entitiesStore.blocked.length }}）
+      </summary>
+      <p class="blocked-hint">
+        这些名字不会被系统自动添加回来。点「恢复」只是解除拦截，
+        并不会把实体重新建好——下次文章里再出现这个名字时才会重新建立。
+      </p>
+      <div
+        v-for="item in entitiesStore.blocked"
+        :key="item.name"
+        class="blocked-item"
+      >
+        <span class="blocked-name">{{ item.name }}</span>
+        <button class="btn btn-soft btn-sm" @click="handleUnblock(item)">恢复</button>
+      </div>
+    </details>
+
     <!-- 实体级告警规则编辑弹窗（P1-F） -->
     <EntityAlertRuleModal
       :open="ruleModalOpen"
@@ -127,12 +156,13 @@
  *   通知外壳，由外壳据当前主屏视图决定「立即重算」还是「作废待重算」
  *   （见 `ResearchModal.onEntitiesChanged`），省掉一次看不见的全库扫描。
  */
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import AppSelect, { type SelectOption } from './AppSelect.vue'
 import EntityAlertRuleModal from './EntityAlertRuleModal.vue'
 import { useEntitiesStore } from '@/stores/entities'
 import { showConfirm } from '@/stores/modal'
 import { ENTITY_TYPE_LABELS, entityTypeLabel } from '@/utils/entityLabels'
+import type { EntityBlock, EntityImpact } from '@/types'
 
 const emit = defineEmits<{
   /** 实体集合或评分已变化，已加载的关系图随之过期（外壳转交失效处理） */
@@ -202,22 +232,63 @@ async function handleAdd() {
 }
 
 /**
- * 删除实体（需二次确认）
- * 删除操作本身是同步的乐观更新，重新评分是纯本地匹配，接着跑完即可。
+ * 删除实体（先算影响面，再二次确认）
+ *
+ * 删除是不可逆的：该实体的研究事件、论点（含手写正文与反驳证据）、覆盖、
+ * 市场标的、财务数据会被外键级联清空。所以顺序是**先查再问**——
+ * 不能在用户不知道要丢什么的情况下让他点"确定"。
+ *
+ * 同时后端会把名字写进屏蔽表，此后归一化不再为它自动创建实体；
+ * 否则删完下一轮 AI 提取就把它建回来了，等于没删。
  */
 async function handleDelete(entity: typeof entitiesStore.entities[0]) {
-  const ok = await showConfirm({
-    title: '删除实体',
-    message: `确定删除实体「${entity.name}」吗？\n删除后将重新计算文章评分。`
-  })
+  // 影响面查失败不阻断删除（删除本身仍要能进行），但文案要退回到"不列数字"的写法，
+  // 绝不能因为查不到就假装"没什么可丢的"
+  let impact: EntityImpact | null = null
+  try {
+    impact = await entitiesStore.fetchImpact(entity.id)
+  } catch {
+    impact = null
+  }
+
+  const lines = [`确定删除实体「${entity.name}」吗？`]
+  if (impact) {
+    const parts: string[] = []
+    if (impact.events) parts.push(`${impact.events} 条研究事件`)
+    if (impact.theses) parts.push(`${impact.theses} 条论点`)
+    if (impact.coverage) parts.push(`${impact.coverage} 条覆盖记录`)
+    if (impact.market_symbols) parts.push(`${impact.market_symbols} 条市场标的`)
+    if (impact.financial) parts.push(`${impact.financial} 条财务数据`)
+    if (parts.length) lines.push(`将同时删除：${parts.join('、')}。`)
+  } else {
+    lines.push('它名下的研究事件、论点与覆盖记录也会一并删除。')
+  }
+  lines.push('该名字以后不会再被自动添加，且此操作不可撤销。')
+
+  const ok = await showConfirm({ title: '删除实体', message: lines.join('\n') })
   if (!ok) return
   try {
     await entitiesStore.deleteEntity(entity.id)
+    await entitiesStore.loadBlocked()
     await runScore()
   } catch (e) {
     console.error('删除实体失败:', e)
     scoreError.value = true
     scoreMsg.value = `删除实体失败：${e instanceof Error ? e.message : String(e)}`
+  }
+}
+
+/**
+ * 解除屏蔽：该名字之后又能被自动创建
+ *
+ * 不会把实体建回来——恢复是"不再拦着"，而不是替用户决定重新关注。
+ */
+async function handleUnblock(item: EntityBlock) {
+  try {
+    await entitiesStore.unblockEntity(item.name)
+  } catch (e) {
+    scoreError.value = true
+    scoreMsg.value = `恢复失败：${e instanceof Error ? e.message : String(e)}`
   }
 }
 
@@ -269,6 +340,12 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
   ruleEntity.value = entity
   ruleModalOpen.value = true
 }
+
+// 已屏蔽列表只在"删除/恢复"时变化，不随实体列表一起刷新。
+// 挂载时取一次即可；取失败在 store 内已降级（不抛），页签不会因此报错。
+onMounted(() => {
+  void entitiesStore.loadBlocked()
+})
 </script>
 
 <style scoped>
@@ -317,6 +394,27 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
 .entity-type {
   font-size: var(--fs-modal-meta);
   color: var(--text-tertiary);
+}
+/* 类型 + 状态挤在同一行：两者都是元信息，不该各占一行 */
+.entity-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+/* 「已禁用」用描边小胶囊而不是实色：它只是状态注记，不是当前选中项，
+   抢主色会让人误以为要操作它。面积远小于阈值，故不加底色。 */
+.entity-off {
+  padding: 0 var(--sp-05);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-modal-meta);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+/* 禁用行整体降一档：名字从主文降到次级，但「已禁用」文字标记仍在，不靠颜色单独表意 */
+.entity-item.is-disabled .entity-name {
+  color: var(--text-secondary);
 }
 .entity-actions {
   display: flex;
@@ -397,5 +495,53 @@ function openRuleModal(entity: typeof entitiesStore.entities[0]) {
   font-size: var(--fs-modal-body);
   line-height: var(--lh-modal-body);
   color: var(--danger-text);
+}
+
+/* ═══ 已删除（屏蔽）的实体 ═══
+   用原生 <details>：summary 天然可聚焦、可键盘展开、读屏会播报展开状态。
+   默认收起、只占一行——它是"删过什么"的账本，不是日常操作区。 */
+.blocked-box {
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border);
+}
+.blocked-summary {
+  padding: var(--sp-05) 0;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-modal-label);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.blocked-summary:hover {
+  color: var(--text-primary);
+}
+.blocked-summary:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.blocked-hint {
+  margin: var(--sp-1) 0 var(--sp-2);
+  font-size: var(--fs-modal-meta);
+  line-height: var(--lh-modal-meta);
+  color: var(--text-tertiary);
+}
+.blocked-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-05) 0;
+}
+.blocked-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-modal-label);
+  color: var(--text-secondary);
+}
+/* 行内按钮不参与收缩：名字再长也只截名字 */
+.blocked-item .btn {
+  flex-shrink: 0;
 }
 </style>

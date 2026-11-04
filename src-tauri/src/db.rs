@@ -231,6 +231,62 @@ pub struct Entity {
     pub created_at: DateTime<Utc>,
 }
 
+/// 实体名归一化键：`TRIM` + 小写
+///
+/// # 为什么必须只有一个实现
+/// 这个键同时用于两处判断"是不是同一个实体"：
+/// 1. 归一化建索引（`research::normalize::register`）——决定"命中即复用，未命中新建"；
+/// 2. 屏蔽表匹配（[`Entity::block_name`] 写入 / 归一化读取）。
+///
+/// 两处口径只要差一点（比如一边 `trim` 一边不 `trim`，或大小写处理不同），
+/// 就会出现"删了照样被重建"，而且**不报错、不告警**，只表现为删除没用。
+/// 所以这里收敛成唯一实现，两边都调它。
+///
+/// # 参数
+/// * `name` - 实体名原文（可能带空白、大小写混杂）
+///
+/// # 返回值
+/// 归一化后的键；原文全为空白时返回空串（调用方据此跳过）
+pub(crate) fn normalize_entity_key(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
+/// 删除某个实体会连带清掉多少东西
+///
+/// 对应 `entities` 被 5 张表以 `ON DELETE CASCADE` 引用的现实。删除是不可逆的，
+/// 所以界面上必须先把这个代价摆出来再让用户点确认——尤其 `theses`（论点正文与
+/// 反驳证据是用户手写的）和 `coverage`（为什么盯它、何时退出）。
+///
+/// 字段名保持 snake_case：与 [`Entity`] 同一口径，前端按同名读取。
+/// 跨边界结构体字段名是契约，写错不会报错、只表现为 `undefined`，
+/// 故 `tests::entity_impact_serialize_as_snake_case` 用断言钉住。
+#[derive(Debug, Clone, Serialize)]
+pub struct EntityImpact {
+    /// 研究事件条数（`research_events`）
+    pub events: i64,
+    /// 论点条数（`theses`）；其证据行由外键级联清除
+    pub theses: i64,
+    /// 覆盖记录条数（`coverage`）
+    pub coverage: i64,
+    /// 市场标的映射条数（`market_symbols`）
+    pub market_symbols: i64,
+    /// 财务数据条数（`financial_data`）
+    pub financial: i64,
+}
+
+/// 一条被屏蔽的实体名（用户删掉的实体）
+///
+/// 对应 `entity_blocklist` 表。用于「已屏蔽」列表回显与解除屏蔽。
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct EntityBlock {
+    /// 归一化后的名字（`LOWER(TRIM(name))`），即屏蔽的匹配键
+    pub name: String,
+    /// 删除时的实体类型，仅用于展示
+    pub entity_type: String,
+    /// 屏蔽时间
+    pub created_at: DateTime<Utc>,
+}
+
 impl Entity {
     /// 获取全部已启用的实体列表
     ///
@@ -307,21 +363,173 @@ impl Entity {
         Ok(id)
     }
 
-    /// 删除实体
+    /// 删除实体，并把它的名字记入屏蔽表
+    ///
+    /// # 为什么"删"必须同时"记"
+    /// 只删行会被自动重建（见 `entity_blocklist` 建表处的说明）。两件事必须落在
+    /// 同一次调用里：分开做的话，中间任何一步失败都会留下"删了但会回来"或
+    /// "拉黑了却没删"的不一致状态，而这两种都不会报错。
+    ///
+    /// 实体不存在时直接返回 `Ok(())`——重复删除应当幂等，不该报"找不到"。
+    ///
+    /// 连带清除（研究事件 / 论点 / 覆盖 / 市场标的 / 财务）由各表
+    /// `ON DELETE CASCADE` 完成；`PRAGMA foreign_keys` 由 sqlx 连接默认开启，
+    /// 已由 `tests::tag_delete_cascades_and_clears_rule_arg` 钉住。
     ///
     /// # 参数
     /// * `pool` - 数据库连接池
     /// * `id` - 实体 ID
     ///
     /// # 错误
-    /// 数据库删除失败时返回错误信息
+    /// 读取实体名、写屏蔽表或删除失败时返回错误信息
     pub async fn delete(pool: &SqlitePool, id: i64) -> Result<(), String> {
+        let row = sqlx::query_as::<_, (String, String)>(
+            "SELECT name, entity_type FROM entities WHERE id = ? LIMIT 1",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        // 先取名字再删：行没了就查不到了，而屏蔽表正需要这个名字
+        let Some((name, entity_type)) = row else {
+            return Ok(());
+        };
+        Self::block_name(pool, &name, &entity_type).await?;
         sqlx::query("DELETE FROM entities WHERE id = ?")
             .bind(id)
             .execute(pool)
             .await
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// 把一个实体名写入屏蔽表（幂等）
+    ///
+    /// 键用 [`normalize_entity_key`]，与归一化建索引的口径是同一个函数——
+    /// 各写一份 `to_lowercase()` 的话，将来只改一处就会出现"删了照样重建"，
+    /// 而且不报错、只表现为"删除没用"。
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    /// * `name` - 实体名（原文，函数内部归一化）
+    /// * `entity_type` - 实体类型，仅用于"已屏蔽"列表展示
+    ///
+    /// # 错误
+    /// 写库失败时返回错误信息
+    pub async fn block_name(
+        pool: &SqlitePool,
+        name: &str,
+        entity_type: &str,
+    ) -> Result<(), String> {
+        let key = normalize_entity_key(name);
+        if key.is_empty() {
+            return Ok(());
+        }
+        sqlx::query("INSERT OR IGNORE INTO entity_blocklist (name, entity_type) VALUES (?, ?)")
+            .bind(&key)
+            .bind(entity_type)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 统计删除该实体会连带清掉多少数据
+    ///
+    /// 给"删除确认框"用：删除不可逆，先把代价摆出来再让用户点。
+    /// 五张表逐一计数而不是一条 UNION：各表列名不同，硬拼更易错，
+    /// 且这五条都是命中 `entity_id` 索引的等值查询。
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    /// * `id` - 实体 ID
+    ///
+    /// # 返回值
+    /// 各表条数；实体不存在时全为 0
+    ///
+    /// # 错误
+    /// 查询失败时返回错误信息
+    pub async fn impact(pool: &SqlitePool, id: i64) -> Result<EntityImpact, String> {
+        async fn count(pool: &SqlitePool, sql: &str, id: i64) -> Result<i64, String> {
+            sqlx::query_scalar::<_, i64>(sql)
+                .bind(id)
+                .fetch_one(pool)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        Ok(EntityImpact {
+            events: count(pool, "SELECT COUNT(*) FROM research_events WHERE entity_id = ?", id)
+                .await?,
+            theses: count(pool, "SELECT COUNT(*) FROM theses WHERE entity_id = ?", id).await?,
+            coverage: count(pool, "SELECT COUNT(*) FROM coverage WHERE entity_id = ?", id)
+                .await?,
+            market_symbols: count(
+                pool,
+                "SELECT COUNT(*) FROM market_symbols WHERE entity_id = ?",
+                id,
+            )
+            .await?,
+            financial: count(pool, "SELECT COUNT(*) FROM financial_data WHERE entity_id = ?", id)
+                .await?,
+        })
+    }
+
+    /// 列出全部被屏蔽的实体名（按屏蔽时间倒序，最近删的在最前）
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    ///
+    /// # 错误
+    /// 查询失败时返回错误信息
+    pub async fn list_blocked(pool: &SqlitePool) -> Result<Vec<EntityBlock>, String> {
+        sqlx::query_as::<_, EntityBlock>(
+            "SELECT name, entity_type, created_at FROM entity_blocklist ORDER BY created_at DESC",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// 解除屏蔽：该名字之后又能被自动创建
+    ///
+    /// 只移除屏蔽项，**不会**把实体行建回来——恢复是"不再拦着"，
+    /// 而不是"替用户决定重新关注"。名字下次出现在文章里时会被重新提取，
+    /// 或者用户自己在实体页签手动添加。
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    /// * `name` - 实体名（原文，内部归一化）
+    ///
+    /// # 错误
+    /// 删除失败时返回错误信息
+    pub async fn unblock(pool: &SqlitePool, name: &str) -> Result<(), String> {
+        let key = normalize_entity_key(name);
+        if key.is_empty() {
+            return Ok(());
+        }
+        sqlx::query("DELETE FROM entity_blocklist WHERE name = ?")
+            .bind(&key)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 取全部屏蔽键，供归一化建立内存索引
+    ///
+    /// 只取名（不取类型/时间）：归一化每个批次都要读一次，
+    /// 越窄越好。
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    ///
+    /// # 错误
+    /// 查询失败时返回错误信息
+    pub async fn blocked_keys(pool: &SqlitePool) -> Result<Vec<String>, String> {
+        sqlx::query_scalar::<_, String>("SELECT name FROM entity_blocklist")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// 切换实体启用状态
@@ -2151,6 +2359,35 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
     // 实体名称索引：加速匹配查询（LOWER(name) = ?）
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(LOWER(name))",
+    )
+    .execute(pool)
+    .await?;
+
+    // 实体屏蔽表：用户主动删掉的实体名。
+    //
+    // # 为什么必须有这张表
+    // 研究事件归一化（`research::normalize`）的规则是「命中即复用，未命中自动新建」，
+    // 而它的索引来自 `Entity::list_all`。于是只删 `entities` 行是无效的：
+    // 下一轮 AI 提取遇到同一个名字会当成新实体建回来（且 enabled = 1），
+    // 表现为"删了又长回来"。用户因此只能靠"禁用"让实体不再打扰，
+    // 但禁用后它仍占着列表与评分口径。
+    //
+    // 这张表就是"删除"的持久化：名字一旦在这里，归一化遇到它直接跳过该事件。
+    //
+    // # 为什么主键是名字而不是实体 id
+    // 实体行已经被删了，id 不再存在；而屏蔽的语义是"这个名字别再出现"，
+    // 名字才是稳定的主语。存 `LOWER(TRIM(name))`，与 `normalize::register`
+    // 的大小写口径**逐字一致**——口径不一致会导致删了照样重建，且不报错。
+    //
+    // `entity_type` 只用于在"已屏蔽"列表里显示，不参与匹配（同名不同类型一并拦）。
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS entity_blocklist (
+            name TEXT PRIMARY KEY,
+            entity_type TEXT NOT NULL DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        "#,
     )
     .execute(pool)
     .await?;
@@ -6327,5 +6564,110 @@ mod tests {
             .await
             .expect("级联删除后的查询不应失败");
         assert!(rows.is_empty(), "事件随文章级联删除，应无返回行");
+    }
+
+    // ─── 实体删除与屏蔽 ───────────────────────────────────────────────────
+
+    /// 跨边界契约：`EntityImpact` 的字段名是 snake_case
+    ///
+    /// 前端按同名读取（`impact.market_symbols`）。若有人顺手加上
+    /// `rename_all = "camelCase"`，前端不会报错，只会永远拿到 `undefined`，
+    /// 确认框里"将删除 N 条"就变成空白——正是那种静默失效。
+    #[test]
+    fn entity_impact_serialize_as_snake_case() {
+        let impact = EntityImpact {
+            events: 1,
+            theses: 2,
+            coverage: 3,
+            market_symbols: 4,
+            financial: 5,
+        };
+        let json = serde_json::to_value(&impact).expect("序列化失败");
+        assert_eq!(json["events"], 1);
+        assert_eq!(json["theses"], 2);
+        assert_eq!(json["coverage"], 3);
+        assert_eq!(json["market_symbols"], 4, "字段名必须是 snake_case");
+        assert_eq!(json["financial"], 5);
+        assert!(json.get("marketSymbols").is_none(), "不得改成 camelCase");
+    }
+
+    /// 删除实体：关联行级联清除，名字进屏蔽表
+    ///
+    /// 这两件事必须同时成立：只级联不拉黑 → 下次提取重建；只拉黑不删 →
+    /// 实体还占着列表。任一缺失都不会报错，只表现为"删除没用"。
+    #[tokio::test]
+    async fn entity_delete_blocks_name_and_cascades() {
+        let pool = setup_digest().await;
+        let art = insert_scored_article(&pool, "标题", "摘要", 0).await;
+        let eid = insert_entity(&pool, "腾讯", 1).await;
+        sqlx::query(
+            "INSERT INTO research_events (article_id, entity_id, event_type, fact) \
+             VALUES (?, ?, 'release', '发布新模型')",
+        )
+        .bind(art)
+        .bind(eid)
+        .execute(&pool)
+        .await
+        .expect("插事件失败");
+
+        Entity::delete(&pool, eid).await.expect("删除失败");
+
+        let left: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM research_events WHERE entity_id = ?")
+                .bind(eid)
+                .fetch_one(&pool)
+                .await
+                .expect("统计失败");
+        assert_eq!(left, 0, "研究事件应随实体级联清除");
+
+        let blocked: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM entity_blocklist WHERE name = '腾讯'")
+                .fetch_one(&pool)
+                .await
+                .expect("查屏蔽表失败");
+        assert_eq!(blocked, 1, "名字必须进屏蔽表，否则下一轮提取会把它建回来");
+    }
+
+    /// 重复删除幂等；键归一化为 trim + 小写；解除屏蔽后不再拦
+    #[tokio::test]
+    async fn entity_delete_idempotent_and_unblock_clears_key() {
+        let pool = setup_digest().await;
+        let eid = insert_entity(&pool, "  星河AI  ", 1).await;
+
+        Entity::delete(&pool, eid).await.expect("首次删除失败");
+        Entity::delete(&pool, eid).await.expect("重复删除不应报错");
+
+        // 键必须与归一化建索引同一口径（trim + 小写），否则删了照样重建
+        let keys = Entity::blocked_keys(&pool).await.expect("读屏蔽键失败");
+        assert_eq!(keys, vec!["星河ai".to_string()], "键应为 trim + 小写");
+
+        Entity::unblock(&pool, "星河AI").await.expect("解除失败");
+        let keys = Entity::blocked_keys(&pool).await.expect("读屏蔽键失败");
+        assert!(keys.is_empty(), "解除后不应再拦这个名字");
+    }
+
+    /// `impact` 数的是"会被连带清掉"的量
+    #[tokio::test]
+    async fn entity_impact_counts_related_rows() {
+        let pool = setup_digest().await;
+        let art = insert_scored_article(&pool, "标题", "摘要", 0).await;
+        let eid = insert_entity(&pool, "腾讯", 1).await;
+        for i in 0..3 {
+            sqlx::query(
+                "INSERT INTO research_events (article_id, entity_id, event_type, fact) \
+                 VALUES (?, ?, 'release', ?)",
+            )
+            .bind(art)
+            .bind(eid)
+            .bind(format!("事实{}", i))
+            .execute(&pool)
+            .await
+            .expect("插事件失败");
+        }
+
+        let impact = Entity::impact(&pool, eid).await.expect("统计失败");
+        assert_eq!(impact.events, 3);
+        assert_eq!(impact.theses, 0, "没挂论点时应为 0");
+        assert_eq!(impact.coverage, 0, "没挂覆盖时应为 0");
     }
 }

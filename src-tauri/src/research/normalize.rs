@@ -33,6 +33,13 @@ struct EntityIndex {
     by_key: HashMap<String, usize>,
     /// 全部实体（保持数据库中 id 升序，保证命中顺序与原实现一致）
     entities: Vec<Entity>,
+    /// 用户删掉的实体名（`entity_blocklist`），命中则**不再为它新建实体**
+    ///
+    /// 没有这个集合，"删除"就只是个假动作：下一轮提取会把它当新实体建回来。
+    /// 注意它拦的是"自动新建"，不影响已有实体的复用——用户删掉的名字理应
+    /// 连事件都不再入库，因为 `research_events.entity_id` 是 NOT NULL，
+    /// 没有实体就无处安放。
+    blocked: std::collections::HashSet<String>,
 }
 
 impl EntityIndex {
@@ -45,9 +52,11 @@ impl EntityIndex {
     /// 可立即用于匹配的索引
     ///
     /// # 错误
-    /// 实体读取失败时返回错误信息
+    /// 实体或屏蔽表读取失败时返回错误信息
     async fn load(pool: &SqlitePool) -> Result<Self, String> {
         let entities = Entity::list_all(pool).await?;
+        let blocked: std::collections::HashSet<String> =
+            Entity::blocked_keys(pool).await?.into_iter().collect();
         let mut by_key = HashMap::new();
         for (idx, entity) in entities.iter().enumerate() {
             register(&mut by_key, &entity.name, idx);
@@ -58,7 +67,22 @@ impl EntityIndex {
                 }
             }
         }
-        Ok(Self { by_key, entities })
+        Ok(Self { by_key, entities, blocked })
+    }
+
+    /// 这个名字是否被用户删掉过（屏蔽）
+    ///
+    /// 与 [`Self::get`] 用同一个归一化键，所以"能匹配到的名字"和"能拦到的名字"
+    /// 一定是同一批字符串。
+    ///
+    /// # 参数
+    /// * `name` - 待判断的名称
+    ///
+    /// # 返回值
+    /// `true` 表示不该为它新建实体
+    fn is_blocked(&self, name: &str) -> bool {
+        let key = crate::db::normalize_entity_key(name);
+        !key.is_empty() && self.blocked.contains(&key)
     }
 
     /// 按名称或别名查找实体
@@ -69,7 +93,7 @@ impl EntityIndex {
     /// # 返回值
     /// 命中的实体；名称为空或未命中时返回 `None`
     fn get(&self, name: &str) -> Option<&Entity> {
-        let key = name.trim().to_lowercase();
+        let key = crate::db::normalize_entity_key(name);
         if key.is_empty() {
             return None;
         }
@@ -103,7 +127,9 @@ impl EntityIndex {
 /// * `name` - 主名或别名
 /// * `idx` - 实体下标
 fn register(map: &mut HashMap<String, usize>, name: &str, idx: usize) {
-    let key = name.trim().to_lowercase();
+    // 口径与屏蔽表、`EntityIndex::get` 共用同一个函数：任何一处单独改大小写或
+    // 去空白的规则，都会让"屏蔽"与"匹配"错位，且不报错
+    let key = crate::db::normalize_entity_key(name);
     if !key.is_empty() {
         map.entry(key).or_insert(idx);
     }
@@ -163,6 +189,15 @@ pub async fn normalize_and_store_events(
                 existing
             }
             None => {
+                // 用户删过这个名字：整条事件不入库。
+                //
+                // 这里只能跳过而不是"建一个隐藏实体"——`research_events.entity_id`
+                // 是 NOT NULL，没有实体就无处安放；真要留事件就得让删除半失效。
+                // 语义上也自洽：删除的含义就是"这个名字别再出现在我眼前"，
+                // 包括时间线里它的来源。
+                if index.is_blocked(canonical) {
+                    continue;
+                }
                 let entity_type = if event.entity_type.trim().is_empty() {
                     "company"
                 } else {
@@ -347,6 +382,17 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        // 屏蔽表：`EntityIndex::load` 会读它，缺了会让所有落库用例在这里炸
+        // （正是"手抄 DDL 必然漂移"的又一次现场——给 db 加表时这里也得跟上）。
+        sqlx::query(
+            "CREATE TABLE entity_blocklist (\
+                name TEXT PRIMARY KEY, \
+                entity_type TEXT NOT NULL DEFAULT '', \
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query(
             "CREATE TABLE research_events (\
                 id INTEGER PRIMARY KEY AUTOINCREMENT, \
@@ -512,5 +558,92 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(fin_entity, openai_id, "财务数据应挂到 OpenAI 实体");
+    }
+
+    /// 被删除（屏蔽）的实体名：事件整条跳过，且绝不重建实体
+    ///
+    /// 这是"删除能生效"的唯一保障。没有这道拦截，删掉的实体会在下一轮
+    /// 提取时被当作新实体建回来（`None => Entity::create`），用户看到的现象
+    /// 就是"删了又长回来"——而且不报任何错。
+    ///
+    /// 大小写用 OpenAI 验：屏蔽键存 `openai`，事件 canonical 是 `OpenAI`，
+    /// 两者必须命中同一条，否则口径就漂了。
+    #[tokio::test]
+    async fn blocked_entity_is_skipped_and_not_recreated() {
+        let pool = setup().await;
+        let article_id = sqlx::query("INSERT INTO articles (title, link) VALUES (?, ?)")
+            .bind("标题")
+            .bind("https://example.com/b")
+            .execute(&pool)
+            .await
+            .unwrap()
+            .last_insert_rowid();
+
+        // 模拟用户删过这两个名字：屏蔽表里是归一化后的键
+        for key in ["openai", "腾讯"] {
+            sqlx::query("INSERT INTO entity_blocklist (name) VALUES (?)")
+                .bind(key)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        let events = vec![
+            ExtractedEvent {
+                canonical_name: "OpenAI".to_string(),
+                aliases: vec![],
+                entity_type: "company".to_string(),
+                event_type: "product".to_string(),
+                event_date: String::new(),
+                fact: "OpenAI 发布新模型".to_string(),
+                evidence: String::new(),
+                sentiment: None,
+                sentiment_confidence: None,
+                financial_metrics: None,
+                article_title: None,
+                article_link: None,
+            },
+            ExtractedEvent {
+                canonical_name: "腾讯".to_string(),
+                aliases: vec![],
+                entity_type: "company".to_string(),
+                event_type: "release".to_string(),
+                event_date: String::new(),
+                fact: "腾讯发布混元".to_string(),
+                evidence: String::new(),
+                sentiment: None,
+                sentiment_confidence: None,
+                financial_metrics: None,
+                article_title: None,
+                article_link: None,
+            },
+            ExtractedEvent {
+                canonical_name: "Anthropic".to_string(),
+                aliases: vec![],
+                entity_type: "company".to_string(),
+                event_type: "ma".to_string(),
+                event_date: String::new(),
+                fact: "Anthropic 完成融资".to_string(),
+                evidence: String::new(),
+                sentiment: None,
+                sentiment_confidence: None,
+                financial_metrics: None,
+                article_title: None,
+                article_link: None,
+            },
+        ];
+
+        let inserted = normalize_and_store_events(&pool, article_id, &events, "test-model")
+            .await
+            .expect("落库不应失败");
+        assert_eq!(inserted, 1, "被屏蔽实体的事件应被跳过，只有 Anthropic 入库");
+
+        let left: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM entities WHERE LOWER(name) IN ('openai', '腾讯')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(left, 0, "被屏蔽的名字不得被重建");
     }
 }

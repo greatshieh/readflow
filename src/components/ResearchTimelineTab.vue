@@ -273,9 +273,14 @@ const filterEntityId = ref<number>(0)
 
 /** 实体下拉选项：首项是"全部实体"，其余来自实体表（动态，故用 computed）。
     实体列表的加载由外壳在弹窗打开时统一保证（时间线筛选与实体页签共用）。 */
+// 列表现在含**禁用**实体：禁用只让它退出评分口径，它的事件照常入库，
+// 所以这里必须能筛到它。加后缀是为了让人一眼看出"筛到了却没有新东西"的原因。
 const entityOptions = computed<SelectOption[]>(() => [
   { value: 0, label: '全部实体' },
-  ...entitiesStore.entities.map((e) => ({ value: e.id, label: e.name })),
+  ...entitiesStore.entities.map((e) => ({
+    value: e.id,
+    label: e.enabled ? e.name : `${e.name}（已禁用）`,
+  })),
 ])
 
 /** 事件类型筛选（'' = 全部类型） */

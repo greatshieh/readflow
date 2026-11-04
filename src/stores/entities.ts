@@ -20,11 +20,14 @@
 import { acceptHMRUpdate, defineStore } from 'pinia'
 import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import type { Entity } from '@/types'
+import type { Entity, EntityBlock, EntityImpact } from '@/types'
 
 export const useEntitiesStore = defineStore('entities', () => {
   /** 实体列表缓存 */
   const entities = ref<Entity[]>([])
+
+  /** 被删除（屏蔽）的实体名。删除 = 从库里移除 + 名字进屏蔽表，AI 不再自动重建 */
+  const blocked = ref<EntityBlock[]>([])
 
   /** 加载状态 */
   const loading = ref(false)
@@ -75,6 +78,11 @@ export const useEntitiesStore = defineStore('entities', () => {
 
   /**
    * 删除实体
+   *
+   * 后端在同一次调用里做两件事：把名字写进屏蔽表、删掉实体行（关联表由
+   * 外键级联清除）。只删行的话，下一轮 AI 提取会把它当新实体建回来。
+   *
+   * 删除不可逆，调用方应先用 {@link fetchImpact} 取影响面并让用户确认。
    *
    * @param id - 实体 ID
    * @throws 后端失败时原样抛出
@@ -164,8 +172,61 @@ export const useEntitiesStore = defineStore('entities', () => {
     }
   }
 
+  /**
+   * 统计删除某实体会连带清掉多少数据
+   *
+   * 删除不可逆（研究事件 / 论点 / 覆盖 / 市场标的 / 财务会一并清除），
+   * 所以确认框必须先拿到这些数字再说"确定删除"。
+   *
+   * @param id - 实体 ID
+   * @returns 各关联表条数；实体不存在时全为 0
+   * @throws 后端失败时原样抛出
+   */
+  async function fetchImpact(id: number): Promise<EntityImpact> {
+    try {
+      return await invoke<EntityImpact>('entities_impact', { id })
+    } catch (e) {
+      console.error('统计实体影响面失败:', e)
+      throw e
+    }
+  }
+
+  /**
+   * 加载被删除（屏蔽）的实体名
+   *
+   * @returns 无返回值，结果写入 `blocked`
+   */
+  async function loadBlocked(): Promise<void> {
+    try {
+      blocked.value = await invoke<EntityBlock[]>('entities_blocked')
+    } catch (e) {
+      console.error('加载已屏蔽实体失败:', e)
+      // 这里刻意不抛：屏蔽列表是次要信息，取不到不该让整个页签报错
+    }
+  }
+
+  /**
+   * 解除屏蔽：该名字之后又能被自动创建
+   *
+   * 只取消拦截，**不会**把实体建回来——恢复是"不再拦着"，
+   * 而不是替用户决定重新关注。
+   *
+   * @param name - 实体名（后端负责归一化）
+   * @throws 后端失败时原样抛出
+   */
+  async function unblockEntity(name: string): Promise<void> {
+    try {
+      await invoke<void>('entities_unblock', { name })
+      blocked.value = blocked.value.filter((b) => b.name !== name)
+    } catch (e) {
+      console.error('解除屏蔽失败:', e)
+      throw e
+    }
+  }
+
   return {
     entities,
+    blocked,
     loading,
     error,
     loadEntities,
@@ -174,7 +235,10 @@ export const useEntitiesStore = defineStore('entities', () => {
     toggleEntity,
     scoreArticles,
     getAlertRules,
-    setAlertRules
+    setAlertRules,
+    fetchImpact,
+    loadBlocked,
+    unblockEntity
   }
 })
 

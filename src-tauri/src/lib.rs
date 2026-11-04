@@ -22,7 +22,8 @@
 //!   [`ai_article_chat`] / [`ai_cancel`]（追问真取消：登记标记由 SSE 循环逐块消费）
 //! - 导出命令（2）：[`article_export_obsidian`] / [`save_text_file`]
 //! - 数据管理命令（5）：[`db_stats`] / [`stats_daily_read`] / [`db_backup`] / [`db_restore`] / [`db_cleanup`]
-//! - 实体管理命令（5）：[`entities_list`] / [`entities_create`] / [`entities_delete`] /
+//! - 实体管理命令（8）：[`entities_list`] / [`entities_create`] / [`entities_delete`] /
+//!   [`entities_impact`] / [`entities_blocked`] / [`entities_unblock`] /
 //!   [`entities_toggle`] / [`entity_graph`]
 //! - 智能评分命令（2）：[`score_articles`] / [`high_score_articles`]
 //! - 研究事件命令（11）：[`research_extract_article`] / [`research_extract_batch`] /
@@ -458,6 +459,9 @@ pub fn run() {
             entities_list,
             entities_create,
             entities_delete,
+            entities_impact,
+            entities_blocked,
+            entities_unblock,
             entities_toggle,
             entities_get_alert_rules,
             entities_set_alert_rules,
@@ -2597,17 +2601,27 @@ async fn stats_daily_read(days: i64) -> Result<Vec<(String, i64)>, String> {
 /// 远未触及上限，故该值不会悄悄截断用户的真实数据。
 const DEFAULT_MAX_GRAPH_EDGES: i64 = 300;
 
-/// 获取全部已启用实体列表
+/// 获取实体列表（**含已禁用的**）
+///
+/// # 为什么不再只返回启用的
+/// 原先返回 `list_enabled`，于是用户点一下"禁用"，这个实体就从列表里彻底消失、
+/// 再也没法启用回来——一个看起来可逆的开关实际不可逆。而它在数据层仍然存在
+/// （归一化用的 `list_all` 里还有它，所以 AI 不会重建），只是界面上看不见了。
+/// 列表必须给全部实体，由前端把禁用的灰显并保留"启用"入口。
 ///
 /// # 返回值
-/// 实体列表，按创建时间升序
+/// 实体列表，按创建时间升序；`enabled` 字段区分启用/禁用
 #[tauri::command]
 async fn entities_list() -> Result<Vec<db::Entity>, String> {
     let pool = db_pool().await.map_err(|e| e.to_string())?;
-    db::Entity::list_enabled(&pool).await
+    db::Entity::list_all(&pool).await
 }
 
 /// 新增实体
+///
+/// 建完之后顺手解除同名屏蔽项：用户手动把这个名字加了回来，就说明他要它，
+/// 拦着没有意义。不解的话会出现一种**不报错的不一致**——列表里明明有这个实体，
+/// 归一化却因为屏蔽表而跳过它的事件，表现为"实体在、但永远收不到东西"。
 ///
 /// # 参数
 /// * `name` - 实体名称（如 "腾讯"、"GOOG"）
@@ -2618,10 +2632,19 @@ async fn entities_list() -> Result<Vec<db::Entity>, String> {
 #[tauri::command]
 async fn entities_create(name: String, entity_type: String) -> Result<i64, String> {
     let pool = db_pool().await.map_err(|e| e.to_string())?;
-    db::Entity::create(&pool, &name, &entity_type).await
+    let id = db::Entity::create(&pool, &name, &entity_type).await?;
+    db::Entity::unblock(&pool, &name).await?;
+    Ok(id)
 }
 
-/// 删除实体
+/// 删除实体（同时把名字记入屏蔽表）
+///
+/// 删除会连带清除该实体的研究事件、论点、覆盖、市场标的与财务数据
+/// （各表 `ON DELETE CASCADE`）。调用方应当先取 [`entities_impact`]
+/// 把代价告知用户——这是不可逆操作。
+///
+/// 名字进屏蔽表后，归一化不再为它自动创建实体，所以删除是**持久**的，
+/// 不会像以前那样在下一轮 AI 提取后"长回来"。
 ///
 /// # 参数
 /// * `id` - 实体 ID
@@ -2629,6 +2652,39 @@ async fn entities_create(name: String, entity_type: String) -> Result<i64, Strin
 async fn entities_delete(id: i64) -> Result<(), String> {
     let pool = db_pool().await.map_err(|e| e.to_string())?;
     db::Entity::delete(&pool, id).await
+}
+
+/// 统计删除某实体会连带清掉多少数据（删除确认框用）
+///
+/// # 参数
+/// * `id` - 实体 ID
+///
+/// # 返回值
+/// 各关联表的条数；实体不存在时全为 0
+#[tauri::command]
+async fn entities_impact(id: i64) -> Result<db::EntityImpact, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    db::Entity::impact(&pool, id).await
+}
+
+/// 列出被删除（屏蔽）的实体名
+///
+/// # 返回值
+/// 按屏蔽时间倒序；空数组表示没删过任何实体
+#[tauri::command]
+async fn entities_blocked() -> Result<Vec<db::EntityBlock>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    db::Entity::list_blocked(&pool).await
+}
+
+/// 解除屏蔽（只取消拦截，不代为重建实体）
+///
+/// # 参数
+/// * `name` - 实体名（后端归一化后匹配）
+#[tauri::command]
+async fn entities_unblock(name: String) -> Result<(), String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    db::Entity::unblock(&pool, &name).await
 }
 
 /// 切换实体启用状态

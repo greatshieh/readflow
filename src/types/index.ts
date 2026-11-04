@@ -237,6 +237,44 @@ export interface Entity {
 }
 
 /**
+ * 删除一个实体会连带清掉多少数据
+ *
+ * 后端 `entities_impact` 的返回。`entities` 被 5 张表以 `ON DELETE CASCADE`
+ * 引用，删除不可逆，所以确认框要先把这个代价摆给用户看。
+ *
+ * 字段名是 snake_case，与后端 `db::EntityImpact` **逐字对应**。
+ * 两边界对不上不会报错、只表现为 `undefined`，故后端有
+ * `entity_impact_serialize_as_snake_case` 断言钉住。
+ */
+export interface EntityImpact {
+  /** 研究事件条数 */
+  events: number
+  /** 论点条数（其证据行随外键级联清除） */
+  theses: number
+  /** 覆盖记录条数 */
+  coverage: number
+  /** 市场标的映射条数 */
+  market_symbols: number
+  /** 财务数据条数 */
+  financial: number
+}
+
+/**
+ * 一条被屏蔽的实体名（用户删掉的实体）
+ *
+ * 后端 `entity_blocklist` 的一行。删除实体时名字被写入这张表，
+ * 归一化遇到它就不再自动创建实体——这是"删除"真正生效的地方。
+ */
+export interface EntityBlock {
+  /** 归一化后的名字（trim + 小写），即屏蔽的匹配键 */
+  name: string
+  /** 删除时的实体类型，仅用于展示 */
+  entity_type: string
+  /** 屏蔽时间 */
+  created_at: string
+}
+
+/**
  * 实体关系图的节点
  *
  * 后端 `entity_graph` 的返回元素。`article_count` 是**所选时间窗内**
