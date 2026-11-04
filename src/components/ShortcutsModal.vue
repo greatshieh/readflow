@@ -23,7 +23,7 @@
            一旦进表，输入框里向左移光标会被 preventDefault 吞掉）。
            两者都走不了统一查表，故只在此处以文字补明 -->
       <span><kbd class="kbd kbd-block">esc</kbd> 退出专注模式 / 关弹窗 / 离开关系图、推荐、复盘视图</span>
-      <span><kbd class="kbd kbd-block">Alt + ←</kbd> 回到刚才读的报告（macOS：Cmd + [）</span>
+      <span><kbd class="kbd kbd-block">Alt + ←</kbd> 回到来源（报告 / 时间线 / 论点）· macOS：Cmd + [</span>
       <span class="sc-note">离开复盘视图不结束本轮复盘：会话留在本地，再按 W 可接着处理</span>
       <span class="sc-note">列表未获焦点、输入框内输入时，快捷键一律不响应</span>
     </div>

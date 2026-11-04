@@ -1,6 +1,6 @@
 <template>
   <!-- ═══ Tab 1：事件时间线 ═══ -->
-  <div class="m-body">
+  <div class="m-body" ref="bodyRef">
     <!-- 筛选条：时间窗口 + 实体 + 类型 + 情感 + 关键词 + 排序 -->
     <div class="filter-bar">
       <!-- 筛选条两个下拉改用自绘 AppSelect（原生 option 弹层无法跟随应用风格）。
@@ -114,7 +114,7 @@
             <blockquote v-if="ev.evidence" class="evidence">"{{ ev.evidence }}"</blockquote>
             <div v-if="ev.article_title" class="event-source">
               来源：
-              <a class="source-link" @click.stop="openSourceArticle(ev.article_id)">
+              <a class="source-link" @click.stop="openSourceArticle(ev)">
                 {{ ev.article_title }}
               </a>
             </div>
@@ -218,15 +218,18 @@
  * - 筛选变化 → 重新查询（守卫 `open`，与拆分前一致）。
  * 事件数据来自 research store（后端 JOIN 好实体名与文章标题，前端零拼装）。
  */
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import AppSelect, { type SelectOption } from './AppSelect.vue'
 import BaseModal from './BaseModal.vue'
 import { useResearchStore } from '@/stores/research'
 import { useEntitiesStore } from '@/stores/entities'
 import { useArticlesStore } from '@/stores/articles'
 import { useEventTypesStore } from '@/stores/eventTypes'
+import { useOriginTrailStore, type OriginRestore, type OriginRestoreResult } from '@/stores/originTrail'
 import { useThesesStore, type EvidenceStance } from '@/stores/theses'
 import { useToastStore } from '@/stores/toast'
+import { timelineLabel } from '@/utils/originLabel'
+import { restoreScrollTop } from '@/utils/scrollRestore'
 import { showConfirm } from '@/stores/modal'
 import type { ResearchEventWithContext } from '@/types'
 
@@ -244,8 +247,17 @@ const researchStore = useResearchStore()
 const entitiesStore = useEntitiesStore()
 const articlesStore = useArticlesStore()
 const eventTypesStore = useEventTypesStore()
+const originTrail = useOriginTrailStore()
 const thesesStore = useThesesStore()
 const toast = useToastStore()
+
+/**
+ * 页签根元素（`.m-body`）：本页签的**滚动容器**
+ *
+ * 不是 window——弹窗固定高度、右列自己滚。跳原文前读它的 `scrollTop`，
+ * 返回时再写回去；写成 window 会让"回到原处"永远落在顶部。
+ */
+const bodyRef = ref<HTMLElement | null>(null)
 
 /** 时间窗口（天数，0 = 不限） */
 const filterDays = ref<number>(30)
@@ -586,13 +598,33 @@ async function handleDeleteEvent(ev: ResearchEventWithContext) {
 }
 
 /**
- * 跳转到来源文章的阅读视图（先请外壳关弹窗，再选中文章）
+ * 跳转到来源文章的阅读视图
  *
- * @param articleId - 文章 ID
+ * 跳之前先把"从哪来、当时停在哪"记下来（`originTrail`）：正文栏据此出一条上下文栏，
+ * 返回时按快照把展开项与滚动位置都还原。**先记再跳**——顺序反过来，一旦
+ * `selectArticle` 抛错，用户就没有任何回到原处的手段了。
+ *
+ * 滚动量读的是本页签根元素（`.m-body`），不是 window。
+ *
+ * @param ev - 被点开的来源事件（整条传进来：文案要用到日期、实体名与事实）
  */
-async function openSourceArticle(articleId: number) {
+async function openSourceArticle(ev: ResearchEventWithContext) {
+  originTrail.push({
+    kind: 'timeline',
+    // 事件 ID 天然唯一；同一事件重复点「来源」只替换快照，不堆叠
+    key: `timeline:${ev.id}`,
+    label: timelineLabel(ev),
+    articleId: ev.article_id,
+    restore: {
+      tab: 'timeline',
+      scrollTop: bodyRef.value?.scrollTop ?? 0,
+      // -1 表示当时没有展开项：这种情况下返回后也全收起，不必再猜"该展开哪一条"
+      expandedEventId: expandedEventId.value,
+    },
+    stale: null,
+  })
   emit('close')
-  await articlesStore.selectArticle(articleId)
+  await articlesStore.selectArticle(ev.article_id)
 }
 
 /**
@@ -645,8 +677,24 @@ async function handleExtractBatch() {
  * 避免筛选参数散落多处造成同步漂移（单一真源）。
  *
  * @param resetExpanded - 是否收起已展开项（筛选变化 / 重新打开时都应收起，避免错位）
+ * @returns 本次拉取完成时 resolve；失败不抛（错误留在 store 里）
  */
-async function reload(resetExpanded = true) {
+async function reload(resetExpanded = true): Promise<void> {
+  const task = runReload(resetExpanded)
+  reloading = task
+  await task
+}
+
+/**
+ * `reload` 的本体
+ *
+ * 单独一层是为了让 `restoreFrom` 能拿到"这一轮拉取的 Promise"：返回时的恢复要等
+ * **数据到位**才能判断"那条事件还在不在"，直接在恢复里再拉一次会白跑一趟后端。
+ *
+ * @param resetExpanded - 是否收起已展开项
+ * @returns 拉取完成时 resolve
+ */
+async function runReload(resetExpanded: boolean): Promise<void> {
   if (resetExpanded) expandedEventId.value = -1
   // 先清空旧的价格反应，避免上一次筛选的价格短暂显示在新列表上（错配比没有更糟）
   researchStore.priceReactions = new Map()
@@ -660,17 +708,78 @@ async function reload(resetExpanded = true) {
   void researchStore.loadPriceReactions()
 }
 
-/** 监听打开状态：打开即重置临时态（拆分前由外壳 close() 手工清零）并加载时间线 */
+/**
+ * 最近一次 `reload` 的 Promise（`restoreFrom` 等它落地）
+ *
+ * 初值是已 resolve 的 Promise：没有在飞的拉取时，等待是零成本的。
+ */
+let reloading: Promise<void> = Promise.resolve()
+
+/**
+ * 从快照恢复页签（外壳在弹窗打开、数据就绪后调用）
+ *
+ * # 为什么要先等 `reloading`
+ * 弹窗打开时会先 `reload` 一轮。若不等它，这里看到的是**上一轮**的事件列表——
+ * 返回前刚被删掉的事件还在、刚新增的不在，于是"展开项"会被判成"不存在"，
+ * 用户拿到一条失效提示，而他其实什么都没做错。
+ * ⚠ 读 `reloading` 之前必须先进 `nextTick`：外壳的 watch 排在子组件之前，
+ * 本函数可能比"打开 watch 里那次 reload"更早继续执行，直接读会拿到上一轮
+ * 已 resolve 的旧 Promise（等待等于没等）。
+ *
+ * # 为什么不在这里再拉一次
+ * 打开 watch 已经拉过一轮；再拉一次会让同一次打开产生两次后端查询，
+ * 并且两次结果到达的先后无法保证（后到的覆盖先到的）。
+ *
+ * # 恢复顺序
+ * 先设展开项（DOM 还得再渲染一次，展开会把下面的内容顶下去），
+ * 再 `nextTick` 等渲染、然后才写滚动量；滚动量写早了会被展开造成的布局变化作废。
+ *
+ * @param restore - 来源快照里的恢复指令
+ * @returns `ok` 表示已恢复；`missing` 表示那条事件已经不在了（调用方转失效态）
+ */
+async function restoreFrom(restore: OriginRestore): Promise<OriginRestoreResult> {
+  // 先等一帧再读 `reloading`：本函数可能比"打开 watch 里那次 reload"更早继续执行
+  // （外壳的 watch 先于子组件 watch 跑），此时直接读会拿到**上一轮**已 resolve 的
+  // 旧 Promise。`nextTick` 之后那次 reload 已经把新 Promise 写进去了
+  await nextTick()
+  await reloading
+  const target = restore.expandedEventId
+  if (target !== undefined && target >= 0) {
+    if (!researchStore.events.some((ev) => ev.id === target)) {
+      // 展开项没了：全收起，交给调用方决定是"转失效态"还是"照常打开"
+      expandedEventId.value = -1
+      return { ok: false, kind: 'missing' }
+    }
+    expandedEventId.value = target
+  }
+  await nextTick()
+  await restoreScrollTop(() => bodyRef.value, restore.scrollTop)
+  return { ok: true }
+}
+
+defineExpose({ restoreFrom })
+
+/**
+ * 监听打开状态：打开即重置临时态（拆分前由外壳 close() 手工清零）并加载时间线
+ *
+ * # 为什么"收起展开项"要看有没有待返回意图
+ * 手动关掉弹窗再打开，期望是干净的（全收起、全重拉）；而"从原文返回"期望回到
+ * 刚才的位置，包括那条展开的事件。两者在同一个 watch 里，靠
+ * `originTrail.returnsTo('timeline')` 区分——它同时回答"这次打开是一次返回"与
+ * "这次返回落在我这里"（返回报告时本页签也会收到 open，但那不是冲它来的）。
+ * 写成"总是收起"会让返回后的 `restoreFrom` 与这里的重置抢同一个变量（谁后跑谁赢）。
+ */
 watch(
   () => props.open,
   async val => {
     if (!val) return
-    expandedEventId.value = -1
+    const returning = originTrail.returnsTo('timeline')
+    if (!returning) expandedEventId.value = -1
     extractMsg.value = ''
     extractError.value = false
     // 同步加载生效事件类型枚举（启用预设领域 + 自定义类型），供类型筛选与标签渲染
     await eventTypesStore.loadAll()
-    await reload(false)
+    await reload(!returning)
   }
 )
 

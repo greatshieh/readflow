@@ -81,7 +81,7 @@
            页签各自的加载时机由它们 watch `active` / `open` 自行驱动，见各组件文件头。
            注：覆盖内部曾用 `v-if` 而不是 `v-show`，理由是"没打开过就不该白跑一次查询"。
            现在它自己就是一个页签，这个取舍由它自己的 watch 承担（见 CoveragePanel 文件头）。 -->
-      <ResearchTimelineTab v-show="tab === 'timeline'" :open="open" @close="close" />
+      <ResearchTimelineTab ref="timelineTabRef" v-show="tab === 'timeline'" :open="open" @close="close" />
       <ResearchReportsTab
         v-show="tab === 'reports'"
         :active="tab === 'reports'"
@@ -97,6 +97,7 @@
         <CoveragePanel :active="tab === 'coverage'" @goto-entities="tab = 'entities'" />
       </div>
       <ThesisPanel
+        ref="thesisPanelRef"
         v-show="tab === 'theses'"
         @open-article="onOpenThesisArticle"
         @goto-review="onGotoReview"
@@ -138,11 +139,15 @@
  * - `open` prop：控制弹窗显示状态
  * - `@close` 事件：通知父组件关闭弹窗
  *
- * # 跨页签协调（外壳仅有的两处编排逻辑）
+ * # 跨页签协调（外壳仅有的三处编排逻辑）
  * 1. 弹窗打开时确保实体列表已加载——时间线的筛选下拉与实体页签共用这份数据；
  * 2. 实体页签的增删/启停/评分会让已加载的关系图过期：实体页签 emit
  *    `entities-changed`，外壳据当前主屏视图决定"立即重算"还是"作废待重算"
- *    （见 {@link onEntitiesChanged}）。
+ *    （见 {@link onEntitiesChanged}）；
+ * 3. **返回来源**：消费 `originTrail` 的返回凭据，把页签切到快照记的那一个，
+ *    数据就绪后调该页签的 `restoreFrom`，成功才收掉来源记录（见 {@link settleReturn}）。
+ *    之所以由外壳做：它是唯一同时看得见"返回意图"与"页签实例"的地方，
+ *    而且"页签必须先变可见、再谈 scrollTop"这个顺序只有它能保证（见 open watch 的 ①）。
  */
 import { ref, watch, computed } from 'vue'
 import BaseModal from './BaseModal.vue'
@@ -157,8 +162,10 @@ import { useResearchStore } from '@/stores/research'
 import { useEntitiesStore } from '@/stores/entities'
 import { useUiStore } from '@/stores/ui'
 import { useReportPeriodStore, FocusReportError } from '@/stores/reportPeriod'
+import { useOriginTrailStore, type OriginReturnTicket } from '@/stores/originTrail'
 import { useThesesStore } from '@/stores/theses'
 import { consumeThesisOpen } from '@/utils/thesisJump'
+import { originStaleText, thesisLabel, type ThesisLabelInput } from '@/utils/originLabel'
 import { useArticlesStore } from '@/stores/articles'
 import { useToastStore } from '@/stores/toast'
 
@@ -175,9 +182,15 @@ const researchStore = useResearchStore()
 const entitiesStore = useEntitiesStore()
 const uiStore = useUiStore()
 const reportStore = useReportPeriodStore()
+const originTrail = useOriginTrailStore()
 const thesesStore = useThesesStore()
 const articlesStore = useArticlesStore()
 const toast = useToastStore()
+
+/** 时间线页签：返回时由外壳调它的 `restoreFrom`（展开项 + 滚动位置） */
+const timelineTabRef = ref<InstanceType<typeof ResearchTimelineTab> | null>(null)
+/** 论点页签：同上（重新打开那条论点详情 + 滚动位置） */
+const thesisPanelRef = ref<InstanceType<typeof ThesisPanel> | null>(null)
 
 /** 当前 tab：timeline = 事件时间线；reports = 报告（含周期报告与研究报告两段）；
  *  entities = 实体管理（配置：盯谁）；coverage = 覆盖（台账：为什么盯、何时退出）；
@@ -207,25 +220,29 @@ const tabTitle = computed(() => {
 })
 
 // 打开时确保实体列表已加载：时间线的实体筛选下拉依赖它（可能尚未加载过）
-// 同时消费"上下文栏点了返回"的待办意图（跨组件跳转，见 DESIGN §4.4）。
+// 同时消费"上下文栏点了返回"的待办意图（跨组件跳转）。
 watch(
   () => props.open,
   async val => {
     if (!val) return
-    // ── ① 这两步不依赖任何 IPC，必须排在所有 await 之前 ────────────────
-    // `consumePendingOpen()` + `tab = 'reports'` 一旦排到下面 `loadEntities()` 之后，
-    // 就会晚一个真 IPC（宏任务量级）。而同一次 pre-flush 里，子组件
-    // `PeriodReportReader` 的恢复 watch 已经在等 DOM 了——它这时读到的报告页签仍是
+    // ── ① 这几步不依赖任何 IPC，必须排在所有 await 之前 ────────────────
+    // 只要有一次"返回"或"打开报告"的意图，页签就必须在**本轮 flush 内**变成可见。
+    // 一旦排到下面 `loadEntities()` 之后，就会晚一个真 IPC（宏任务量级）。
+    // 而同一次 flush 里，子组件的恢复逻辑已经在等 DOM 了——它这时读到的页签仍是
     // `v-show=false`（`display: none`）：
-    //   · `.rd-doc-wrap` 没有布局盒 → `scrollTop = N` 被钳成 0（空操作）；
+    //   · 滚动容器没有布局盒 → `scrollTop = N` 被钳成 0（空操作）；
     //   · 两个 rect 全 0 → "是否在视野内"恒为真 → 也不会补滚。
-    // 结果就是"报告回来了，但停在顶部、焦点没落 `[n]`"，且快照已被消费，无从补救。
+    // 结果是"回来了，但停在顶部"，且快照已被消费，无从补救。
     // 触发条件是 `entitiesStore.entities.length === 0`（实体库为空的用户 / 列表加载
     // 失败过的用户）——少数人 100% 复现，正是最难查的那类。
-    // 排到 await 之前，页签就在**当前这次 flush 内**变成可见，恢复动作随后一定能拿到
-    // 有布局的 DOM（推理见 `PeriodReportReader` 的恢复 watch 注释）。
+    const returning = originTrail.consumePendingReturn()
     const pending = reportStore.consumePendingOpen()
-    if (pending !== null) {
+
+    if (returning !== null) {
+      // 返回：落点由快照决定，不看任何默认值
+      tab.value = returning.restore.tab
+      if (returning.restore.tab === 'reports') reportStore.setSegment('period')
+    } else if (pending !== null) {
       tab.value = 'reports'
       reportStore.setSegment('period')
     }
@@ -233,8 +250,8 @@ watch(
     // 命令面板点了「判断 / 证据」命中：落到论点页签并打开那一条。
     // 与上面的报告意图同构，也必须在 await 之前把页签切好——
     // 晚一步的话用户先看到报告列表再"跳"过去，闪一下。
-    // 与报告二选一：一次打开只有一个落点，同时来两个时报告优先（它是显式返回动作）。
-    const pendingThesis = pending === null ? consumeThesisOpen() : null
+    // 与"报告 / 返回"二选一：一次打开只有一个落点，返回与报告优先（它们是显式动作）。
+    const pendingThesis = returning === null && pending === null ? consumeThesisOpen() : null
     if (pendingThesis !== null) {
       tab.value = 'theses'
     }
@@ -246,20 +263,15 @@ watch(
     // 否则用户看不到"有反证要处理"这个信号（列表页签他自己会再拉，成本很小）
     if (thesesStore.list.length === 0) void thesesStore.loadList()
 
-    // ── ② 真正打开报告：这里才需要列表与实体就绪 ──────────────────────
+    // ── ② 报告：真正打开（这里才需要列表与实体就绪）──────────────────────
     if (pending !== null) {
       try {
         await reportStore.focusReport(pending)
-        // ── 送达即回收（本次改动的唯一清除落点）──
-        // `pendingOpenId` 全仓库只有 `backToReport()` 一个生产者，"消费了待打开意图
-        // 并成功打开"与"一次返回被送达"是一对一的。清除放在这里而不是
-        // `backToReport`（同步、不知道成败）或 `focusReport`（不该知道"返回"这个概念），
-        // 才既不会"先清再试"，也不会误伤将来别的调用者。
-        // `reportId === pending` 是防御：哪天多一个 `requestOpen` 的生产者，
-        // 这道判断保证它不会顺手清掉别人的上下文。
-        if (reportStore.sourceContext?.reportId === pending) {
-          reportStore.clearSourceContext()
-        }
+        // ── 送达即回收 ──
+        // 一次返回的"清除"只落在成功分支里：清除动作若发生在会失败的转场之前，
+        // 失败就等于用户既没有退回目标、也没有栏可点（`reportPeriod` 旧实现的原文教训）。
+        // 位置快照由报告域自己消费（`PeriodReportReader` 的 watch），这里不碰。
+        if (returning !== null) originTrail.clear()
       } catch (e) {
         // 位置快照必须就地消费：这条路径上阅读页没被打开（或已被 `closeReport`
         // 卸载），没有人会去消费它。留在 store 里会被下一次打开**任意**报告的
@@ -267,24 +279,28 @@ watch(
         reportStore.consumeRestore()
         // 两类失败必须分开处理，不能一律判死：
         // · 报告**真的**不存在（被删 / 被覆盖重生成）→ 转终态失效，栏留在原地；
-        // · 列表加载失败等临时故障 → **不标 stale**，`ctx` 保留，用户还能再点一次重试。
+        // · 列表加载失败等临时故障 → **不标 stale**，栏保留，用户还能再点一次重试。
         //   `stale` 是终态、只有 ✕ 能收，把"网络抖了"标成终态等于把病根换个形式重演。
         if (isReportMissing(e)) {
-          // 关键：**不清 `ctx`**，只把它切成失效态——栏留在原地（disabled + ✕），
-          // 用户至少还有一个"这条入口"可点、可关；清掉就等于"失败即失联"，
-          // 正是本次要消掉的病（DESIGN §4.4 规则 #4）。三者并存：
-          // 退回列表 + toast 说明原因 + 栏转失效态。
-          reportStore.markSourceStale('这份报告已不存在')
+          originTrail.markStale('report-missing')
         }
         // 退回列表：两种失败下都让用户能自己重选一份（报告不在时尤其必要）
         reportStore.closeReport()
         toast.show(e instanceof Error ? e.message : '该报告已不存在')
       }
+    } else if (returning !== null && returning.restore.tab === 'reports') {
+      // 报告返回却拿不到目标 ID（`requestOpen` 没被调用 / 快照残缺）：目标不可能打开
+      originTrail.markStale('report-missing')
     }
 
-    // ── ③ 命令面板要落到的判断（页签已在 ① 切好）──
-    // 放在全部 await 之后：列表与实体已就绪，`openThesis` 拉详情的成功率最高，
-    // 且此时页签可见，详情一渲染就有布局盒（不会量出 0 高度）
+    // ── ③ 其余页签：交给页签自己恢复（展开项 / 详情 / 滚动位置）──
+    // 放在全部 await 之后：列表与实体已就绪，页签也已可见（①），
+    // 此时写 `scrollTop` 才有布局盒可写。
+    if (returning !== null && returning.restore.tab !== 'reports') {
+      await settleReturn(returning)
+    }
+
+    // ── ④ 命令面板要落到的判断（页签已在 ① 切好）──
     // thesisId 为 null 表示"只切页签"（取自一条还没挂到任何论点的高亮），
     // 此时不打开任何详情——用 0 去打开会打一条查询不存在的记录
     if (pendingThesis !== null && pendingThesis.thesisId !== null) {
@@ -295,6 +311,47 @@ watch(
   // 不带 immediate 的 watch 不会为"挂载时已成立的状态"补一次，待打开的意图会丢掉
   { immediate: true },
 )
+
+/**
+ * 把一次返回交给对应页签恢复
+ *
+ * # 为什么由外壳派发、而不是各页签自己 watch 快照
+ * 页签不知道"这次打开是一次返回"（凭据已被外壳消费），也不该知道别的页签怎么恢复。
+ * 外壳是唯一同时看得见"意图"与"页签实例"的地方，而且它已经在 ① 里把页签切好了，
+ * 恢复的 DOM 前提由它保证——这个顺序不该分散到三个组件里各写一遍。
+ *
+ * @param ticket - 返回凭据（含 `restore` 快照）
+ * @returns 无返回值；成功则收掉栏，目标不存在则把栏转失效态，临时故障保留栏并 toast
+ */
+async function settleReturn(ticket: OriginReturnTicket): Promise<void> {
+  const restore = ticket.restore
+  const result =
+    restore.tab === 'timeline'
+      ? await timelineTabRef.value?.restoreFrom(restore)
+      : restore.tab === 'theses'
+        ? await thesisPanelRef.value?.restoreFrom(restore)
+        : undefined
+
+  if (result === undefined) {
+    // 覆盖 / 实体：本期没有产出这两类来源的入口（`push` 从不写这两个 tab）。
+    // 真出现了也不留一条无法交付的栏——一个点不动的入口比没有入口更糟
+    originTrail.clear()
+    return
+  }
+  if (result.ok) {
+    originTrail.clear()
+    return
+  }
+  if (result.kind === 'missing') {
+    // 终态：目标真的没了。栏留在原地转失效态，✕ 是唯一出口
+    const reason = restore.tab === 'timeline' ? 'event-missing' : 'thesis-missing'
+    originTrail.markStale(reason)
+    toast.show(originStaleText(reason))
+    return
+  }
+  // 临时故障：栏**保留**，用户可以再点一次（标死就等于"失败即失联"）
+  toast.show(result.message ?? '返回失败，请稍后再试')
+}
 
 /**
  * 这次失败是不是"报告真的没了"
@@ -357,13 +414,34 @@ function onEntitiesChanged() {
 /**
  * 论点详情里点了「打开原文」
  *
- * 复刻报告页签的做法：关弹窗 → 切主屏阅读区 → 选中该文章。
+ * 复刻报告页签的做法：先记来源快照 → 关弹窗 → 切主屏阅读区 → 选中该文章。
  * 不在这里做"就地预览"是因为论点详情已经占满右列，再叠一层预览
  * 会把"证据快照"和"原文"挤在同一个窄栏里，两边都不好看。
  *
+ * # 为什么文案要用事件带上来的快照，而不是读 `thesesStore.detail`
+ * `ThesisPanel` 收到子组件的这个事件后会立刻 `closeThesis()`（详情不能留在内存里
+ * 影响下次打开），所以本函数执行时 `detail` 已经是 null。论点快照必须在关闭之前取，
+ * 这是 `ThesisDetail` 把它放进事件参数的原因。
+ *
  * @param articleId - 文章 ID
+ * @param meta - 跳转现场（离开时的滚动量 + 论点快照）
  */
-async function onOpenThesisArticle(articleId: number) {
+async function onOpenThesisArticle(
+  articleId: number,
+  meta: { scrollTop: number; thesis: ThesisLabelInput },
+) {
+  originTrail.push({
+    kind: 'thesis',
+    key: `thesis:${meta.thesis.id}`,
+    label: thesisLabel(meta.thesis),
+    articleId,
+    restore: {
+      tab: 'theses',
+      scrollTop: meta.scrollTop,
+      thesisId: meta.thesis.id,
+    },
+    stale: null,
+  })
   emit('close')
   uiStore.setMainView('articles')
   await articlesStore.selectArticle(articleId)

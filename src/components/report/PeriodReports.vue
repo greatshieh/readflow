@@ -120,7 +120,7 @@
           :key="r.id"
           :report="r"
           :active="store.currentReport?.id === r.id"
-          @open="store.openReport(r.id)"
+          @open="onOpenReport(r.id)"
           @export="anchor => openExport(r, anchor)"
           @regenerate="onRegenerate(r)"
         />
@@ -161,7 +161,9 @@
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { showConfirm } from '@/stores/modal'
-import { useReportPeriodStore, compactPeriodLabel, type PeriodSummary, type PeriodSource } from '@/stores/reportPeriod'
+import { useReportPeriodStore, type PeriodSummary, type PeriodSource } from '@/stores/reportPeriod'
+import { useOriginTrailStore } from '@/stores/originTrail'
+import { reportLabel } from '@/utils/originLabel'
 import { useArticlesStore } from '@/stores/articles'
 import { useUiStore } from '@/stores/ui'
 import { useToastStore } from '@/stores/toast'
@@ -182,6 +184,7 @@ const emit = defineEmits<{
 }>()
 
 const store = useReportPeriodStore()
+const originTrail = useOriginTrailStore()
 const articlesStore = useArticlesStore()
 const uiStore = useUiStore()
 const toast = useToastStore()
@@ -297,7 +300,9 @@ function toggleCustom() {
  */
 async function onGenerate() {
   try {
-    await store.generate()
+    const id = await store.generate()
+    // 生成成功后自动打开了新报告：与"用户主动点开另一份"同义，指向旧报告的返回入口作废
+    originTrail.dropIfReportOtherThan(id)
   } catch (e) {
     toast.show(e instanceof Error ? e.message : String(e), { duration: 6000 })
   }
@@ -348,6 +353,9 @@ async function onDelete() {
   if (!ok) return
   try {
     await store.removeReport(target.id)
+    // 删掉的正是某条来源指向的报告 → 那条栏转失效态（**不清**：用户手上还按着原文，
+    // 抽走入口等于让他在原地失联，这正是本次改造要消掉的病）
+    originTrail.markStaleIfReport(target.id)
     toast.show('已删除')
   } catch (e) {
     toast.show(e instanceof Error ? e.message : String(e), { duration: 6000 })
@@ -357,7 +365,7 @@ async function onDelete() {
 /**
  * 跳转顺序不能乱（见 README §4.6.4）
  *
- * 1. 先写来源上下文——后面任何一步失败，至少还回得去；
+ * 1. 先记来源快照——后面任何一步失败，至少还回得去；
  * 2. 切主屏到 articles 并选中文章（让 DOM 先就位）；
  * 3. 关弹窗；
  * 4. 焦点由正文栏接管（`ContentColumn` 的标题）。
@@ -365,9 +373,9 @@ async function onDelete() {
  * 反序会触发 `BaseModal` 的焦点归还 → 焦点落到订阅栏按钮上 → 再选中文章，
  * 键盘用户会看到焦点闪两下。
  *
- * 上下文里必须一次写全四样东西（DESIGN §4.4、§5.4）：期号标签（栏的段①）、
- * AI 标题（段②）、跳去的文章 ID（徽标的显示条件）、**离开时的滚动量**（回退时按它
- * 恢复位置）。滚动量由阅读页记着——它才是滚动容器 `.rd-doc-wrap` 的宿主。
+ * 快照里必须一次写全三样东西：锚点与描述（栏的主文案）、跳去的文章 ID（徽标的显示
+ * 条件）、**离开时的滚动量**（返回时按它恢复位置）。滚动量由阅读页记着——
+ * 它才是滚动容器 `.rd-doc-wrap` 的宿主。
  *
  * @param source - 被点开的引用源
  * @param meta - 阅读页给出的跳转现场（当前只有离开时的滚动量）
@@ -378,18 +386,41 @@ async function onOpenArticle(source: PeriodSource, meta: { scrollTop: number }) 
     return
   }
   const summary = store.detail?.summary
-  store.setSourceContext({
-    reportId: summary?.id ?? 0,
-    reportTitle: summary?.title ?? '',
-    reportLabel: summary ? compactPeriodLabel(summary.kind, summary.periodStart) : '',
-    refNo: source.refNo,
+  originTrail.push({
+    kind: 'report',
+    // 身份键：报告 + 引用编号一起标识"这一条来源"（本期用于日志与将来判重；
+    // 真正的覆盖语义由 `push` 保证——同一份报告里换一条引用再跳，快照整体被替换）
+    key: `report:${summary?.id ?? 0}:${source.refNo}`,
+    label: reportLabel({
+      kind: summary?.kind ?? '',
+      periodStart: summary?.periodStart ?? '',
+      title: summary?.title ?? '',
+    }),
     articleId: source.articleId,
-    scrollTop: meta.scrollTop,
-    stale: false,
+    restore: {
+      tab: 'reports',
+      scrollTop: meta.scrollTop,
+      refNo: source.refNo,
+      reportId: summary?.id ?? 0,
+    },
+    stale: null,
   })
   uiStore.setMainView('articles')
   await articlesStore.selectArticle(source.articleId)
   emit('close')
+}
+
+/**
+ * 打开列表里的某一份报告
+ *
+ * 用户主动换了在读的东西 → 指向旧报告的返回入口作废（`dropIfReportOtherThan`）。
+ * 指向同一份时它不动，那正是返回路径本身要走的那一步。
+ *
+ * @param id - 报告 ID
+ */
+function onOpenReport(id: number) {
+  originTrail.dropIfReportOtherThan(id)
+  void store.openReport(id)
 }
 
 // 弹窗每次打开：刷新列表与当前期素材量（报告可能已被定时任务生成过）

@@ -6,11 +6,11 @@
        四个子组件各管一块：ContentToolbar（顶栏）、ArticleSummaryCard（摘要卡）、
        ResearchFab（研究事件 FAB + 面板）、HighlightPalette（高亮调色板）。 -->
   <div class="content-column">
-    <!-- 报告上下文栏：从报告引用跳到文章后出现，回到报告「送达成功」后消失。
-         它必须是 `.content` 的**兄弟**而不是子级：栏的可见条件只有一个（`sourceContext`
-         非空），与是否选中文章无关——文章被清理 / 被筛选掉 / 用户取消选中时，正文栏回到
-         空态，但用户仍然要能回报告。所以未选中文章时这条栏也在。 -->
-    <SourceBar v-if="reportStore.sourceContext" />
+    <!-- 来源上下文栏：从研究工作台（报告 / 时间线 / 论点）跳到文章后出现，返回送达后消失。
+         它必须是 `.content` 的**兄弟**而不是子级：栏的可见条件只有一个
+         （`originTrail.current` 非空），与是否选中文章无关——文章被清理 / 被筛选掉 /
+         用户取消选中时，正文栏回到空态，但用户仍然要能回来源。所以未选中文章时这条栏也在。 -->
+    <OriginBar v-if="originTrail.current" />
     <!-- 正文内容：仅在存在选中文章时渲染 -->
     <div class="content" v-if="selectedArticle" @click="showArticleList = true">
       <!-- 顶部固定工具条：对齐 Folo 的 Entry ActionBar（标记已读/未读 · 收藏 · 标签 ·
@@ -296,7 +296,7 @@ import ContentToolbar from '@/components/ContentToolbar.vue'
 import AppSelect from '@/components/AppSelect.vue'
 import HighlightPalette from '@/components/HighlightPalette.vue'
 import ResearchFab from '@/components/ResearchFab.vue'
-import SourceBar from '@/components/report/SourceBar.vue'
+import OriginBar from '@/components/OriginBar.vue'
 import { useHighlights, HIGHLIGHT_COLORS } from '@/composables/useHighlights'
 import { useArticlesStore } from '@/stores/articles'
 import { useThesesStore, type EvidenceStance } from '@/stores/theses'
@@ -304,7 +304,7 @@ import { useToastStore } from '@/stores/toast'
 import { useFeedsStore } from '@/stores/feeds'
 import { useUiStore } from '@/stores/ui'
 import { useSettingsStore } from '@/stores/settings'
-import { useReportPeriodStore } from '@/stores/reportPeriod'
+import { useOriginTrailStore } from '@/stores/originTrail'
 import { formatFullDate } from '@/utils/format'
 import { youtubeEmbedUrl } from '@/utils/videoEmbed'
 import { collectTocItems, type TocItem } from '@/utils/articleToc'
@@ -315,8 +315,8 @@ const articlesStore = useArticlesStore()
 const feedsStore = useFeedsStore()
 const uiStore = useUiStore()
 const settingsStore = useSettingsStore()
-/** 周期报告 store：只读 `sourceContext`，决定正文栏顶部是否显示「报告上下文栏」 */
-const reportStore = useReportPeriodStore()
+/** 来源 store：只读 `current`，决定正文栏顶部是否显示「来源上下文栏」 */
+const originTrail = useOriginTrailStore()
 /** 正文容器引用：高亮标记要直接写进这段 v-html 渲染出的 DOM 里 */
 const contentBodyRef = ref<HTMLElement | null>(null)
 

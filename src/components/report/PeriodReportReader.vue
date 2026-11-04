@@ -512,7 +512,7 @@ function applyRestore(snapshot: RestoreSnapshot, wrap: HTMLElement): void {
 /**
  * 回退时恢复"离开现场"：滚动位置 → 原引用高亮 → 焦点落到那个 `[n]`
  *
- * # 为什么只读 `pendingRestore`、绝不读 `sourceContext`
+ * # 为什么只读 `pendingRestore`、绝不读来源记录
  * 清除 `ctx` 发生在"送达之后"，位置恢复也在"送达之后"，两者天然有先后竞争。
  * 若这里从 `ctx` 取滚动量，`ctx` 先被清就拿到 null，表现为**"回来了但位置丢了"**——
  * 比原问题（回不去）更难查。`ctx` 只管栏的显隐与文案，位置只认这份快照。

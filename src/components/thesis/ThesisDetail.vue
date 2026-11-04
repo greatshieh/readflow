@@ -8,7 +8,7 @@
        若无此判断，下面的 `t.xxx` 全会在渲染期炸掉。
        加载中给一行安静的文字，不给整页骨架——论点详情打开通常只需一帧。 -->
   <div v-if="!detail" class="td td-loading">{{ store.error || '加载中…' }}</div>
-  <div v-else class="td">
+  <div v-else class="td" ref="rootRef">
     <header class="td-head">
       <div class="td-crumb">
         <button class="link-btn" type="button" @click="emit('back')">← 论点列表</button>
@@ -131,7 +131,7 @@
                 <span class="td-ev-kind">{{ KIND_LABEL[ev.kind] }}</span>
                 <template v-if="ev.articleId !== null">
                   <span class="dot-sep">·</span>
-                  <button class="td-ev-open" type="button" @click="emit('open-article', ev.articleId)">
+                  <button class="td-ev-open" type="button" @click="openArticle(ev.articleId)">
                     {{ ev.articleTitle || '打开原文' }}
                   </button>
                 </template>
@@ -220,6 +220,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import BaseModal from '@/components/BaseModal.vue'
 import DivergenceBadge from './DivergenceBadge.vue'
+import type { ThesisLabelInput } from '@/utils/originLabel'
 import {
   useThesesStore,
   KIND_LABEL,
@@ -236,8 +237,14 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'back'): void
-  /** 请求打开原文（交给外壳跳主屏阅读区） */
-  (e: 'open-article', articleId: number): void
+  /**
+   * 请求打开原文（交给外壳跳主屏阅读区）
+   *
+   * 第二个参数是"跳转现场"：滚动量只有本组件知道（滚动容器 `.td` 在这里），
+   * 论点快照也必须在**关闭详情之前**取——`ThesisPanel` 收到本事件后会立刻
+   * `closeThesis()`，届时 `store.detail` 已经空了，外壳再也拼不出栏上那句文案。
+   */
+  (e: 'open-article', articleId: number, meta: { scrollTop: number; thesis: ThesisLabelInput }): void
   /** 论点被删除 */
   (e: 'deleted'): void
 }>()
@@ -251,6 +258,12 @@ const evidence = computed(() => detail.value?.evidence ?? [])
 const revisions = computed(() => detail.value?.revisions ?? [])
 
 const titleRef = ref<HTMLElement | null>(null)
+/**
+ * 详情根元素（`.td`）：本页签的**滚动容器**
+ *
+ * 跳原文前读它的 `scrollTop`（返回时由外壳写回），以及供 `ThesisPanel` 取到它做恢复。
+ */
+const rootRef = ref<HTMLElement | null>(null)
 const editing = ref(false)
 const editText = ref('')
 /** 「改判断」时的理由（可空） */
@@ -267,6 +280,28 @@ const confirmDelete = ref(false)
 /** 引导条是否已关（本次会话内关掉就不再出现，不做持久化：
  *  它只需要说一次"这是故意的"，不需要长期占位） */
 const guideDismissed = ref(false)
+
+/**
+ * 跳原文：把"跳转现场"一起交出去
+ *
+ * 两样东西只有本组件能给出：
+ * 1. **滚动量**——滚动容器 `.td` 在这里，外壳量不到；
+ * 2. **论点快照**——`ThesisPanel` 收到事件后会立刻 `closeThesis()` 把 `store.detail`
+ *    置空，晚一步外壳就只能拼出一条没有实体名、没有陈述的栏。
+ *
+ * @param articleId - 目标文章 ID（来自证据行，`null` 的证据不会渲染这个按钮）
+ * @returns 无返回值；副作用为向上抛出一次跳转请求
+ */
+function openArticle(articleId: number) {
+  emit('open-article', articleId, {
+    scrollTop: rootRef.value?.scrollTop ?? 0,
+    thesis: { id: t.value.id, entityName: t.value.entityName, statement: t.value.statement },
+  })
+}
+
+// 供 `ThesisPanel` 在其恢复流程里取到滚动容器：把元素暴露出去而不是把"怎么滚"写在这里，
+// 是因为恢复的时机（数据到位之后）只有容器那一层知道
+defineExpose({ getScrollEl: () => rootRef.value })
 
 /** 状态操作档位 */
 const STATUS_ACTIONS: Array<{ value: ThesisStatus; label: string }> = [

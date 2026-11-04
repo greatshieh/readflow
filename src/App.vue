@@ -81,7 +81,8 @@ import { useArticlesStore } from '@/stores/articles'
 import { useSettingsStore } from '@/stores/settings'
 import { useUiStore } from '@/stores/ui'
 import { useModalStore } from '@/stores/modal'
-import { useReportPeriodStore } from '@/stores/reportPeriod'
+import { useOriginTrailStore } from '@/stores/originTrail'
+import { useToastStore } from '@/stores/toast'
 import { useWorkbenchStore } from '@/stores/workbench'
 import { applyAppearance } from '@/utils/appearance'
 import { anyDialogOpen } from '@/utils/dialogStack'
@@ -170,11 +171,15 @@ const articlesStore = useArticlesStore()
 /** 全局弹窗 store 实例：快捷键需要判断当前是否有弹窗抢占交互 */
 const modalStore = useModalStore()
 /**
- * 周期报告 store 实例：`Alt+←` / `Cmd+[` 要读来源上下文判断能否"回到刚才读的报告"
+ * 来源 store 实例：`Alt+←` / `Cmd+[` 要读来源快照判断能否"回到刚才那个来源"
  *
- * 只读 `sourceContext`、只调 `backToReport()`——返回成败的判定在弹窗那边，这里不碰。
+ * 只读 `current`、只调 `back()`——返回成败的判定在弹窗那边，这里不碰。
+ * 生成期等临时故障由 `back()` 以 `{ ok: false, kind: 'transient' }` 回来，
+ * 这里负责给一次 toast（与栏上按钮点了同一条反馈）。
  */
-const reportStore = useReportPeriodStore()
+const originTrail = useOriginTrailStore()
+/** toast：只为"返回暂时不行"这类需要解释的失败 */
+const toast = useToastStore()
 
 /** 设置模态显隐状态，由 `open-settings` 窗口事件置为 true */
 const showSettings = ref(false)
@@ -487,7 +492,7 @@ function isTextEntryTarget(target: EventTarget | null): boolean {
 }
 
 /**
- * 回到刚才读的报告（正文栏「上下文栏」的键盘等价物）
+ * 回到来源（正文栏「上下文栏」的键盘等价物）
  *
  * # 为什么单独判定、不进 `SHORTCUTS` 表
  * 那张表按 `KeyboardEvent.key` 逐字比较，`Alt+←` 的 `key` 是 `ArrowLeft`。
@@ -496,23 +501,30 @@ function isTextEntryTarget(target: EventTarget | null): boolean {
  *
  * # 触发条件（须全部满足）
  * 1. 主屏在文章视图 —— 其他视图下正文栏本身不渲染，栏不可见；
- * 2. 有来源上下文且未失效 —— 失效态没有可回的目标；
+ * 2. 有来源记录且未失效 —— 失效态没有可回的目标；
  * 3. 焦点不在输入类元素里 —— 与单字母快捷键同一条规矩；
  * 4. 没有弹窗打开 —— 与鼠标路径等价：栏被弹窗盖住时点不到，"看不见的入口不该响应"。
+ *
+ * # 返回是异步的
+ * `back()` 要读一次 store（是否需要临时阻塞）再派发打开意图。这里不 await：
+ * 键盘处理必须同步返回 `true`（调用方据此 `preventDefault` 与提前 return），
+ * 失败原因在 then 里 toast。
  *
  * @param e - 键盘事件
  * @returns 命中并已处理时 true（调用方据此提前返回）
  */
-function handleBackToReport(e: KeyboardEvent): boolean {
+function handleBackToOrigin(e: KeyboardEvent): boolean {
   if (!isBackToReportKey(e)) return false
   if (uiStore.mainView !== 'articles') return false
-  const ctx = reportStore.sourceContext
-  if (!ctx || ctx.stale) return false
+  const origin = originTrail.current
+  if (!origin || origin.stale !== null) return false
   if (isTextEntryTarget(e.target)) return false
   if (anyDialogOpen.value || modalStore.activeModal) return false
   // 仅对真正接管的组合键阻止默认行为（Alt+← 在部分平台上等同"后退"）
   e.preventDefault()
-  reportStore.backToReport()
+  void originTrail.back().then(result => {
+    if (!result.ok && result.kind === 'transient') toast.show(result.message)
+  })
   return true
 }
 
@@ -526,8 +538,8 @@ function handleBackToReport(e: KeyboardEvent): boolean {
  * 4. 没有弹窗打开 —— 否则弹窗里按 `m` 会在用户看不见列表的情况下触发"全部已读"。
  *
  * Esc 退出专注模式的判断放在最前，因为它不涉及修饰键冲突，且应当在任何情况下可用。
- * `Alt+←` / `Cmd+[`（回到刚才读的报告）紧随其后、**在组合键放行之前**判定，
- * 理由见 {@link handleBackToReport}。
+ * `Alt+←` / `Cmd+[`（回到来源）紧随其后、**在组合键放行之前**判定，
+ * 理由见 {@link handleBackToOrigin}。
  *
  * # 弹窗判定为何读全局计数
  * `anyDialogOpen`（`utils/dialogStack`）由所有 `BaseModal` 弹窗在开合时登记，计数器
@@ -561,9 +573,9 @@ function handleKeydown(e: KeyboardEvent) {
       return
     }
   }
-  // 回到刚才读的报告（Alt+← / Cmd+[）：必须在下面「组合键直接放行」之前判定，
-  // 否则会先被那条 `return` 放行掉（理由见 handleBackToReport 的注释）
-  if (handleBackToReport(e)) return
+  // 回到来源（Alt+← / Cmd+[）：必须在下面「组合键直接放行」之前判定，
+  // 否则会先被那条 `return` 放行掉（理由见 handleBackToOrigin 的注释）
+  if (handleBackToOrigin(e)) return
   // 组合键直接放行（不拦截、也不阻止默认行为）
   if (e.metaKey || e.ctrlKey || e.altKey) return
 
