@@ -419,9 +419,32 @@ watch(
     clickedRecently = false
     // 等active 类落位再测量：此时 selectedArticle 已是新值，
     // querySelector('.article-item.active') 才能取到本次点击的那一项。
-    void nextTick(() => syncCapsule(sliding))
+    void nextTick(() => {
+      syncCapsule(sliding)
+      // 键盘 ↑/↓ 翻条目时选中会悄悄跑出可视区，列表得自己跟上——
+      // 否则出现"选中了却看不见选中在哪"。最小移动，已可见时不动。
+      revealActive()
+    })
   },
 )
+
+/**
+ * 把当前选中项滚进视野（最小移动）
+ *
+ * 与 `onRevealInList` 的分工：那条是**外部跳转**（研究台 / 仪表盘 / 命令面板）
+ * 派发来的显式定位，要滑胶囊 + 播脉冲；本函数只管"选中态变了，别让它跑到屏幕外"，
+ * 是列表自身的被动跟随。
+ *
+ * `block: 'nearest'`：只在被遮住时补上那一点，已完整可见就一动不动——连按 ↑/↓
+ * 时列表才不会来回跳。
+ *
+ * @returns 无返回值
+ */
+function revealActive(): void {
+  const body = articleBodyRef.value
+  if (!body) return
+  body.querySelector<HTMLElement>('.article-item.active')?.scrollIntoView({ block: 'nearest' })
+}
 
 /** 文章列表滚动区（滑动胶囊的定位基准） */
 const articleBodyRef = ref<HTMLElement | null>(null)
@@ -593,15 +616,18 @@ watch(baseScope, () => {
 })
 
 /**
- * 响应命令面板的跳转：把选中胶囊滑到目标文章并播一次定位脉冲
+ * 响应 `reveal-in-list`：把目标文章滚进视野、把胶囊滑过去、播一次定位脉冲
  *
- * 目标文章可能不在**当前已加载的分页**里（命令面板搜的是全库）。此时条目不存在，
- * 只能把胶囊隐藏——正文区照样会渲染该文章，定位反馈由订阅栏那一侧承担。
+ * 派发方是 `utils/navigateToArticle`（研究工作台三个入口、实体仪表盘、命令面板
+ * 共用那一条编排）。本组件只负责"怎么定位"，不该知道是谁点的。
  *
- * @param e - `command-palette-jump` 事件，detail 含 articleId
+ * 目标文章可能不在**当前已加载的分页**里。此时条目不存在，只能把胶囊隐藏——
+ * 正文区照样会渲染该文章，定位反馈由订阅栏那一侧承担。
+ *
+ * @param e - `reveal-in-list` 事件，detail 含 articleId
  * @returns 无返回值
  */
-function onPaletteJump(e: Event) {
+function onRevealInList(e: Event) {
   const articleId = (e as CustomEvent<{ articleId: number }>).detail?.articleId
   if (typeof articleId !== 'number') return
   const body = articleBodyRef.value
@@ -641,89 +667,16 @@ function clearSearch() {
   articlesStore.searchResults = []
 }
 
-/**
- * 响应实体仪表盘的 source 跳转：切订阅源 → 打开文章 → 定位高亮
- *
- * # 与命令面板 `onPaletteJump` 的分工
- * 那条协议只负责「胶囊滑到哪」，因为派发方 `CommandPalette.jump` 已经把
- * 切源与选中态都做完了。本条是**完整编排**——仪表盘只管派发一个文章 id，
- * 剩下的三步在这里一次做完，避免把跳转逻辑散进仪表盘（它不该知道三栏怎么实现）。
- *
- * # 为什么需要先切源
- * `selectArticle` 只在**当前已加载列表**里找，找不到就直接取详情并写入
- * `selectedArticle`——正文区确实会渲染，但中栏列表仍停在原订阅源，
- * 目标条目根本不在其中，"高亮文章列表"无从谈起；左栏也不会高亮对应订阅。
- * 故必须先 `selectFeed`，等列表重载后再定位。
- *
- * @param e - `dashboard-jump` 事件，detail 含 articleId
- * @returns 无返回值；副作用为切源、打开文章、派发定位事件
- */
-async function onDashboardJump(e: Event) {
-  const articleId = (e as CustomEvent<{ articleId: number }>).detail?.articleId
-  if (typeof articleId !== 'number') return
-
-  // ① 取文章详情以得知所属订阅源。仪表盘里的文章未必在当前列表/分页内，
-  //    故不能只查 displayArticles；articleId 为 0（理论上不会出现）时直接中止。
-  if (articleId <= 0) return
-  const article = await articlesStore.loadArticle(articleId)
-  if (!article) {
-    console.error('仪表盘跳转：文章不存在或已被清理, id =', articleId)
-    return
-  }
-
-  // ② 切到该文所属订阅源。不切则两栏都停在原范围，目标条目不在列表里。
-  //    切源会经 ArticleColumn 的 scopeKey watch 触发列表重载（异步），
-  //    这里既不重复调 loadArticles（会多打一次后端），也不能只等一个 nextTick
-  //    ——那时列表还没回来。故轮询等目标条目真正出现在 DOM 里，
-  //    超时则放弃定位（正文区已渲染，定位只是锦上添花，不该阻塞跳转）。
-  const target = feedsStore.feeds.find((f) => f.id === article.feed_id)
-  if (target && feedsStore.selectedFeed?.id !== article.feed_id) {
-    feedsStore.selectFeed(target)
-    await waitForItem(`[data-feed-id="${article.feed_id}"]`, '.feed-item')
-    await waitForItem(`[data-article-id="${article.id}"]`, '.article-item')
-  }
-
-  // ③ 写入选中态：乐观更新让列表高亮同步生效，正文区开始渲染。
-  await articlesStore.selectArticle(article.id)
-
-  // ④ 最后派发定位事件：两栏各自把胶囊滑到目标并播一次脉冲。
-  //    放在最后是必须的——事件早于选中态更新的话，宿主量到的还是旧位置。
-  window.dispatchEvent(
-    new CustomEvent('command-palette-jump', { detail: { feedId: article.feed_id, articleId: article.id } }),
-  )
-}
-
-/**
- * 轮询等待某个条目真正出现在 DOM 里
- *
- * 切订阅源会触发列表异步重载（走 IPC），`nextTick` 早于数据返回，
- * 此刻量位置只会拿到空列表。等它真正出现再定位，胶囊才不会滑到顶部。
- *
- * @param attr - 形如 `[data-article-id="12"]` 的属性选择器
- * @param itemClass - 条目类名（订阅源 `.feed-item` / 文章 `.article-item`）
- * @param timeoutMs - 最长等待；超时后静默返回，不阻塞跳转
- * @returns 无返回值
- */
-async function waitForItem(attr: string, itemClass: string, timeoutMs = 1200): Promise<void> {
-  const deadline = performance.now() + timeoutMs
-  while (performance.now() < deadline) {
-    if (document.querySelector(`${itemClass}${attr}`)) return
-    await new Promise<void>((r) => requestAnimationFrame(() => r()))
-  }
-}
-
 /** 挂载时首次取数：未选中任何源时加载全部文章统一时间线（启动默认视图） */
 onMounted(async () => {
-  window.addEventListener('command-palette-jump', onPaletteJump)
-  window.addEventListener('dashboard-jump', onDashboardJump)
+  window.addEventListener('reveal-in-list', onRevealInList)
   if (!feedsStore.selectedFeed) {
     await articlesStore.loadArticles(null)
   }
 })
 
 onUnmounted(() => {
-  window.removeEventListener('command-palette-jump', onPaletteJump)
-  window.removeEventListener('dashboard-jump', onDashboardJump)
+  window.removeEventListener('reveal-in-list', onRevealInList)
 })
 </script>
 

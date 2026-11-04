@@ -134,7 +134,7 @@
  * 1. **切订阅源** —— 不切的话两栏都停在当前范围，目标条目根本不在列表里；
  * 2. **等列表就绪** —— 切源触发 ArticleColumn 经 scopeKey watch 异步重载，
  *    `nextTick` 只覆盖 Vue 渲染、覆盖不到后端往返，故用 rAF 轮询等元素进 DOM；
- * 3. **派发 `command-palette-jump`** —— 必须放在最后：事件早于选中态更新的话，
+ * 3. **交给 `navigateToArticle`** —— 切范围与定位都收在那条编排里，事件派发放在最后：事件早于选中态更新的话，
  *    两栏量到的还是旧位置，胶囊停在原地不动。
  *
  * 定位用事件而非直接跨组件调 ref，是让两栏各自在 nextTick 后处理
@@ -147,6 +147,7 @@ import { useArticlesStore } from '@/stores/articles'
 import { useFeedsStore } from '@/stores/feeds'
 import { formatDistance } from '@/utils/format'
 import { requestThesisOpen } from '@/utils/thesisJump'
+import { navigateToArticle } from '@/utils/navigateToArticle'
 import type { Article } from '@/types'
 
 /** 笔记类命中（与 Rust `research::search::NoteHit` 对齐，出参为 camelCase） */
@@ -768,32 +769,9 @@ function snippet(a: Article): string {
 }
 
 /**
- * 轮询等待某个条目出现在 DOM 中
- *
- * 切源 / 换范围会触发列表异步重载（后端 invoke），而 `nextTick` 只等一次
- * Vue 渲染，无法覆盖后端往返。定位胶囊需要**元素真的在 DOM 里**才能量到
- * 几何，故这里以 rAF 轮询直到出现或超时。
- *
- * 超时是正常路径而非异常：命令面板能跳到未加载的文章（正文照样渲染），
- * 此时定位本就不成立，不该阻塞跳转、更不该报错。
- *
- * @param attr - 目标元素上的数据属性值，形如 `data-article-id="12"`
- * @param itemClass - 条目类名（订阅源 `.feed-item` / 文章 `.article-item`）
- * @param timeoutMs - 最长等待；超时后静默返回
- * @returns 无返回值
- */
-async function waitForItem(attr: string, itemClass: string, timeoutMs = 1200): Promise<void> {
-  const deadline = performance.now() + timeoutMs
-  while (performance.now() < deadline) {
-    if (document.querySelector(`${itemClass}${attr}`)) return
-    await new Promise<void>((r) => requestAnimationFrame(() => r()))
-  }
-}
-
-/**
  * 跳转到当前高亮项
  *
- * 写 `selectedArticle` 触发正文区渲染；再派发 `command-palette-jump`
+ * 由 `navigateToArticle` 切范围、写选中态触发正文渲染，最后派发 `reveal-in-list`
  * 让两栏的胶囊各自播一次定位脉冲。派发而非直接调 ref，是因为两栏可能
  * 尚未渲染出目标条目（首次展开某分组等），由它们在 nextTick 后自行处理更稳。
  *
@@ -823,27 +801,9 @@ async function jump() {
 
   const a = item.article
 
-  // ① 先切到该文所属的订阅源 —— 不切的话，两栏都停在当前范围，
-  //    目标条目根本不在列表里，后续定位自然无从谈起。
-  const target = feedsStore.feeds.find((f) => f.id === a.feed_id)
-  if (target && feedsStore.selectedFeed?.id !== a.feed_id) {
-    feedsStore.selectFeed(target)
-    // 切源会经ArticleColumn 的 scopeKey watch 触发列表重载（异步）。
-    // 这里既不重复调 loadArticles（会多打一次后端），也不能只等一个
-    // nextTick —— 那时列表还没回来。故轮询等目标条目真正出现在 DOM 里，
-    // 超时则放弃定位（正文区已渲染，定位只是锦上添花，不该阻塞跳转）。
-    await waitForItem(`[data-feed-id="${a.feed_id}"]`, `.feed-item`)
-    await waitForItem(`[data-article-id="${a.id}"]`, `.article-item`)
-  }
-
-  // ② 再写入选中态。乐观更新已让它同步生效，故此刻 active 类已就位。
-  await articlesStore.selectArticle(a.id)
-
-  // ③ 最后派发定位事件：两栏各自把胶囊滑到目标并播一次脉冲。
-  //    放在最后是必须的——事件早于选中态更新的话，宿主量到的还是旧位置。
-  window.dispatchEvent(
-    new CustomEvent('command-palette-jump', { detail: { feedId: a.feed_id, articleId: a.id } }),
-  )
+  // 切范围 → 打开 → 等条目 → 派发定位，整条编排在 utils/navigateToArticle 里，
+  // 与研究工作台、实体仪表盘共用同一条路径（这里曾各写一份，且都漏了清标签筛选）。
+  await navigateToArticle(a.id)
 }
 
 /**

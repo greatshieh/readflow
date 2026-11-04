@@ -254,6 +254,7 @@ import { useEntitiesStore } from '@/stores/entities'
 import { useEventTypesStore } from '@/stores/eventTypes'
 import { useToastStore } from '@/stores/toast'
 import { entityTypeLabel as labelOf } from '@/utils/entityLabels'
+import { navigateToArticle } from '@/utils/navigateToArticle'
 import type { EventSentiment, FinancialData, CrossReferenceEntry, ArticlePreview, ResearchEventWithContext } from '@/types'
 
 const props = defineProps<{
@@ -403,8 +404,8 @@ async function expand() {
  * # 交互契约（需求：source 跳转但不关闭仪表盘）
  * 1. 先收缩（`collapsed=true`）——弹窗只是隐藏，组件不销毁，
  *    数据与滚动位置原样保留，用户可随时用右上角按钮召回；
- * 2. 派发 `dashboard-jump` 事件，由 ArticleColumn 消费：
- *    切订阅源 → 展开对应折叠分组 → 打开文章 → 滚动并高亮该条目；
+ * 2. 交给 `utils/navigateToArticle`：切订阅源 → 打开文章 → 等条目出现 →
+ *    滚动并高亮该条目（研究工作台与命令面板走的是同一条路径）；
  * 3. 真正关闭仍只走关闭钮或 Esc（收缩态下 BaseModal 已出栈、
  *    它自身的 Esc 失效，故由本组件的 keydown 监听接管，见 `onKeydown`）。
  *
@@ -412,32 +413,25 @@ async function expand() {
  * `ResearchEvent` 自带 `article_id`（事件与来源文章的关联键），
  * 直接用 id 让订阅栏能精确定位所属源、用列表能精确定位条目；
  * 若传链接则订阅源无从得知，"高亮对应订阅"这条需求就无法满足。
- *
- * 用 window CustomEvent 而非直接调 store：仪表盘可能来自研究工作台/关系图等多入口，
- * 事件解耦后各订阅方只关心自己那部分，避免仪表盘硬依赖三栏布局的实现细节
- * （与命令面板的 `command-palette-jump` 同一思路）。
  */
 function openArticle(ev: ResearchEventWithContext) {
   if (!ev.article_link) return
   collapsed.value = true
-  window.dispatchEvent(
-    new CustomEvent('dashboard-jump', { detail: { articleId: ev.article_id, articleLink: ev.article_link } })
-  )
+  void navigateToArticle(ev.article_id)
 }
 
 /**
  * 打开关联文章区的一条文章（同 `openArticle` 的跳转契约，只是入参形态不同）
  *
  * 关联文章走的是 `ArticlePreview`（含文章 id 与原文链接，但**不含 feed_id**——
- * 后端 `list_articles_by_entity` 只回预览字段）。因此这里只派发文章 id：
- * 由 ArticleColumn 在列表里定位该文章，订阅源则由 `selectArticle` 内部
- * 依据文章自身的 feed_id 自动切换（见 stores/articles.ts），
+ * 后端 `list_articles_by_entity` 只回预览字段）。因此这里只传文章 id：
+ * 订阅源由 `navigateToArticle` 取详情后依据文章自身的 `feed_id` 切换，
  * 避免为一次跳转在预览结构上新增字段（预览结构是后端 SQL 定死的）。
  */
 function openArticleById(a: ArticlePreview) {
   if (!a.link) return
   collapsed.value = true
-  window.dispatchEvent(new CustomEvent('dashboard-jump', { detail: { articleId: a.id } }))
+  void navigateToArticle(a.id)
 }
 
 /** 情感 → 中文标签 */

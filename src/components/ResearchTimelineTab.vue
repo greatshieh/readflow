@@ -223,12 +223,12 @@ import AppSelect, { type SelectOption } from './AppSelect.vue'
 import BaseModal from './BaseModal.vue'
 import { useResearchStore } from '@/stores/research'
 import { useEntitiesStore } from '@/stores/entities'
-import { useArticlesStore } from '@/stores/articles'
 import { useEventTypesStore } from '@/stores/eventTypes'
 import { useOriginTrailStore, type OriginRestore, type OriginRestoreResult } from '@/stores/originTrail'
 import { useThesesStore, type EvidenceStance } from '@/stores/theses'
 import { useToastStore } from '@/stores/toast'
 import { timelineLabel } from '@/utils/originLabel'
+import { navigateToArticle } from '@/utils/navigateToArticle'
 import { restoreScrollTop } from '@/utils/scrollRestore'
 import { showConfirm } from '@/stores/modal'
 import type { ResearchEventWithContext } from '@/types'
@@ -245,7 +245,6 @@ const emit = defineEmits<{
 
 const researchStore = useResearchStore()
 const entitiesStore = useEntitiesStore()
-const articlesStore = useArticlesStore()
 const eventTypesStore = useEventTypesStore()
 const originTrail = useOriginTrailStore()
 const thesesStore = useThesesStore()
@@ -624,7 +623,8 @@ async function openSourceArticle(ev: ResearchEventWithContext) {
     stale: null,
   })
   emit('close')
-  await articlesStore.selectArticle(ev.article_id)
+  // 切源 + 打开 + 定位：与报告引用、论点证据、仪表盘、命令面板同一条编排
+  await navigateToArticle(ev.article_id)
 }
 
 /**

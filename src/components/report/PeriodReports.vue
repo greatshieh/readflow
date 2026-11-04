@@ -164,7 +164,7 @@ import { showConfirm } from '@/stores/modal'
 import { useReportPeriodStore, type PeriodSummary, type PeriodSource } from '@/stores/reportPeriod'
 import { useOriginTrailStore } from '@/stores/originTrail'
 import { reportLabel } from '@/utils/originLabel'
-import { useArticlesStore } from '@/stores/articles'
+import { navigateToArticle } from '@/utils/navigateToArticle'
 import { useUiStore } from '@/stores/ui'
 import { useToastStore } from '@/stores/toast'
 import { periodKindLabel, type PeriodKind } from '@/utils/periodWindow'
@@ -185,7 +185,6 @@ const emit = defineEmits<{
 
 const store = useReportPeriodStore()
 const originTrail = useOriginTrailStore()
-const articlesStore = useArticlesStore()
 const uiStore = useUiStore()
 const toast = useToastStore()
 
@@ -406,7 +405,8 @@ async function onOpenArticle(source: PeriodSource, meta: { scrollTop: number }) 
     stale: null,
   })
   uiStore.setMainView('articles')
-  await articlesStore.selectArticle(source.articleId)
+  // 切源 + 打开 + 定位：与时间线来源、论点证据、仪表盘、命令面板同一条编排
+  await navigateToArticle(source.articleId)
   emit('close')
 }
 

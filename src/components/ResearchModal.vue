@@ -175,7 +175,7 @@ import { useOriginTrailStore, type OriginReturnTicket } from '@/stores/originTra
 import { useThesesStore } from '@/stores/theses'
 import { consumeThesisOpen } from '@/utils/thesisJump'
 import { originStaleText, thesisLabel, type ThesisLabelInput } from '@/utils/originLabel'
-import { useArticlesStore } from '@/stores/articles'
+import { navigateToArticle } from '@/utils/navigateToArticle'
 import { useToastStore } from '@/stores/toast'
 
 const props = defineProps<{
@@ -193,7 +193,6 @@ const uiStore = useUiStore()
 const reportStore = useReportPeriodStore()
 const originTrail = useOriginTrailStore()
 const thesesStore = useThesesStore()
-const articlesStore = useArticlesStore()
 const toast = useToastStore()
 
 /** 时间线页签：返回时由外壳调它的 `restoreFrom`（展开项 + 滚动位置） */
@@ -453,7 +452,8 @@ async function onOpenThesisArticle(
   })
   emit('close')
   uiStore.setMainView('articles')
-  await articlesStore.selectArticle(articleId)
+  // 切源 + 打开 + 定位：与报告引用、时间线来源、仪表盘、命令面板同一条编排
+  await navigateToArticle(articleId)
 }
 
 /**

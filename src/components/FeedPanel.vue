@@ -1004,7 +1004,7 @@ function handleToggleFeedPanel() {
  *
  * 弹窗挂在本组件模板里、由局部状态 `showAdd` 控制，派发方 `App.vue` 够不着。
  * 走 window 事件而非提升开关到 store：与既有的 `toggle-feed-panel`、
- * `command-palette-jump` 同构，都是"本组件自持的瞬时展示态"。
+ * `reveal-in-list` 同构，都是"本组件自持的瞬时展示态"。
  *
  * # 为什么不需要防重
  * 弹窗一旦打开，`dialogStack` 计数立刻 +1，`App.vue` 的全局快捷键守卫
@@ -1018,38 +1018,52 @@ function handleOpenAddFeed() {
 }
 
 /**
- * 响应命令面板的跳转：把胶囊滑到目标订阅源并播一次定位脉冲
+ * 响应 `reveal-in-list`：把目标订阅源滚进视野、把胶囊滑过去、播一次定位脉冲
  *
- * 目标源可能落在**已折叠**的分组里，故必须先展开那一组再测位置——
- * 否则量到的是 0 高度，胶囊会滑到列表顶部。
+ * 派发方是 `utils/navigateToArticle`（研究工作台 / 实体仪表盘 / 命令面板共用）。
+ * 目标源可能落在**已折叠**的分组里，故必须先展开那一组再测位置——否则量到的
+ * 是 0 高度，滚动与胶囊都会落到列表顶部。
  *
- * @param e - `command-palette-jump` 事件，detail 含 feedId
+ * 用 `block: 'nearest'` 而非居中：订阅栏多数时候一屏装得下，定位不该为了一次
+ * 跳转把整栏推到别处；只有目标真的被遮住时才补上那一点。
+ *
+ * @param e - `reveal-in-list` 事件，detail 含 feedId
  * @returns 无返回值
  */
-async function onPaletteJump(e: Event) {
+async function onRevealInList(e: Event) {
   const feedId = (e as CustomEvent<{ feedId: number }>).detail?.feedId
   if (typeof feedId !== 'number') return
 
   // 找出目标源所属分组，展开它（若已展开则 next 保持原样，Set 替换仍会触发一次重算）
   const target = feedsStore.feeds.find((f) => f.id === feedId)
+  let expanded = false
   if (target) {
     const key = target.folder_id ? 'f' + target.folder_id : 'uncat'
     if (collapsed.value.has(key)) {
       const next = new Set(collapsed.value)
       next.delete(key)
       collapsed.value = next
+      expanded = true
     }
-    // 展开动画要跑完（280ms），胶囊才量得到最终位置；这里等一小段再落位
-    await new Promise((r) => setTimeout(r, 300))
   }
 
   const list = feedListRef.value
-  const capsule = feedCapsule.value
-  if (!list || !capsule) return
-  const el = list.querySelector<HTMLElement>(`.feed-item[data-feed-id="${feedId}"]`)
+  if (!list) return
+  const selector = `.feed-item[data-feed-id="${feedId}"]`
+  if (!list.querySelector(selector)) return
+
+  if (expanded) {
+    // 展开动画 280ms（见 `.folder-body` 的 transition）：动画中途量到的是被压扁的
+    // 高度，等于折叠前的 0，滚动会落到错位置。等它跑完再落位。
+    await new Promise((r) => setTimeout(r, 300))
+  }
+
+  // 展开后分组内容是重新渲染的，先前那个节点可能已作废，故重新取一次
+  const el = list.querySelector<HTMLElement>(selector)
   if (!el) return
-  capsule.sync(el)
-  capsule.pulse()
+  el.scrollIntoView({ block: 'nearest' })
+  feedCapsule.value?.sync(el)
+  feedCapsule.value?.pulse()
 }
 
 /**
@@ -1059,7 +1073,7 @@ async function onPaletteJump(e: Event) {
  * 选择在 onMounted 注册而非模块顶层执行，可确保组件销毁前能成对移除。
  *
  * @returns 无返回值
- * @副作用 在 window 上注册 `toggle-feed-panel` / `command-palette-jump` / `open-add-feed` / `open-research` 监听
+ * @副作用 在 window 上注册 `toggle-feed-panel` / `reveal-in-list` / `open-add-feed` / `open-research` 监听
  */
 
 /**
@@ -1080,7 +1094,7 @@ onMounted(() => {
   // 标签分区同样需要在挂载时取一次目录；失败仅在 store 里记 error，不影响订阅源列表
   tagsStore.loadTags()
   window.addEventListener('toggle-feed-panel', handleToggleFeedPanel)
-  window.addEventListener('command-palette-jump', onPaletteJump)
+  window.addEventListener('reveal-in-list', onRevealInList)
   window.addEventListener('open-add-feed', handleOpenAddFeed)
   window.addEventListener('open-research', handleOpenResearch)
 
@@ -1166,7 +1180,7 @@ watch(
 
 onUnmounted(() => {
   window.removeEventListener('toggle-feed-panel', handleToggleFeedPanel)
-  window.removeEventListener('command-palette-jump', onPaletteJump)
+  window.removeEventListener('reveal-in-list', onRevealInList)
   window.removeEventListener('open-add-feed', handleOpenAddFeed)
   window.removeEventListener('open-research', handleOpenResearch)
   document.removeEventListener('click', onDocClick)
