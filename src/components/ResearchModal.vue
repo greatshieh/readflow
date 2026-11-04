@@ -1,8 +1,17 @@
 <template>
-  <!-- 研究工作台弹窗外壳：四个页签（时间线 / 报告 / 实体 / 论点）的容器与切换。
+  <!-- 研究工作台弹窗外壳：五个页签（时间线 / 报告 / 实体 / 覆盖 / 论点）的容器与切换。
        layout="side"：固定高度弹窗，切页签不再跳变；tab 竖排在左列。
+       close-on-overlay=false：这是长会话工作台，误关要重新点 FAB 才回得来（无快捷键），
+       而遮罩点击只是"点偏了"，不是意图——出口只留 Esc 与右上角 ✕（见 BaseModal 注释）。
        关系图已不在此处——弹窗画布太小，只保留主屏全宽展示（入口见 FeedPanel 工具栏与 D 键）。 -->
-  <BaseModal :open="open" title="研究工作台" layout="side" side-wide @close="close">
+  <BaseModal
+    :open="open"
+    title="研究工作台"
+    layout="side"
+    side-wide
+    :close-on-overlay="false"
+    @close="close"
+  >
     <!-- 左列：标题 + 纵排页签。关闭钮由 BaseModal 的 side 布局统一放在面板右上角 -->
     <aside class="side-nav">
       <div class="side-head">

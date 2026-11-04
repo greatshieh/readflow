@@ -46,6 +46,15 @@
  * 这是**迟滞**而不是禁用——过了窗口行为与原来完全一致；Esc 与 ✕ 从不迟滞，
  * 它们是明确意图，给它们加延迟只会让人觉得卡。
  *
+ * # 长会话工作台根本不认遮罩点击（`closeOnOverlay=false`）
+ * 迟滞只能挡住"刚打开那一瞬"，挡不住**落点误差**：`side-wide` 面板是
+ * min(1000px, 92vw) × min(86vh, 720px)，在 1280×800 的屏上，面板上下**各只留 56px**
+ * 遮罩。想点右上角的 ✕ 或顶部页签时手指偏上十几像素，落点就已经在遮罩上——那不是手滑，
+ * 是正常误差。而遮罩点击表达的是"点在面板外面一点点"这个**位置信号**，不是意图；
+ * Esc 是按下一个键、✕ 是点中一个控件，那才是意图。
+ * 故长会话弹窗（研究工作台 / 设置）只保留 Esc 与 ✕ 两个出口。短弹窗（选标签、确认、
+ * 导出菜单）仍保留遮罩关闭——对它们那是便利，禁掉只会变笨。
+ *
  * # 与全局确认框的优先级
  * 全局确认框（`GlobalModal`，z-index 9999）可能叠在弹窗之上（如弹窗内点删除）。
  * 此时 Esc 属于最上层，本组件检出 `modalStore.activeModal` 后主动让路，
@@ -65,9 +74,11 @@
  * * `sideWide` - 仅在 `layout="side"` 下生效：把面板从 880 加宽到 1000。
  *   给研究工作台的报告页用（正文 + 引用源右栏需要两列），设置弹窗保持 880。
  *   **不要直接改 `.layout-side` 的宽度**——那是两个宿主共用的，改一处会连带改另一处。
+ * * `closeOnOverlay` - 点遮罩空白处是否关闭，默认 `true`。两个 `layout="side"` 宿主
+ *   传 `false`（见上）。
  *
  * # 事件
- * * `close` - 用户按下 Esc 或点击遮罩空白处；是否真的关闭由父组件决定
+ * * `close` - 用户按下 Esc，或在允许时点击遮罩空白处；是否真的关闭由父组件决定
  */
 
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
@@ -88,8 +99,15 @@ const props = withDefaults(
     sideWide?: boolean
     /** 全局确认框变体（GlobalModal 专用）：z-index 压过普通弹窗，且键盘事件不向 activeModal 让路 */
     global?: boolean
+    /**
+     * 点击遮罩空白处是否关闭（默认 true）
+     *
+     * 长会话型弹窗（`layout="side"` 的研究工作台 / 设置）传 false：它们被误关的代价是
+     * 「回到主屏、还得重新进来一次」，而遮罩点击本身不是明确意图。短弹窗保持 true。
+     */
+    closeOnOverlay?: boolean
   }>(),
-  { size: 'lg', layout: 'default', sideWide: false },
+  { size: 'lg', layout: 'default', sideWide: false, closeOnOverlay: true },
 )
 
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -130,12 +148,16 @@ let openedAt = 0
 /**
  * 遮罩被按下：关闭弹窗，但打开初期的手滑不算
  *
- * 语义边界要说清：这是**防手滑迟滞**，不是"禁止点遮罩关闭"。过了 {@link OVERLAY_GUARD_MS}
- * 之后，行为与改动前完全一致。
+ * 两道关：
+ * 1. `closeOnOverlay === false`（长会话工作台）→ 直接不响应。语义边界：不是"禁用手滑迟滞"，
+ *    是**这个弹窗压根不认遮罩点击**——它的出口只有 Esc 与宿主标题栏的 ✕。
+ *    理由见 props 里 `closeOnOverlay` 的注释。
+ * 2. 打开后 {@link OVERLAY_GUARD_MS} 内 → 丢掉，挡"点开入口的余震"。
  *
- * @returns 无返回值；超过迟滞窗口时 `emit('close')`
+ * @returns 无返回值；满足条件时 `emit('close')`
  */
 function onOverlayMousedown(): void {
+  if (!props.closeOnOverlay) return
   if (performance.now() - openedAt < OVERLAY_GUARD_MS) return
   emit('close')
 }

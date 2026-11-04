@@ -1,10 +1,12 @@
 <template>
-  <!-- 设置模态层：open 为 true 时显示；遮罩点击、Esc 与焦点陷阱由 BaseModal 提供。
+  <!-- 设置模态层：open 为 true 时显示；Esc 与焦点陷阱由 BaseModal 提供。
        本组件只是外壳：左列（标题 + 纵排 tab）+ 右列（内容滚动区 + 底部操作区），
        五个 tab 各自独立成组件。 -->
   <!-- layout="side"：固定高度弹窗（BaseModal 提供），内部排成「左 tab 列 + 右内容列」，
-       切 tab 时弹窗高度不再跳变。 -->
-  <BaseModal :open="open" title="设置" layout="side" @close="close">
+       切 tab 时弹窗高度不再跳变。
+       close-on-overlay=false：设置是长表单，面板四周留白只有 7vh，点偏一像素就整层关掉、
+       已填未保存的项全丢。出口只留 Esc 与右上角 ✕（见 BaseModal 注释）。 -->
+  <BaseModal :open="open" title="设置" layout="side" :close-on-overlay="false" @close="close">
     <!-- 左列：标题 + 纵排 tab。关闭钮由 BaseModal 的 side 布局统一放在面板右上角 -->
     <aside class="side-nav">
       <div class="side-head">
