@@ -16,7 +16,8 @@
 //! 分批两阶段质量更好，但 2–4 分钟的等待会毁掉日报的使用场景（决策⑫）。
 //!
 //! # 参考
-//! 交互与数据模型见 `deliverables/design/report-center/README.md` §5 / §6。
+//! 交互与数据模型的定稿设计记录：本地 `deliverables/design/report-center/README.md` §5 / §6
+//! （该目录不随仓库分发，clone 后不存在属正常现象）。
 
 use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Utc};
 use serde::{Deserialize, Serialize};

@@ -25,7 +25,16 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from '
 import { join } from 'node:path'
 
 const distAssets = 'dist/assets'
-const target = join('deliverables', 'app.css')
+const targetDir = 'deliverables'
+const target = join(targetDir, 'app.css')
+
+// `deliverables/` 是本地留存的设计交付页，不入库。别人 clone 下来没有这个目录，
+// 此时必须**正常退出而不是报错**——否则 `npm run build:frontend` 在他们机器上会失败，
+// 而失败原因跟构建本身毫无关系。
+if (!existsSync(targetDir)) {
+  console.log(`[sync-css] 没有 ${targetDir}/（设计交付页不入库），跳过`)
+  process.exit(0)
+}
 
 if (!existsSync(distAssets)) {
   console.error(`[sync-css] 找不到 ${distAssets}/，请先跑 vite build`)

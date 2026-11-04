@@ -125,7 +125,8 @@ src-tauri/src/
   icons/                  应用图标（regen-icons.sh 可重出全套）
 ```
 
-产品定位与关键设计取舍见 [`deliverables/design/`](deliverables/design/)（弹窗体系、周期报告、论点台账的定稿记录）。
+产品定位与关键设计取舍见本地设计记录 `deliverables/design/`（弹窗体系、周期报告、论点台账的定稿理由）。
+该目录属于开发过程产物，**不随仓库分发**，clone 后不存在属正常现象。
 
 ---
 
