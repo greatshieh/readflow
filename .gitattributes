@@ -1,0 +1,4 @@
+# 交付页的样式是构建产物（由 scripts/sync-deliverables-css.mjs 自动同步），
+# 不是手写源码：每次改样式它都会整体变化，让人看 diff 毫无意义。
+# 标记为生成物 + 不参与文本 diff，评审时就不会被几百 KB 的行淹没。
+deliverables/app.css -diff linguist-generated=true
