@@ -484,6 +484,12 @@ function openIdentity(entity: typeof entitiesStore.entities[0]) {
 async function handleIdentityChanged(message: string) {
   // 合并后上一轮候选里可能有已被删掉的实体，继续展示会点到空
   duplicates.value = []
+  // 改名不会关弹窗，而 `identityEntity` 存的是旧对象引用：不换成 store 里的新对象，
+  // 弹窗标题与行内名字会停在改名前的写法（store 已就地替换了那一项）
+  const openId = identityEntity.value?.id
+  if (openId !== undefined) {
+    identityEntity.value = entitiesStore.entities.find(e => e.id === openId) ?? null
+  }
   await runScore()
   scoreError.value = false
   scoreMsg.value = message

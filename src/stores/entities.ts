@@ -135,6 +135,30 @@ export const useEntitiesStore = defineStore('entities', () => {
   }
 
   /**
+   * 给实体改名（等价于把某个别名提升为主名）
+   *
+   * 旧主名会由后端自动留成别名，所以改名不影响匹配：文章里继续出现旧写法
+   * 仍会落到这一行。事件、论点、覆盖、财务按 `entity_id` 关联，一条都不搬。
+   *
+   * @param entityId - 实体 ID
+   * @param name - 新主名
+   * @returns 改名后的实体行（名字与别名表都是库里写完后的权威值）
+   * @throws 新名为空、撞其他实体的写法、后端失败时原样抛出
+   */
+  async function rename(entityId: number, name: string): Promise<Entity> {
+    try {
+      const updated = await invoke<Entity>('entity_rename', { entityId, name })
+      // 本地列表就地换新：弹窗标题、行内名字、时间线分组都读这一份
+      const index = entities.value.findIndex(e => e.id === entityId)
+      if (index >= 0) entities.value[index] = updated
+      return updated
+    } catch (e) {
+      console.error('实体改名失败:', e)
+      throw e
+    }
+  }
+
+  /**
    * 让模型为某个实体补全别名（只返回建议，不落库）
    *
    * @param entityId - 实体 ID
@@ -346,6 +370,7 @@ export const useEntitiesStore = defineStore('entities', () => {
     createEntity,
     mergeEntities,
     setAliases,
+    rename,
     setParent,
     suggestAliases,
     suggestMerges,

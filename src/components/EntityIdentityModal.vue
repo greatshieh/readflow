@@ -1,8 +1,9 @@
 <template>
-  <!-- ═══ 实体身份：别名 + 合并 ═══
-       两个操作放在同一个弹窗里，因为它们回答的是同一个问题：**"这一行到底是谁"**。
-       别名是"还有哪些写法算我"，合并是"另起的那一行其实也是我"。
-       分开做会让人以为别名只是标签；而实际上两者都直接改写归一化的匹配表。 -->
+  <!-- ═══ 实体身份：主名 + 别名 + 归属 + 合并 ═══
+       这几件事放在同一个弹窗里，因为它们回答的是同一个问题：**"这一行到底是谁"**。
+       主名与别名是同一份匹配表的两个位置（旧主名会被收进别名），归属是"它属于谁"，
+       合并是"另起的那一行其实也是我"。分开做会让人以为别名只是标签；
+       而实际上它们都直接改写归一化的匹配表。 -->
   <BaseModal
     :open="open"
     :title="`名称与合并 · ${entity?.name ?? ''}`"
@@ -14,7 +15,36 @@
     </div>
 
     <div class="eid" v-if="entity">
-      <!-- ① 别名 -->
+      <!-- ① 主名 -->
+      <section class="eid-section">
+        <h4>主名</h4>
+        <p class="eid-desc">
+          列表、时间线、报告里显示的名字。改名后<strong>旧名字会自动留在下面的别名里</strong>，
+          所以历史事件、论点、覆盖一条都不会丢——文章里继续写旧写法仍会记到这一行。
+          想把「台积电」换到「TSMC」的位置，直接改这里，或点别名上的 ↑ 一键提升。
+        </p>
+
+        <div class="eid-add-row">
+          <input
+            v-model="draftName"
+            type="text"
+            class="eid-input"
+            :placeholder="entity.name"
+            @keyup.enter="handleRename(draftName)"
+          />
+          <button
+            class="btn btn-soft btn-form"
+            :disabled="!canRename || renaming"
+            @click="handleRename(draftName)"
+          >
+            {{ renaming ? '改名中…' : '改名' }}
+          </button>
+        </div>
+
+        <p v-if="renameHint" class="eid-hint">{{ renameHint }}</p>
+      </section>
+
+      <!-- ② 别名 -->
       <section class="eid-section">
         <h4>别名</h4>
         <p class="eid-desc">
@@ -25,6 +55,18 @@
         <div class="eid-chips">
           <span v-for="alias in aliases" :key="alias" class="eid-chip">
             {{ alias }}
+            <!-- 提升主名：改名的一种，只是把填名字这一步省掉。常驻可见——
+                 只在 hover 才出现的按钮，键盘与触屏用户根本不知道它存在 -->
+            <button
+              class="eid-chip-up"
+              type="button"
+              :title="`把「${alias}」设为主名`"
+              :aria-label="`把 ${alias} 设为主名`"
+              :disabled="renaming"
+              @click="handleRename(alias)"
+            >
+              ↑
+            </button>
             <button
               class="eid-chip-x"
               type="button"
@@ -61,7 +103,7 @@
         </div>
       </section>
 
-      <!-- ② 归属 -->
+      <!-- ③ 归属 -->
       <section class="eid-section">
         <h4>归属</h4>
         <p class="eid-desc">
@@ -79,7 +121,7 @@
         <p v-if="parentHint" class="eid-hint">{{ parentHint }}</p>
       </section>
 
-      <!-- ③ 合并 -->
+      <!-- ④ 合并 -->
       <section class="eid-section">
         <h4>并入其他实体</h4>
         <p class="eid-desc">
@@ -176,6 +218,12 @@ const entitiesStore = useEntitiesStore()
 const aliases = ref<string[]>([])
 /** 新别名输入 */
 const newAlias = ref('')
+/** 主名输入（改名 / 把别名提升为主名） */
+const draftName = ref('')
+/** 改名进行中 */
+const renaming = ref(false)
+/** 改名结果提示 */
+const renameHint = ref('')
 /** 保存中 */
 const saving = ref(false)
 /** AI 补全请求中 */
@@ -245,6 +293,16 @@ const parentOptions = computed<SelectOption[]>(() => [
 const target = computed(() => entitiesStore.entities.find(e => String(e.id) === targetId.value) ?? null)
 
 /**
+ * 改名按钮是否可用：名字非空、且与当前主名不同
+ *
+ * 只差大小写也算"不同"（`tsmc` → `TSMC` 是合理的修正），真正的去重交给后端判断。
+ */
+const canRename = computed(() => {
+  const name = draftName.value.trim()
+  return !!name && name !== props.entity?.name
+})
+
+/**
  * 可选的并入目标：除自己以外的全部实体
  *
  * 用「名字（类型）」而不是「名字」：库里同名的两家不同公司（同名不同类型）
@@ -269,6 +327,8 @@ watch(
     if (!isOpen) return
     aliases.value = parseAliases(props.entity?.aliases ?? '[]')
     newAlias.value = ''
+    draftName.value = ''
+    renameHint.value = ''
     hint.value = ''
     error.value = ''
     parentValue.value = props.entity?.parent_id ? String(props.entity.parent_id) : ''
@@ -430,6 +490,49 @@ async function handleParentChange(value: string | number) {
 }
 
 /**
+ * 改主名（也就是"把某个别名提升为主名"，两者是同一件事）
+ *
+ * # 为什么先落盘别名
+ * 改名以**库里的**别名表为基准（旧主名要并进去）。用户在下面刚加的写法如果
+ * 还没保存，会被这次改名整表覆盖掉。合并走的是同一条约定。
+ *
+ * # 为什么失败只提示、不关弹窗
+ * 撞名是常见结果（新名已是别的实体的写法），用户需要就地换个名字再试，
+ * 关掉弹窗等于让他从头再来。
+ *
+ * @param name - 新主名（来自输入框或某个别名胶囊）
+ */
+async function handleRename(name: string) {
+  const entity = props.entity
+  const next = name.trim()
+  if (!entity || !next || renaming.value || next === entity.name) return
+  renaming.value = true
+  error.value = ''
+  renameHint.value = ''
+  try {
+    const written = await entitiesStore.setAliases(entity.id, aliases.value)
+    aliases.value = written
+  } catch (e) {
+    error.value = `别名保存失败，改名已取消：${e instanceof Error ? e.message : String(e)}`
+    renaming.value = false
+    return
+  }
+  try {
+    const updated = await entitiesStore.rename(entity.id, next)
+    // 别名表以后端返回为准：旧主名进来了、新主名被移出去了
+    aliases.value = parseAliases(updated.aliases)
+    draftName.value = ''
+    renameHint.value = `已改名为「${updated.name}」，旧名字「${entity.name}」留在别名里`
+    // 名字进时间线、报告、关系图与列表，外壳要重新评分并作废这些缓存
+    emit('changed', renameHint.value)
+  } catch (e) {
+    error.value = `改名失败：${e instanceof Error ? e.message : String(e)}`
+  } finally {
+    renaming.value = false
+  }
+}
+
+/**
  * 保存别名表
  */
 async function handleSaveAliases() {
@@ -586,11 +689,38 @@ async function handleMerge() {
     background var(--m-tap) var(--m-ease-out),
     color var(--m-tap) var(--m-ease-out);
 }
+/* 提升主名：与移除同尺寸，但语义是"换位置"不是"删掉"，所以 hover 走主色。
+   两者常驻可见——只在 hover 出现的按钮，键盘与触屏用户不知道它存在。 */
+.eid-chip-up {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--m-tap) var(--m-ease-out),
+    color var(--m-tap) var(--m-ease-out);
+}
+.eid-chip-up:hover:not(:disabled) {
+  background: var(--primary-tint);
+  color: var(--primary-text);
+}
+.eid-chip-up:disabled {
+  cursor: default;
+}
 .eid-chip-x:hover {
   background: var(--danger-fg);
   color: var(--danger-text);
 }
-.eid-chip-x:focus-visible {
+.eid-chip-x:focus-visible,
+.eid-chip-up:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 1px;
 }
