@@ -634,6 +634,92 @@ impl Entity {
         Ok(merged)
     }
 
+    /// 给实体改名（也就是"把某个别名提升为主名"，同一件事）
+    ///
+    /// # 为什么旧名字必须留成别名
+    /// `name` 是**匹配用的键**：抽取时按它建索引、提示词里要求模型"原样照抄"。
+    /// 改完不保留旧写法，下一篇文章里出现 `TSMC` 就会被当成新实体再建一行，
+    /// 时间线从此裂成两半，而且**不报错**。所以改名是"换主名 + 旧名进别名表"，
+    /// 是位置互换，不是覆盖。
+    ///
+    /// # 为什么撞名要拒绝
+    /// 新名若已被别的实体（主名或别名）占用，改完之后同一个写法落在两条实体上，
+    /// 归一化按 id 先后命中其中一条——用户以为改好了，事件却仍记在别人头上。
+    /// 那种情况该走合并，所以错误信息直接指向合并入口。
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    /// * `id` - 实体 ID
+    /// * `new_name` - 新主名（内部去首尾空白；空串拒绝）
+    ///
+    /// # 返回值
+    /// 改名后的实体行（前端据此刷新标题与列表，不必再查一次）
+    ///
+    /// # 错误
+    /// 实体不存在、新名为空、新名被其他实体占用、写库失败
+    pub async fn rename(pool: &SqlitePool, id: i64, new_name: &str) -> Result<Entity, String> {
+        let new_name = new_name.trim();
+        if new_name.is_empty() {
+            return Err("实体名不能为空".to_string());
+        }
+        let entity = Self::get(pool, id)
+            .await?
+            .ok_or_else(|| format!("实体不存在: {}", id))?;
+        if entity.name == new_name {
+            return Ok(entity);
+        }
+
+        let old_key = normalize_entity_key(&entity.name);
+        let new_key = normalize_entity_key(new_name);
+        // 只改大小写（tsmc → TSMC）时键不变，占用方就是自己，不必查
+        if new_key != old_key {
+            for other in Self::list_all(pool).await?.into_iter().filter(|e| e.id != id) {
+                let names = std::iter::once(other.name.clone()).chain(
+                    serde_json::from_str::<Vec<String>>(&other.aliases).unwrap_or_default(),
+                );
+                if names.into_iter().any(|n| normalize_entity_key(&n) == new_key) {
+                    return Err(format!(
+                        "「{}」已经是「{}」的名字或别名，改完会让同一个写法落在两条实体上——\
+                         这种情况请用下方的「并入其他实体」",
+                        new_name, other.name
+                    ));
+                }
+            }
+        }
+
+        let existing: Vec<String> = serde_json::from_str(&entity.aliases).unwrap_or_default();
+        // 旧主名放最前：别名胶囊按这个顺序排，用户一眼能看到"原来叫什么"
+        let aliases = collect_aliases(new_name, &[&[entity.name.clone()], &existing]);
+        let aliases_json = serde_json::to_string(&aliases).unwrap_or_else(|_| "[]".to_string());
+
+        let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+        sqlx::query("UPDATE entities SET name = ?, aliases = ? WHERE id = ?")
+            .bind(new_name)
+            .bind(&aliases_json)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        // 历史报告里「本期值得跟进」那些行：`entity_name` 只是展示标签，指向靠
+        // `entity_id`。不跟着改，旧报告里点开仍是改名前的写法。
+        // `OR IGNORE` 兜住 UNIQUE(report_id, entity_name)：同一份报告里已经有
+        // 一条同名候选时，宁可留下旧标签，也不要让整次改名失败。
+        sqlx::query("UPDATE OR IGNORE report_followups SET entity_name = ? WHERE entity_id = ?")
+            .bind(new_name)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        tx.commit().await.map_err(|e| e.to_string())?;
+
+        // 新名若曾作为实体被删除过，屏蔽表会挡住它：改完名字却永远收不到事件。
+        // 与 `entities_create` 同一口径——用户明确要这个名字，就把屏蔽解掉。
+        Self::unblock(pool, new_name).await?;
+        Self::get(pool, id)
+            .await?
+            .ok_or_else(|| format!("实体不存在: {}", id))
+    }
+
     /// 设置实体的上级（"它属于谁"）
     ///
     /// # 为什么只允许挂到公司
@@ -7187,6 +7273,105 @@ mod tests {
         );
         // 失败后保留方必须完好
         assert!(Entity::get(&pool, keep).await.unwrap().is_some());
+    }
+
+    // ─── 实体改名 ─────────────────────────────────────────────────────────────
+
+    /// 改名：新名生效、旧名进别名表、关联数据一条不丢
+    ///
+    /// 这条断言的存在意义是"改名不是搬数据"：事件、论点都按 `entity_id` 关联，
+    /// 改完必须原地不动。真正会丢的是**匹配能力**——旧名不进别名的话，
+    /// 下一篇出现 `TSMC` 的文章会被当成新实体建一行。
+    #[tokio::test]
+    async fn rename_keeps_old_name_as_alias() {
+        let pool = setup_entities().await;
+        let id = Entity::create(&pool, "TSMC", "company").await.expect("建实体失败");
+        Entity::set_aliases(&pool, id, &["台积电".to_string()])
+            .await
+            .expect("写别名失败");
+        let article = seed_article(&pool, "台积电扩产").await;
+        seed_event(&pool, article, id, "capacity", "CoWoS 产能翻倍").await;
+
+        let renamed = Entity::rename(&pool, id, "台积电").await.expect("改名失败");
+        assert_eq!(renamed.name, "台积电");
+        assert_eq!(renamed.id, id, "改名不能换 id");
+        let aliases = serde_json::from_str::<Vec<String>>(&renamed.aliases).unwrap();
+        assert!(aliases.iter().any(|a| a == "TSMC"), "旧主名要留成别名：{:?}", aliases);
+        assert!(!aliases.iter().any(|a| a == "台积电"), "提升为主名的写法要离开别名表：{:?}", aliases);
+
+        // 旧写法仍能命中这一行（这是"不裂成两条实体"的判断依据）
+        let found = Entity::find_by_name_or_alias(&pool, "TSMC")
+            .await
+            .expect("查询失败")
+            .expect("旧名必须仍能匹配");
+        assert_eq!(found.id, id);
+        // 事件原地不动
+        let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM research_events WHERE entity_id = ?")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(events, 1);
+    }
+
+    /// 改名撞上别人的主名或别名：拒绝，且库里一点没动
+    ///
+    /// 放进来的后果是"同一个写法落在两条实体上"，归一化按 id 先后命中，
+    /// 用户以为改好了、事件却仍记在别人头上，而且不报错。
+    #[tokio::test]
+    async fn rename_rejects_name_owned_by_others() {
+        let pool = setup_entities().await;
+        let tsmc = Entity::create(&pool, "TSMC", "company").await.expect("建实体失败");
+        let apple = Entity::create(&pool, "苹果", "company").await.expect("建实体失败");
+        Entity::set_aliases(&pool, apple, &["Apple".to_string()])
+            .await
+            .expect("写别名失败");
+
+        // 撞别人的主名
+        let err = Entity::rename(&pool, tsmc, "苹果").await.expect_err("撞主名应报错");
+        assert!(err.contains("苹果"), "错误信息要指出撞了谁：{}", err);
+        // 撞别人的别名
+        assert!(
+            Entity::rename(&pool, tsmc, "apple").await.is_err(),
+            "撞别名（大小写不敏感）也应报错"
+        );
+        // 自己那一行必须原样
+        let still = Entity::get(&pool, tsmc).await.unwrap().expect("实体不见了");
+        assert_eq!(still.name, "TSMC");
+        assert_eq!(still.aliases, "[]");
+    }
+
+    /// 只改大小写：键没变，不该被"撞自己"挡住
+    ///
+    /// 旧写法不留别名是有意的：归一化键大小写不敏感，`tsmc` 与 `TSMC` 是同一个键，
+    /// 留着只是一条永远命不中的噪音。真正会丢匹配的是**改变键**的改名，那种情况
+    /// 才必须把旧名收进别名（见上一个用例）。
+    #[tokio::test]
+    async fn rename_allows_case_only_change() {
+        let pool = setup_entities().await;
+        let id = Entity::create(&pool, "tsmc", "company").await.expect("建实体失败");
+        let renamed = Entity::rename(&pool, id, "TSMC").await.expect("只改大小写应允许");
+        assert_eq!(renamed.name, "TSMC");
+        assert_eq!(renamed.aliases, "[]", "键没变，不该留下一条命不中的别名");
+        // 键仍是同一个，旧写法照样命中
+        let found = Entity::find_by_name_or_alias(&pool, "tsmc")
+            .await
+            .expect("查询失败")
+            .expect("大小写不同的同一写法必须仍能匹配");
+        assert_eq!(found.id, id);
+    }
+
+    /// 改名到同一个名字：幂等，不写库也不报错
+    #[tokio::test]
+    async fn rename_is_idempotent_and_rejects_empty() {
+        let pool = setup_entities().await;
+        let id = Entity::create(&pool, "台积电", "company").await.expect("建实体失败");
+        let same = Entity::rename(&pool, id, "  台积电  ").await.expect("同名应幂等");
+        assert_eq!(same.name, "台积电");
+        assert_eq!(same.aliases, "[]", "同名不该把主名塞进别名");
+
+        assert!(Entity::rename(&pool, id, "   ").await.is_err(), "空名应拒绝");
+        assert!(Entity::rename(&pool, 9999, "X").await.is_err(), "实体不存在应报错");
     }
 
     // ─── 实体关系图 ───────────────────────────────────────────────────────────

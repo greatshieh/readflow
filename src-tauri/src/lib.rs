@@ -467,6 +467,7 @@ pub fn run() {
             entities_set_alert_rules,
             entities_merge,
             entities_set_aliases,
+            entity_rename,
             entities_set_parent,
             entities_suggest_aliases,
             entities_suggest_merges,
@@ -2780,6 +2781,26 @@ async fn entities_merge(keep_id: i64, merge_id: i64) -> Result<db::MergeReport, 
 async fn entities_set_aliases(entity_id: i64, aliases: Vec<String>) -> Result<Vec<String>, String> {
     let pool = db_pool().await.map_err(|e| e.to_string())?;
     db::Entity::set_aliases(&pool, entity_id, &aliases).await
+}
+
+/// 给实体改名（等价于把某个别名提升为主名）
+///
+/// 旧主名会自动留成别名，所以文章里继续出现旧写法仍会命中这一行；
+/// 事件、论点、覆盖、财务全按 `entity_id` 关联，一条都不会搬。
+///
+/// # 参数
+/// * `entity_id` - 实体 ID
+/// * `name` - 新主名；为空、或已被其他实体（主名/别名）占用时被拒绝
+///
+/// # 返回值
+/// 改名后的实体行
+///
+/// # 错误
+/// 实体不存在、新名为空、新名撞别人的写法、写库失败
+#[tauri::command]
+async fn entity_rename(entity_id: i64, name: String) -> Result<db::Entity, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    db::Entity::rename(&pool, entity_id, &name).await
 }
 
 /// 让模型为某个实体补全别名（界面上「AI 补全」按钮）
