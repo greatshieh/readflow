@@ -90,14 +90,24 @@
            页签各自的加载时机由它们 watch `active` / `open` 自行驱动，见各组件文件头。
            注：覆盖内部曾用 `v-if` 而不是 `v-show`，理由是"没打开过就不该白跑一次查询"。
            现在它自己就是一个页签，这个取舍由它自己的 watch 承担（见 CoveragePanel 文件头）。 -->
-      <ResearchTimelineTab ref="timelineTabRef" v-show="tab === 'timeline'" :open="open" @close="close" />
+      <ResearchTimelineTab
+        ref="timelineTabRef"
+        v-show="tab === 'timeline'"
+        :open="open"
+        @close="close"
+        @goto-entity="onGotoEntity"
+      />
       <ResearchReportsTab
         v-show="tab === 'reports'"
         :active="tab === 'reports'"
         :open="open"
         @close="close"
       />
-      <ResearchEntitiesTab v-show="tab === 'entities'" @entities-changed="onEntitiesChanged" />
+      <ResearchEntitiesTab
+        v-show="tab === 'entities'"
+        :focus="focusEntity"
+        @entities-changed="onEntitiesChanged"
+      />
       <!-- 覆盖：与实体管理平级的页签。根节点套 `.m-body` 是本弹窗的约定——
            外壳的 scoped 规则按这个类名给内边距与滚动，页签组件自身的根元素
            通常直接带它；CoveragePanel 的根是 `.cv`（它还要能被单独复用），
@@ -204,6 +214,28 @@ const thesisPanelRef = ref<InstanceType<typeof ThesisPanel> | null>(null)
  *  entities = 实体管理（配置：盯谁）；coverage = 覆盖（台账：为什么盯、何时退出）；
  *  theses = 论点台账 */
 const tab = ref<'timeline' | 'reports' | 'entities' | 'coverage' | 'theses'>('timeline')
+
+/**
+ * 实体页签的定位目标（时间线分组头点进来时设置）
+ *
+ * `seq` 自增而不是复用 `{ id }`：同一个实体连点两次时对象内容相同，
+ * 子组件的 watch 会认为"没变化"而不滚动——用户明明又点了一次。
+ */
+const focusEntity = ref<{ id: number; seq: number } | null>(null)
+let focusSeq = 0
+
+/**
+ * 时间线里点了实体名：切到实体管理并定位到那一行
+ *
+ * 只切页签 + 传目标，滚动与高亮由实体页签自己做（它才知道行在哪）。
+ *
+ * @param entityId - 目标实体 ID
+ */
+function onGotoEntity(entityId: number) {
+  tab.value = 'entities'
+  focusSeq += 1
+  focusEntity.value = { id: entityId, seq: focusSeq }
+}
 
 /** 组装预览：是否打开、内容、加载与失败态 */
 const composeOpen = ref(false)

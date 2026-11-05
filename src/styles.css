@@ -1213,6 +1213,21 @@ select:focus-visible {
 .empty-state p { margin: 0 0 var(--sp-2); font-size: var(--fs-base); }
 .empty-state .hint { font-size: var(--fs-sm); }
 
+/* 实体归属标注（时间线组头 / 实体管理列表共用）
+   `--primary-tint` 只能当底、`--primary-text` 当字；实色块上才用 `--tone-fg`。
+   面积小、信息量高（"这东西是谁的"），但不与名字抢层级，故取元信息档 11。 */
+.entity-parent {
+  padding: 0 var(--sp-05);
+  border-radius: var(--r-sm);
+  background: var(--primary-tint);
+  color: var(--primary-text);
+  font-size: var(--fs-modal-meta);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 14em;
+}
+
 /* ─── 关系图舞台共用原语（全局工具类）────────────────────────────────────────
    原为 ResearchGraphTab 的 scoped 样式；迁到主屏关系图视图（GraphView）后
    成为全局原语（弹窗内已不再有图页签，现唯一消费者是 GraphView）。 */

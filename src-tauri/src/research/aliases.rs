@@ -167,6 +167,12 @@ pub struct NameResolution {
     pub same_as: Option<String>,
     /// 其他写法：`same_as` 有值时并入那个实体的别名表，否则作为新实体的初始别名
     pub aliases: Vec<String>,
+    /// 所属公司（规范名，已在清单中校验）；`None` = 模型没给或拿不准
+    ///
+    /// 只在新建实体时使用（并入已有实体时归属由那个实体自己决定）。
+    /// 判定为产品、子公司、人物时才有意义——挂到谁名下不改变任何匹配口径，
+    /// 只是让"这东西是谁的"在列表与时间线上看得见。
+    pub parent: Option<String>,
 }
 
 /// 批量判定一批新名字是否等于已有实体
@@ -213,14 +219,18 @@ pub async fn resolve_names(
    并在 aliases 里给出它的其他常见写法（中英文名、简称、全称），没有就留空数组。\n\
 3. 拿不准时宁可留空：错误合并会把两家公司的历史搅在一起，比重名糟得多。\n\
 4. aliases 只收同一实体的其他写法，不要把人物、产品、母公司或相关方列进来。\n\
+5. 若它确实是新的，并且有明确的所属公司（某家公司的产品、子公司，\n\
+   或某位高管/创始人的主要任职公司），把该公司名填进 parent——必须**原样照抄**\n\
+   清单里类型为 company 的名字。母公司、子公司、合作伙伴不算「所属」，\n\
+   一个人或一件东西同时关联多家公司、拿不准最直接的那家时，parent 留空字符串。\n\
 \n\
 已收录实体：\n{}\n\
 \n\
 新出现的名字：\n{}\n\
 \n\
 只输出 JSON，不要任何说明文字或代码围栏：\n\
-{{\"names\":[{{\"name\":\"三星电子\",\"same_as\":\"三星\",\"aliases\":[\"Samsung\"]}},\
-{{\"name\":\"Foo Inc\",\"same_as\":\"\",\"aliases\":[\"Foo\"]}}]}}",
+{{\"names\":[{{\"name\":\"三星电子\",\"same_as\":\"三星\",\"aliases\":[\"Samsung\"],\"parent\":\"\"}},\
+{{\"name\":\"Claude\",\"same_as\":\"\",\"aliases\":[\"Claude Code\"],\"parent\":\"Anthropic\"}}]}}",
         render_known(briefs),
         name_list
     );
@@ -294,7 +304,28 @@ fn parse_resolutions(raw: &str, briefs: &[EntityBrief], asked: &[&String]) -> Ve
                     .collect()
             })
             .unwrap_or_default();
-        out.push(NameResolution { name: name.to_string(), same_as, aliases });
+        // 归属：只接受清单里**确实存在且类型是 company** 的名字。
+        // 模型偶尔会把产品、行业或不在清单里的名字填进来——那会让新建的实体
+        // 挂在一个不该有下级的东西上，且不报错。并入已有实体时归属无意义
+        // （目标实体自己已经有归属，不能被这一次判定改写）。
+        let parent = item
+            .get("parent")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .and_then(|s| {
+                let want = normalize_entity_key(&s);
+                briefs
+                    .iter()
+                    .find(|b| {
+                        normalize_entity_key(&b.name) == want
+                            && b.entity_type.eq_ignore_ascii_case("company")
+                    })
+                    .map(|b| b.name.clone())
+            })
+            .filter(|s| normalize_entity_key(s) != key)
+            .filter(|_| same_as.is_none());
+        out.push(NameResolution { name: name.to_string(), same_as, aliases, parent });
     }
     out
 }
@@ -584,6 +615,45 @@ mod tests {
         let out = parse_resolutions(raw, &briefs, &asked);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].same_as.as_deref(), Some("三星"));
+    }
+
+    #[test]
+    fn parse_resolutions_accepts_only_company_parent() {
+        // 归属只在"确实是新实体"时生效，且上级必须真实存在、类型是公司。
+        // 少了任一道校验，新建的产品会挂到行业 / 另一个产品 / 空行上，
+        // 而界面上只表现为怪异的"属于 XXX"。
+        let briefs = vec![
+            brief(11, "Anthropic", "company", &[]),
+            brief(24, "Claude", "product", &[]),
+            brief(39, "AI行业", "industry", &[]),
+        ];
+        let asked_names = vec![
+            "Claude Code".to_string(),
+            "Claude Code 2".to_string(),
+            "Foo".to_string(),
+            "Bar".to_string(),
+            "Baz".to_string(),
+        ];
+        let asked: Vec<&String> = asked_names.iter().collect();
+        let raw = r#"{"names":[
+            {"name":"Claude Code","same_as":"","aliases":[],"parent":"Anthropic"},
+            {"name":"Claude Code 2","same_as":"","aliases":[],"parent":"Claude"},
+            {"name":"Foo","same_as":"","aliases":[],"parent":"AI行业"},
+            {"name":"Bar","same_as":"","aliases":[],"parent":"不存在的公司"},
+            {"name":"Baz","same_as":"Anthropic","aliases":[],"parent":"Anthropic"}
+        ]}"#;
+        let out = parse_resolutions(raw, &briefs, &asked);
+        let by_name = |n: &str| out.iter().find(|r| r.name == n).unwrap();
+        assert_eq!(by_name("Claude Code").parent.as_deref(), Some("Anthropic"));
+        // 产品不能当上级
+        assert!(by_name("Claude Code 2").parent.is_none());
+        // 行业不能当上级
+        assert!(by_name("Foo").parent.is_none());
+        // 清单外的名字不能当上级
+        assert!(by_name("Bar").parent.is_none());
+        // 已经并入已有实体时，归属不由这一次决定
+        assert!(by_name("Baz").parent.is_none());
+        assert_eq!(by_name("Baz").same_as.as_deref(), Some("Anthropic"));
     }
 
     #[test]

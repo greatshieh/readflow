@@ -227,6 +227,12 @@ pub struct Entity {
     pub aliases: String,
     /// 是否启用（禁用后不再参与评分计算）
     pub enabled: bool,
+    /// 上级实体 ID（"它属于谁"）：产品→公司、子公司→母公司、人物→其公司
+    ///
+    /// 只表达**归属**，不改变任何匹配或评分口径——事件、论点、覆盖仍挂在本行上。
+    /// 允许成链（子公司→母公司→集团），但 [`Entity::set_parent`] 会拒绝成环。
+    /// 上级被删除时置空（不连带删除下级）。
+    pub parent_id: Option<i64>,
     /// 创建时间
     pub created_at: DateTime<Utc>,
 }
@@ -343,6 +349,11 @@ pub struct MergeReport {
     pub symbols_moved: i64,
     /// 因唯一约束冲突丢掉的财务数据条数
     pub financial_dropped: i64,
+    /// 原本挂在并入方名下的下级（产品/子公司/人物）改挂到保留方的条数
+    ///
+    /// 归属是展示层的父子关系，合并时必须跟着搬家，否则那些行会指向一个
+    /// 已经不存在的上级（表现为列表里"属于 某某"，但某某已经不在）。
+    pub children_moved: i64,
     /// 因"已被其它实体占用"而没写进来的别名个数
     ///
     /// 单独报出来的理由：它意味着**并入方的某个写法仍指向别人**，
@@ -382,7 +393,7 @@ impl Entity {
     /// 数据库查询失败时返回错误信息
     pub async fn list_enabled(pool: &SqlitePool) -> Result<Vec<Entity>, String> {
         sqlx::query_as::<_, Entity>(
-            "SELECT id, name, entity_type, aliases, enabled, created_at FROM entities WHERE enabled = 1 ORDER BY id ASC",
+            "SELECT id, name, entity_type, aliases, enabled, parent_id, created_at FROM entities WHERE enabled = 1 ORDER BY id ASC",
         )
         .fetch_all(pool)
         .await
@@ -404,7 +415,7 @@ impl Entity {
     /// 数据库查询失败时返回错误信息
     pub async fn list_all(pool: &SqlitePool) -> Result<Vec<Entity>, String> {
         sqlx::query_as::<_, Entity>(
-            "SELECT id, name, entity_type, aliases, enabled, created_at FROM entities ORDER BY id ASC",
+            "SELECT id, name, entity_type, aliases, enabled, parent_id, created_at FROM entities ORDER BY id ASC",
         )
         .fetch_all(pool)
         .await
@@ -458,7 +469,7 @@ impl Entity {
     /// 查询失败时返回错误信息
     pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<Entity>, String> {
         sqlx::query_as::<_, Entity>(
-            "SELECT id, name, entity_type, aliases, enabled, created_at FROM entities WHERE id = ? LIMIT 1",
+            "SELECT id, name, entity_type, aliases, enabled, parent_id, created_at FROM entities WHERE id = ? LIMIT 1",
         )
         .bind(id)
         .fetch_optional(pool)
@@ -621,6 +632,75 @@ impl Entity {
             .await
             .map_err(|e| e.to_string())?;
         Ok(merged)
+    }
+
+    /// 设置实体的上级（"它属于谁"）
+    ///
+    /// # 为什么只允许挂到公司
+    /// 归属要回答的是"这个产品/子公司/人物属于哪家公司"。挂到行业、指数、产品上
+    /// 都不会产生有用的聚合，反而让时间线的「属于 X」读起来莫名其妙。
+    ///
+    /// # 为什么必须防环
+    /// 归属成链是合法的（子公司→母公司→集团），但环会让所有"沿父链向上"的
+    /// 展示与校验变成死循环。这里从目标上级沿 `parent_id` 一路向上，遇到自己就拒绝：
+    /// 环的**每一种**情形（A→B→A、A→A、更长的圈）都会在这条路上撞见自己。
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    /// * `id` - 被设置的实体 ID
+    /// * `parent_id` - 上级实体 ID；`None` 表示取消归属
+    ///
+    /// # 错误
+    /// 实体或上级不存在、挂到自己、上级不是公司、成环时返回错误信息
+    pub async fn set_parent(
+        pool: &SqlitePool,
+        id: i64,
+        parent_id: Option<i64>,
+    ) -> Result<(), String> {
+        let entity = Self::get(pool, id)
+            .await?
+            .ok_or_else(|| format!("实体不存在: {}", id))?;
+        let Some(parent_id) = parent_id else {
+            sqlx::query("UPDATE entities SET parent_id = NULL WHERE id = ?")
+                .bind(id)
+                .execute(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        };
+        if parent_id == id {
+            return Err("不能把实体归属到它自己".to_string());
+        }
+        let parent = Self::get(pool, parent_id)
+            .await?
+            .ok_or_else(|| format!("归属目标不存在: {}", parent_id))?;
+        if parent.entity_type != "company" {
+            return Err(format!(
+                "只能归属到公司，「{}」的类型是 {}",
+                parent.name, parent.entity_type
+            ));
+        }
+        // 沿父链向上走到顶：撞见自己就是环。步数上限只是防脏数据把这里变成死循环，
+        // 正常层级不超过个位数。
+        let mut cursor = parent.parent_id;
+        let mut steps = 0;
+        while let Some(cur) = cursor {
+            if cur == id {
+                return Err(format!("「{}」已经在「{}」的下级里，不能再反向归属", parent.name, entity.name));
+            }
+            steps += 1;
+            if steps > 64 {
+                break;
+            }
+            cursor = Self::get(pool, cur).await?.and_then(|e| e.parent_id);
+        }
+        sqlx::query("UPDATE entities SET parent_id = ? WHERE id = ?")
+            .bind(parent_id)
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     /// 把一个实体并入另一个实体（不可逆，合并七张表的引用）
@@ -798,7 +878,27 @@ impl Entity {
             .await
             .map_err(|e| e.to_string())?;
 
-        // 6. 收尾：写别名 → 删并入方那一行
+        // 6. 归属：并入方若是某些实体的上级，把这些实体改挂到保留方。
+        //    排除保留方自己——它有可能正是并入方的下级（把母公司并进子公司），
+        //    改挂会变成自指。这种情况改成"取消保留方的归属"。
+        let children_moved = sqlx::query(
+            "UPDATE entities SET parent_id = ? WHERE parent_id = ? AND id != ?",
+        )
+        .bind(keep_id)
+        .bind(merge_id)
+        .bind(keep_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?
+        .rows_affected() as i64;
+        sqlx::query("UPDATE entities SET parent_id = NULL WHERE id = ? AND parent_id = ?")
+            .bind(keep_id)
+            .bind(merge_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // 7. 收尾：写别名 → 删并入方那一行
         sqlx::query("UPDATE entities SET aliases = ? WHERE id = ?")
             .bind(&aliases_json)
             .bind(keep_id)
@@ -822,6 +922,7 @@ impl Entity {
             coverage_kept: coverage_kept.to_string(),
             symbols_moved,
             financial_dropped,
+            children_moved,
             aliases_skipped,
         })
     }
@@ -858,6 +959,14 @@ impl Entity {
             return Ok(());
         };
         Self::block_name(pool, &name, &entity_type).await?;
+        // 下级实体的归属置空：删掉一家公司不该连带删掉它的产品，
+        // 但也不能留下指向空行的 parent_id。外键虽有 ON DELETE SET NULL，
+        // 这里仍显式做一次——外键开关是连接级配置，显式执行不依赖它。
+        sqlx::query("UPDATE entities SET parent_id = NULL WHERE parent_id = ?")
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
         sqlx::query("DELETE FROM entities WHERE id = ?")
             .bind(id)
             .execute(pool)
@@ -1120,7 +1229,7 @@ impl Entity {
     pub async fn search_by_name(pool: &SqlitePool, query: &str) -> Result<Vec<Entity>, String> {
         let like_pattern = format!("%{}%", query);
         sqlx::query_as::<_, Entity>(
-            "SELECT id, name, entity_type, aliases, enabled, created_at FROM entities WHERE name LIKE ? ORDER BY id ASC",
+            "SELECT id, name, entity_type, aliases, enabled, parent_id, created_at FROM entities WHERE name LIKE ? ORDER BY id ASC",
         )
         .bind(&like_pattern)
         .fetch_all(pool)
@@ -2810,6 +2919,9 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
             entity_type TEXT NOT NULL DEFAULT 'company',
             aliases TEXT NOT NULL DEFAULT '[]',
             enabled INTEGER DEFAULT 1,
+            -- 归属上级（产品→公司、子公司→母公司、人物→其公司）。
+            -- 只用于展示与聚合，不改变评分/归一化口径；上级删除时置空，不连带删除。
+            parent_id INTEGER REFERENCES entities(id) ON DELETE SET NULL,
             alert_rules TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(name, entity_type)
@@ -6838,6 +6950,89 @@ mod tests {
         .execute(pool)
         .await
         .expect("插入事件失败");
+    }
+
+    /// 归属：上级必须是公司、不能挂自己、不能成环、可以逐级上挂
+    ///
+    /// 这几条都是"写进去了不会报错、只会在展示时绕不出来"的规则，
+    /// 所以必须用断言钉死——尤其是成环：一旦写进去，任何沿父链向上的代码都会死循环。
+    #[tokio::test]
+    async fn set_parent_enforces_company_and_no_cycle() {
+        let pool = setup_entities().await;
+        let group = Entity::create(&pool, "集团", "company").await.expect("建实体失败");
+        let parent = Entity::create(&pool, "母公司", "company").await.expect("建实体失败");
+        let child = Entity::create(&pool, "子公司", "company").await.expect("建实体失败");
+        let product = Entity::create(&pool, "Claude", "product").await.expect("建实体失败");
+        let industry = Entity::create(&pool, "AI行业", "industry").await.expect("建实体失败");
+
+        // 产品 → 公司
+        Entity::set_parent(&pool, product, Some(parent))
+            .await
+            .expect("产品应能归属到公司");
+        // 公司 → 公司（子公司 → 母公司）
+        Entity::set_parent(&pool, child, Some(parent))
+            .await
+            .expect("子公司应能归属到母公司");
+        // 再上一层：母公司 → 集团
+        Entity::set_parent(&pool, parent, Some(group))
+            .await
+            .expect("公司链应允许逐级归属");
+
+        // 环：集团挂到它的下级（子公司）上，必须拒绝
+        let err = Entity::set_parent(&pool, group, Some(child))
+            .await
+            .expect_err("成环必须被拒绝");
+        assert!(err.contains("反向归属"), "错误信息应点明方向: {}", err);
+        // 挂自己
+        assert!(Entity::set_parent(&pool, parent, Some(parent)).await.is_err());
+        // 上级不是公司
+        assert!(Entity::set_parent(&pool, child, Some(industry)).await.is_err());
+
+        // 取消归属
+        Entity::set_parent(&pool, product, None).await.expect("取消归属应成功");
+        assert_eq!(
+            Entity::get(&pool, product).await.expect("读取失败").expect("实体不存在").parent_id,
+            None
+        );
+    }
+
+    /// 合并：挂在并入方名下的下级要改挂到保留方
+    ///
+    /// 不改挂的话，这些行的 `parent_id` 会指向一条即将被删的行——界面上的表现是
+    /// "属于 某某"，而某某已经不在列表里。
+    #[tokio::test]
+    async fn merge_reparents_children_to_keep() {
+        let pool = setup_entities().await;
+        let keep = Entity::create(&pool, "苹果", "company").await.expect("建实体失败");
+        let merged = Entity::create(&pool, "Apple", "company").await.expect("建实体失败");
+        let product = Entity::create(&pool, "iPhone", "product").await.expect("建实体失败");
+        Entity::set_parent(&pool, product, Some(merged))
+            .await
+            .expect("设置归属失败");
+
+        let report = Entity::merge(&pool, keep, merged).await.expect("合并失败");
+        assert_eq!(report.children_moved, 1, "并入方的下级应改挂到保留方");
+        assert_eq!(
+            Entity::get(&pool, product).await.expect("读取失败").expect("实体不存在").parent_id,
+            Some(keep)
+        );
+    }
+
+    /// 删除公司：下级保留，但归属被清空（不能留下指向空行的 parent_id）
+    #[tokio::test]
+    async fn delete_clears_children_parent() {
+        let pool = setup_entities().await;
+        let company = Entity::create(&pool, "Anthropic", "company").await.expect("建实体失败");
+        let product = Entity::create(&pool, "Claude", "product").await.expect("建实体失败");
+        Entity::set_parent(&pool, product, Some(company))
+            .await
+            .expect("设置归属失败");
+
+        Entity::delete(&pool, company).await.expect("删除失败");
+        assert_eq!(
+            Entity::get(&pool, product).await.expect("读取失败").expect("产品行不应被删").parent_id,
+            None
+        );
     }
 
     /// 合并：子表全部改挂、撞唯一约束的丢并入方、名字变成别名

@@ -55,18 +55,40 @@
 
     <!-- 事件列表（按实体分组，组内时间倒序） -->
     <div v-else class="timeline">
-      <div
-        v-for="(group, entityName) in groupedEvents"
-        :key="entityName"
-        class="entity-group"
-      >
-        <div class="group-header clickable" role="button" :title="`查看「${entityName}」的实体仪表盘`" @click="openEntityDashboard(entityName)">
-          <span class="entity-tag">{{ entityName }}</span>
-          <span class="entity-count">{{ group.length }} 条</span>
+      <div v-for="group in groupedEvents" :key="group.key" class="entity-group">
+        <div class="group-header">
+          <!-- 组头主体点击 = 去管理（改名 / 合并 / 停用 / 归属都在那里）；
+               看数据（仪表盘）降级成右侧一个图标钮——两者是不同心智，
+               而"点一个实体的名字"最常想要的是改它，不是读它。 -->
+          <button
+            class="group-main"
+            :class="{ 'is-static': !group.entityId }"
+            type="button"
+            :title="group.entityId ? `在实体管理中查看并调整「${group.name}」` : '无法定位到实体'"
+            @click="gotoEntity(group)"
+          >
+            <span class="entity-tag">{{ group.name }}</span>
+            <span v-if="group.parentName" class="entity-parent">属于 {{ group.parentName }}</span>
+            <span class="entity-count">{{ group.events.length }} 条</span>
+          </button>
+          <button
+            v-if="group.entityId"
+            class="btn btn-icon btn-quiet group-dash"
+            type="button"
+            :title="`查看「${group.name}」的实体仪表盘`"
+            @click="openEntityDashboard(group)"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="7" height="9" rx="1"></rect>
+              <rect x="14" y="3" width="7" height="5" rx="1"></rect>
+              <rect x="14" y="12" width="7" height="9" rx="1"></rect>
+              <rect x="3" y="16" width="7" height="5" rx="1"></rect>
+            </svg>
+          </button>
         </div>
         <!-- 每条事件：类型徽标 + 日期 + 事实；点击展开证据与来源 -->
         <div
-          v-for="ev in group"
+          v-for="ev in group.events"
           :key="ev.id"
           class="event-item"
           :class="{ expanded: expandedEventId === ev.id }"
@@ -210,6 +232,12 @@
  * 原文证据与来源文章（点击跳转阅读并关闭弹窗），也可删除抽错/过期的
  * 单条事件（二次确认后物理删除），并提供手动批量提取的补跑入口。
  *
+ * # 分组头的两个出口
+ * 点分组头主体 = 去「实体管理」定位到该实体（改名 / 合并 / 停用 / 归属都在那里），
+ * 点右侧图标 = 打开实体仪表盘看数据。分组按 `entity_id` 聚合而不是名字——
+ * 名字在实体改名后与历史事件脱节，同名不同类型的实体也会被并成一组，
+ * 而且"未知实体"那一组根本反查不到 ID（旧实现的"点了没反应"就是这个原因）。
+ *
  * # 挂载语义（与外壳的契约）
  * 本页签经 `v-show` 常驻挂载（外壳四页签共用此模式，为的是筛选参数跨页签
  * 与跨开关持久），因此**不能用 `onMounted` 当"进入页签"信号**：
@@ -241,6 +269,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   /** 跳转来源文章前先请外壳关闭弹窗（阅读视图在弹窗底下） */
   (e: 'close'): void
+  /** 点分组头：请在实体管理页签里定位到这个实体（由外壳切页签并传入 focus） */
+  (e: 'goto-entity', entityId: number): void
 }>()
 
 const researchStore = useResearchStore()
@@ -542,20 +572,58 @@ const sortedEvents = computed<ResearchEventWithContext[]>(() => {
 })
 
 /**
+ * 一个时间线分组（同一实体的全部事件）
+ *
+ * 组头需要三样东西：实体名（展示）、实体 ID（跳转与仪表盘）、上级名（"属于 X"）。
+ * 后两者用实体名反查是不可靠的——同名不同类型的实体、事件里实体已被删除、
+ * 以及"未知实体"分组都查不到，表现就是"点了没反应"。
+ */
+interface EventGroup {
+  /** 分组键：有实体时用 ID，否则固定 'unknown' */
+  key: string
+  /** 实体 ID（0 = 无法定位） */
+  entityId: number
+  /** 展示名（优先后端 JOIN 的实体名，缺失时按 store 补） */
+  name: string
+  /** 上级实体名（无归属时为空串） */
+  parentName: string
+  /** 组内事件 */
+  events: ResearchEventWithContext[]
+}
+
+/** 实体 ID → 实体（组头查上级用；列表由外壳在弹窗打开时保证加载） */
+const entityById = computed(() => new Map(entitiesStore.entities.map(e => [e.id, e])))
+
+/**
  * 按实体分组的事件
  *
  * 在 `sortedEvents` 之上聚合（排序模式决定组内/组间顺序），相邻同实体即归为一组。
+ * 键用 `entity_id`：名字会在实体改名后与历史事件脱节，同名不同类型的实体也会被
+ * 合并成一组——而组头需要精确的 ID 才能跳转。
  *
- * @returns 分组映射（实体名 → 事件列表）
+ * @returns 分组列表（顺序与事件顺序一致）
  */
-const groupedEvents = computed<Record<string, ResearchEventWithContext[]>>(() => {
-  const groups: Record<string, ResearchEventWithContext[]> = {}
+const groupedEvents = computed<EventGroup[]>(() => {
+  const groups = new Map<string, EventGroup>()
   for (const ev of sortedEvents.value) {
-    const key = ev.entity_name || '未知实体'
-    if (!groups[key]) groups[key] = []
-    groups[key].push(ev)
+    const entityId = ev.entity_id ?? 0
+    const key = entityId ? `e${entityId}` : 'unknown'
+    let group = groups.get(key)
+    if (!group) {
+      const entity = entityId ? entityById.value.get(entityId) : undefined
+      const parent = entity?.parent_id != null ? entityById.value.get(entity.parent_id) : undefined
+      group = {
+        key,
+        entityId,
+        name: ev.entity_name || entity?.name || '未知实体',
+        parentName: parent?.name ?? '',
+        events: [],
+      }
+      groups.set(key, group)
+    }
+    group.events.push(ev)
   }
-  return groups
+  return [...groups.values()]
 })
 
 /**
@@ -633,19 +701,32 @@ async function openSourceArticle(ev: ResearchEventWithContext) {
 }
 
 /**
- * 打开时间线分组头对应实体的「实体仪表盘」
+ * 打开分组头对应实体的「实体仪表盘」
  *
- * 分组按实体名聚合，需先反查实体 ID（实体名唯一，未命中则静默忽略）。
- * 走 window 事件 `open-entity-dashboard`，与实体列表入口同构（App.vue 收到后切换主屏到实体仪表盘全屏视图）。
+ * 走 window 事件 `open-entity-dashboard`，与实体列表入口同构（App.vue 收到后
+ * 切换主屏到实体仪表盘全屏视图）。分组已经按 `entity_id` 聚合，直接带 ID，
+ * 不再按名字反查。
  *
- * @param entityName - 分组头显示的实体名
+ * @param group - 被点击的分组
  */
-function openEntityDashboard(entityName: string) {
-  const ent = entitiesStore.entities.find((e) => e.name === entityName)
-  if (!ent) return
+function openEntityDashboard(group: EventGroup) {
+  if (!group.entityId) return
   window.dispatchEvent(
-    new CustomEvent('open-entity-dashboard', { detail: { entityId: ent.id } })
+    new CustomEvent('open-entity-dashboard', { detail: { entityId: group.entityId } })
   )
+}
+
+/**
+ * 去实体管理里定位这个分组对应的实体
+ *
+ * 只派发意图，不自己切页签：页签是外壳的状态，时间线不该知道"实体管理"
+ * 在哪个页签、也不需要知道外壳怎么把焦点传下去。
+ *
+ * @param group - 被点击的分组
+ */
+function gotoEntity(group: EventGroup) {
+  if (!group.entityId) return
+  emit('goto-entity', group.entityId)
 }
 
 /**
@@ -876,17 +957,37 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
 .group-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: var(--sp-1);
   padding-bottom: var(--sp-2);
   border-bottom: 1px solid var(--border);
 }
-.group-header.clickable {
+/* 组头主体是一个按钮（不是 div + role）：整行可点、可 Tab 聚焦，
+   又不会把"打开仪表盘"那个图标钮嵌在另一个按钮里（button 里套 button 是无效结构）。 */
+.group-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  text-align: left;
   cursor: pointer;
   border-radius: var(--r-sm);
 }
-.group-header.clickable:hover .entity-tag {
+.group-main.is-static {
+  cursor: default;
+}
+.group-main:hover:not(.is-static) .entity-tag {
   filter: brightness(0.95);
   text-decoration: underline;
+}
+/* 仪表盘钮：幽灵底图标钮，紧贴组头右端。它提供的是"看数据"，
+   而不点组头就去管理——两者分开，点错也不会付出代价。 */
+.group-dash {
+  flex-shrink: 0;
 }
 /* 分组头 = 弹窗内的区块标题（16/600）。原先 14/600，与下面 14 的事件正文同字号，
    只靠字重分辨（中文只有 400/700 两档，字重形不成层级）→ 提到 16。 */
@@ -900,8 +1001,13 @@ watch([filterDays, filterEntityId, filterEventType, filterSentiment], async () =
   border-radius: var(--r-sm);
 }
 .entity-count {
+  /* 组头主体变成按钮后，计数不再是 space-between 的第二项 ——
+     margin-left:auto 把它推到组头右端，与下方事件的右对齐标签列同一条竖线。 */
+  margin-left: auto;
+  flex-shrink: 0;
   font-size: var(--fs-modal-meta);
   color: var(--text-tertiary);
+  white-space: nowrap;
 }
 
 /* 情感徽标：与 .event-type 同几何，但语义色用 positive/negative/neutral。

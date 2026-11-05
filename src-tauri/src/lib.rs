@@ -467,6 +467,7 @@ pub fn run() {
             entities_set_alert_rules,
             entities_merge,
             entities_set_aliases,
+            entities_set_parent,
             entities_suggest_aliases,
             entities_suggest_merges,
             entity_graph,
@@ -2707,6 +2708,19 @@ async fn entities_create(name: String, entity_type: String) -> Result<db::Entity
         }
         _ => Vec::new(),
     };
+    // 4. 归属：判定那一次顺带认出的所属公司（模型只会返回清单里类型为 company 的名字）。
+    // 写入失败不阻断新建——归属是展示层的附加信息，用户还能在「名称与合并」里手动改。
+    if let Some(parent_name) = suggestion.as_ref().and_then(|r| r.parent.clone()) {
+        match db::Entity::find_by_name_or_alias(&pool, &parent_name).await {
+            Ok(Some(parent)) => {
+                if let Err(e) = db::Entity::set_parent(&pool, id, Some(parent.id)).await {
+                    eprintln!("[entities] 归属写入失败（{} → {}）: {}", name, parent.name, e);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("[entities] 归属目标查询失败（{}）: {}", parent_name, e),
+        }
+    }
     Ok(db::EntityCreateOutcome {
         id,
         name,
@@ -2714,6 +2728,23 @@ async fn entities_create(name: String, entity_type: String) -> Result<db::Entity
         merged_into: None,
         aliases,
     })
+}
+
+/// 设置实体的归属（产品 / 子公司 / 人物 → 公司）
+///
+/// 归属只影响展示与聚合（列表分组、时间线的「属于 X」、仪表盘的旗下清单），
+/// **不改变**评分、归一化与事件归属——产品的事件仍记在产品名下。
+///
+/// # 参数
+/// * `entity_id` - 被设置的实体
+/// * `parent_id` - 上级公司 ID；`None` 表示取消归属
+///
+/// # 错误
+/// 实体不存在、挂到自己、上级不是公司、或形成环时返回错误信息
+#[tauri::command]
+async fn entities_set_parent(entity_id: i64, parent_id: Option<i64>) -> Result<(), String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    db::Entity::set_parent(&pool, entity_id, parent_id).await
 }
 
 /// 把一个实体并入另一个（不可逆）

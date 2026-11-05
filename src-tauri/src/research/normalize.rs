@@ -204,9 +204,9 @@ pub async fn normalize_and_store_events(
     let mut index = EntityIndex::load(pool).await?;
 
     // 兜底命名解析：先问一次"这些没命中的名字是不是已有实体的另一种写法"，
-    // 结果直接改写索引（命中的）与返回的初始别名表（新实体）。
+    // 结果直接改写索引（命中的）与返回的初始别名/归属（新实体）。
     // 放在循环之前是必需的：判定要一次覆盖全篇，逐条问会把同一批名字重复提交。
-    let new_entity_aliases = resolve_unknown_names(pool, provider, &mut index, events).await;
+    let new_entity_hints = resolve_unknown_names(pool, provider, &mut index, events).await;
 
     for event in events {
         let canonical = event.canonical_name.trim();
@@ -243,14 +243,12 @@ pub async fn normalize_and_store_events(
                 // 初始别名表 = 抽取时模型给的写法 ∪ 命名判定给出的写法。
                 // 后者常有前者没有的东西：抽取时模型眼里只有"三星电子"这一个词，
                 // 判定那一次问的是"这个实体还有哪些常见写法"，答案里才有 Samsung。
+                let hint = new_entity_hints.get(&normalize_entity_key(canonical));
                 let initial_aliases = collect_aliases(
                     canonical,
                     &[
                         &event.aliases,
-                        new_entity_aliases
-                            .get(&normalize_entity_key(canonical))
-                            .map(|v| v.as_slice())
-                            .unwrap_or(&[]),
+                        hint.map(|h| h.aliases.as_slice()).unwrap_or(&[]),
                     ],
                 );
                 let aliases_json = serde_json::to_string(&initial_aliases)
@@ -263,6 +261,17 @@ pub async fn normalize_and_store_events(
                         .await
                         .map_err(|e| e.to_string())?;
                 }
+                // 归属：判定那一次若认出所属公司，直接挂上。
+                // 失败不阻断入库——归属是展示层的附加信息，不该让一条事件丢掉。
+                let parent_id = hint
+                    .and_then(|h| h.parent.as_deref())
+                    .and_then(|name| index.get(name))
+                    .map(|e| e.id);
+                if let Some(pid) = parent_id {
+                    if let Err(e) = Entity::set_parent(pool, new_id, Some(pid)).await {
+                        eprintln!("[research] 归属写入失败（{} → {}）: {}", canonical, pid, e);
+                    }
+                }
                 // 就地构造实体对象带回：刚写入的这行就是权威值（enabled 取建表默认的启用态），
                 // 省掉"再从库里读一遍"的往返
                 let created = Entity {
@@ -271,6 +280,7 @@ pub async fn normalize_and_store_events(
                     entity_type: entity_type.to_string(),
                     aliases: aliases_json,
                     enabled: true,
+                    parent_id,
                     created_at: chrono::Utc::now(),
                 };
                 // 登记进索引：同一篇文章里后续提到同一实体时直接复用，不会重复建实体
@@ -344,6 +354,18 @@ pub async fn normalize_and_store_events(
     Ok(inserted)
 }
 
+/// 一个新名字的附加信息（批量命名判定的产物）
+///
+/// 只服务于"新建实体"这条分支：别名是初始别名表，`parent` 是判定出的所属公司
+/// （规范名，已由 [`super::aliases::resolve_names`] 校验过在清单内且是公司）。
+#[derive(Debug, Clone, Default)]
+struct NewEntityHint {
+    /// 该名字的其他常见写法
+    aliases: Vec<String>,
+    /// 所属公司规范名；`None` = 模型没给或拿不准
+    parent: Option<String>,
+}
+
 /// 对"没命中任何已有实体"的名字做一次同一实体判定（兜底路径）
 ///
 /// 只有给了 `provider` 才会真的问模型；判定失败一律降级为"按新实体处理"。
@@ -357,17 +379,17 @@ pub async fn normalize_and_store_events(
 /// * `events` - 本篇事件（只取其中的 canonical 名）
 ///
 /// # 返回值
-/// 新名字的初始别名表（键为归一化后的名字）。命中的名字不在表里——
+/// 新名字的附加信息（键为归一化后的名字）。命中的名字不在表里——
 /// 它们已经成为目标实体的别名。
 async fn resolve_unknown_names(
     pool: &SqlitePool,
     provider: Option<&ai::AIProvider>,
     index: &mut EntityIndex,
     events: &[ExtractedEvent],
-) -> HashMap<String, Vec<String>> {
-    let mut aliases_for_new: HashMap<String, Vec<String>> = HashMap::new();
+) -> HashMap<String, NewEntityHint> {
+    let mut hints: HashMap<String, NewEntityHint> = HashMap::new();
     let Some(provider) = provider else {
-        return aliases_for_new;
+        return hints;
     };
 
     // 候选：未命中索引、未被屏蔽、篇内去重
@@ -384,7 +406,7 @@ async fn resolve_unknown_names(
         pending.push(canonical.to_string());
     }
     if pending.is_empty() {
-        return aliases_for_new;
+        return hints;
     }
 
     let briefs = aliases::briefs_from_entities(&index.entities);
@@ -392,7 +414,7 @@ async fn resolve_unknown_names(
         Ok(v) => v,
         Err(e) => {
             eprintln!("[research] 实体命名判定失败，按新实体处理: {}", e);
-            return aliases_for_new;
+            return hints;
         }
     };
 
@@ -413,16 +435,17 @@ async fn resolve_unknown_names(
                     ),
                 }
             }
-            // 确实是新实体：记下它的其他写法，等新建时一起入库
+            // 确实是新实体：记下它的其他写法与所属公司，等新建时一起入库
             None => {
-                aliases_for_new
-                    .entry(normalize_entity_key(&item.name))
-                    .or_default()
-                    .extend(item.aliases);
+                let hint = hints.entry(normalize_entity_key(&item.name)).or_default();
+                hint.aliases.extend(item.aliases);
+                if hint.parent.is_none() {
+                    hint.parent = item.parent;
+                }
             }
         }
     }
-    aliases_for_new
+    hints
 }
 
 /// 把模型给出的别称合并进已有实体的别名表
@@ -490,6 +513,7 @@ mod tests {
                 entity_type TEXT NOT NULL DEFAULT 'company', \
                 aliases TEXT NOT NULL DEFAULT '[]', \
                 enabled INTEGER DEFAULT 1, \
+                parent_id INTEGER, \
                 alert_rules TEXT, \
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP, \
                 UNIQUE(name, entity_type))",

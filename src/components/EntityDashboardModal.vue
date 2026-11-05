@@ -38,6 +38,26 @@
             <div class="tech-hero-chips">
               <span v-if="entityTypeLabel" class="badge">{{ entityTypeLabel }}</span>
               <span class="badge" :class="sentimentClass">{{ sentimentLabel }}</span>
+              <!-- 归属关系：产品/子公司/人物显示上级，公司显示旗下清单。
+                   两边都可点——"这东西是谁的"往往就是下一个要看的东西。 -->
+              <span v-if="parentEntity" class="dash-rel">
+                属于
+                <button type="button" class="dash-rel-link" @click="openRelated(parentEntity.id)">
+                  {{ parentEntity.name }}
+                </button>
+              </span>
+              <span v-if="childrenEntities.length" class="dash-rel">
+                旗下
+                <button
+                  v-for="child in childrenEntities"
+                  :key="child.id"
+                  type="button"
+                  class="dash-rel-link"
+                  @click="openRelated(child.id)"
+                >
+                  {{ child.name }}
+                </button>
+              </span>
             </div>
           </header>
 
@@ -286,6 +306,40 @@ function onClose() {
 const researchStore = useResearchStore()
 const entitiesStore = useEntitiesStore()
 const eventTypesStore = useEventTypesStore()
+
+/** 当前实体行（归属关系从这里读；列表未加载时为空） */
+const currentEntity = computed(
+  () => entitiesStore.entities.find(e => e.id === props.entityId) ?? null,
+)
+
+/** 上级公司（有归属时才有值） */
+const parentEntity = computed(() => {
+  const pid = currentEntity.value?.parent_id
+  if (pid === null || pid === undefined) return null
+  return entitiesStore.entities.find(e => e.id === pid) ?? null
+})
+
+/** 旗下实体（直接下级，按列表原顺序） */
+const childrenEntities = computed(() =>
+  props.entityId === null
+    ? []
+    : entitiesStore.entities.filter(e => e.parent_id === props.entityId),
+)
+
+/**
+ * 在同一弹窗里切到另一个实体（上级 / 旗下）
+ *
+ * 走与外部入口相同的事件，而不是自己改 `uiStore.entityDashboardId`：
+ * 弹窗的重新聚合由 `watch(open ? entityId : null)` 驱动，改 store 就够了；
+ * 但入口保持单一，别处将来接入时不会漏掉"先打开再设 id"的语义。
+ *
+ * @param id - 目标实体 ID
+ */
+function openRelated(id: number) {
+  if (id === props.entityId) return
+  window.dispatchEvent(new CustomEvent('open-entity-dashboard', { detail: { entityId: id } }))
+}
+
 // 仪表盘打开时加载一次生效事件类型枚举，供事件区中文标签
 watch(
   () => props.open,
@@ -762,6 +816,40 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .badge.positive { background: var(--entity-product); }
 .badge.negative { background: var(--entity-regulatory); }
 .badge.neutral { background: var(--entity-other); }
+/* Hero 徽标行：类型 / 舆情 / 归属。原先这行没定义样式，三个 span 会挨着排成一片；
+   加 flex + wrap 后，归属里"旗下"可能有多个名字，窄窗自动换行而不是被裁掉。 */
+.tech-hero-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1);
+}
+/* 归属：文字用三级、名字用主色文字链（不是按钮——它是"跳到另一张页"，样式同 .source-link） */
+.dash-rel {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-05);
+  font-size: var(--fs-modal-meta);
+  color: var(--text-tertiary);
+}
+.dash-rel-link {
+  border: none;
+  background: var(--primary-tint);
+  color: var(--primary-text);
+  font-family: inherit;
+  font-size: var(--fs-modal-meta);
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.dash-rel-link:hover {
+  text-decoration: underline;
+}
+.dash-rel-link:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
 .dash-stat {
   font-size: var(--fs-modal-body);
   line-height: var(--lh-modal-body);

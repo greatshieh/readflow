@@ -166,6 +166,30 @@ export const useEntitiesStore = defineStore('entities', () => {
   }
 
   /**
+   * 设置实体的归属（产品 / 子公司 / 人物 → 公司）
+   *
+   * 归属只影响展示与分组，不改变评分与事件归属。后端会拒绝"挂到自己"
+   * "上级不是公司"和任何成环的写法，错误原样抛给调用方展示。
+   *
+   * @param entityId - 被设置的实体
+   * @param parentId - 上级公司 ID；null 表示取消归属
+   * @throws 后端拒绝（成环 / 非公司 / 不存在）时原样抛出
+   */
+  async function setParent(entityId: number, parentId: number | null): Promise<void> {
+    try {
+      await invoke<void>('entities_set_parent', { entityId, parentId })
+      // 本地列表同步，避免关闭弹窗后行内仍显示旧归属
+      const entity = entities.value.find(e => e.id === entityId)
+      if (entity) {
+        entity.parent_id = parentId
+      }
+    } catch (e) {
+      console.error('设置实体归属失败:', e)
+      throw e
+    }
+  }
+
+  /**
    * 删除实体
    *
    * 后端在同一次调用里做两件事：把名字写进屏蔽表、删掉实体行（关联表由
@@ -322,6 +346,7 @@ export const useEntitiesStore = defineStore('entities', () => {
     createEntity,
     mergeEntities,
     setAliases,
+    setParent,
     suggestAliases,
     suggestMerges,
     deleteEntity,

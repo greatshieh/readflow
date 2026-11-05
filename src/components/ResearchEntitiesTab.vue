@@ -3,29 +3,41 @@
        只做一件事：系统要盯谁（增删 / 启停 / 重评分 / 告警规则）。
        「覆盖」曾是本页签内的第二个视图，已拆成平级页签——两个任务是不同的心智
        （这里是**配置**，覆盖是**台账/决策记录**），理由见 `ResearchModal` 侧栏注释。 -->
-  <div class="m-body">
-    <!-- 实体列表 -->
+  <div class="m-body" ref="bodyRef">
+    <!-- 实体列表：按归属展开成树（公司行 → 旗下产品/子公司/人物缩进一级）。
+         顺序仍是后端给的 id 升序，树只是把它重排成"谁属于谁"，
+         不引入第二套排序规则（否则同一份数据在别处看起来是另一个顺序）。 -->
     <div class="entity-list" v-if="entitiesStore.entities.length > 0">
       <div
-        v-for="entity in entitiesStore.entities"
-        :key="entity.id"
+        v-for="row in orderedEntities"
+        :key="row.entity.id"
         class="entity-item"
-        :class="{ 'is-disabled': !entity.enabled }"
+        :class="{ 'is-disabled': !row.entity.enabled, 'is-child': row.depth > 0, 'is-focus': focusRowId === row.entity.id }"
+        :data-entity-id="row.entity.id"
+        :style="row.depth > 0 ? { paddingLeft: `calc(var(--sp-3) + ${row.depth * 14}px)` } : undefined"
       >
         <div
           class="entity-info clickable"
           role="button"
           title="查看实体仪表盘"
-          @click="openDashboard(entity)"
+          @click="openDashboard(row.entity)"
         >
-          <span class="entity-name">{{ entity.name }}</span>
+          <span class="entity-name">{{ row.entity.name }}</span>
           <!-- 类型与状态同占一行：`.entity-info` 是纵向两行（名字 / 元信息），
                如果「已禁用」再单独占一行，每一行会变成三行高，列表密度骤降 -->
           <span class="entity-meta">
-            <span class="entity-type">{{ entityTypeLabel(entity.entity_type) }}</span>
+            <span class="entity-type">{{ entityTypeLabel(row.entity.entity_type) }}</span>
+            <!-- 归属：产品/子公司/人物显示"属于谁"，公司显示"旗下几个"。
+                 两者都是元信息，不与类型抢行。 -->
+            <span v-if="row.parentName" class="entity-parent" :title="`归属：${row.parentName}`">
+              属于 {{ row.parentName }}
+            </span>
+            <span v-else-if="childCounts.get(row.entity.id)" class="entity-parent">
+              旗下 {{ childCounts.get(row.entity.id) }} 个
+            </span>
             <!-- 禁用态必须给文字标记，不能只靠降色：降色在低对比与色觉差异下都读不出
                  "它为什么不参与评分"。列表改成含禁用项之后，这一行才第一次可见。 -->
-            <span v-if="!entity.enabled" class="entity-off">已禁用</span>
+            <span v-if="!row.entity.enabled" class="entity-off">已禁用</span>
           </span>
         </div>
         <div class="entity-actions">
@@ -35,18 +47,18 @@
                状态色由 `.enabled` 类承载，按钮外观仍是全局 `.btn .btn-icon .btn-round`。 -->
           <button
             class="btn btn-icon btn-round entity-switch"
-            :class="{ enabled: entity.enabled }"
-            :aria-pressed="entity.enabled"
-            @click="handleToggle(entity)"
-            :title="entity.enabled ? '已启用，点击禁用' : '已禁用，点击启用'"
-            :aria-label="entity.enabled ? '禁用' : '启用'"
+            :class="{ enabled: row.entity.enabled }"
+            :aria-pressed="row.entity.enabled"
+            @click="handleToggle(row.entity)"
+            :title="row.entity.enabled ? '已启用，点击禁用' : '已禁用，点击启用'"
+            :aria-label="row.entity.enabled ? '禁用' : '启用'"
           >
             <span class="entity-switch-dot" aria-hidden="true"></span>
           </button>
           <!-- 删除按钮：`.btn-quiet-danger` = 幽灵底 + 悬停透出危险色 -->
           <button
             class="btn btn-icon btn-quiet btn-quiet-danger"
-            @click="handleDelete(entity)"
+            @click="handleDelete(row.entity)"
             title="删除"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -58,7 +70,7 @@
                与「删除」的区别是它不丢历史——合并只是搬家，删的是那一行。 -->
           <button
             class="btn btn-icon btn-quiet"
-            @click="openIdentity(entity)"
+            @click="openIdentity(row.entity)"
             title="名称与合并"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -71,7 +83,7 @@
           <!-- 告警规则按钮（实体级告警 P1-F） -->
           <button
             class="btn btn-icon btn-quiet"
-            @click="openRuleModal(entity)"
+            @click="openRuleModal(row.entity)"
             title="告警规则"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -207,20 +219,39 @@
  * 不在这里，也不再受 `entityView` 这类二级状态驱动——那套结构曾让同一个
  * 二选一在侧栏和页签内各出现一次，且两处都在宣称覆盖从属于实体。
  *
+ * # 归属树
+ * 列表按 `parent_id` 展开成"公司 → 旗下产品/子公司/人物"的树，层级只影响缩进与
+ * 一行的先后，不引入第二套排序（同层仍按后端给的 id 升序）。归属是展示层的
+ * 从属关系：不参与评分、不搬事件（见 `db::Entity::set_parent` 的说明）。
+ *
+ * # 外部定位（`focus` prop）
+ * 时间线分组头点进来时，外壳切到本页签并传入 `{ id, seq }`。本页签负责滚动到
+ * 那一行并做一次短暂高亮——只有它知道行在哪、滚动容器是谁。
+ *
  * # 与外壳/其它页签的契约
  * - 实体列表的加载由外壳在弹窗打开时统一保证（时间线筛选下拉、覆盖页签共用）；
  * - 评分/增删/启停会让已加载的关系图过期：本页签只 emit `entities-changed`
  *   通知外壳，由外壳据当前主屏视图决定「立即重算」还是「作废待重算」
  *   （见 `ResearchModal.onEntitiesChanged`），省掉一次看不见的全库扫描。
  */
-import { onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppSelect, { type SelectOption } from './AppSelect.vue'
 import EntityAlertRuleModal from './EntityAlertRuleModal.vue'
 import EntityIdentityModal from './EntityIdentityModal.vue'
 import { useEntitiesStore } from '@/stores/entities'
 import { showConfirm } from '@/stores/modal'
 import { ENTITY_TYPE_LABELS, entityTypeLabel } from '@/utils/entityLabels'
-import type { EntityBlock, EntityImpact, MergeCandidate } from '@/types'
+import type { Entity, EntityBlock, EntityImpact, MergeCandidate } from '@/types'
+
+const props = defineProps<{
+  /**
+   * 外部要求定位到某个实体（时间线分组头点进来时由外壳传入）
+   *
+   * `seq` 是自增序号：同一个实体连续点两次也要重新滚动并高亮，
+   * 只比 id 的话第二次点击会被判成"没变化"，而用户明明又点了一次。
+   */
+  focus?: { id: number; seq: number } | null
+}>()
 
 const emit = defineEmits<{
   /** 实体集合或评分已变化，已加载的关系图随之过期（外壳转交失效处理） */
@@ -228,6 +259,122 @@ const emit = defineEmits<{
 }>()
 
 const entitiesStore = useEntitiesStore()
+
+/** 页签根元素：滚动的容器，定位到某个实体时用它查行 */
+const bodyRef = ref<HTMLElement | null>(null)
+
+/** 正在高亮的行（-1 = 无），用于让"跳过来看这一行"有落点 */
+const focusRowId = ref<number>(-1)
+
+/** 高亮自动消退的定时器 */
+let focusTimer: ReturnType<typeof setTimeout> | undefined
+
+/** 列表行：实体 + 它在归属树中的层级 + 上级名 */
+interface EntityRow {
+  entity: Entity
+  depth: number
+  parentName: string
+}
+
+/**
+ * 直接下级数量（父行 meta 上显示「旗下 N 个」）
+ *
+ * 只数**直接**下级：它回答的是"这一行下面紧跟着几行"，
+ * 而不是整棵子树的规模——后者在多层结构里会让人以为列表漏了行。
+ */
+const childCounts = computed<Map<number, number>>(() => {
+  const counts = new Map<number, number>()
+  for (const e of entitiesStore.entities) {
+    if (e.parent_id === null || e.parent_id === undefined) continue
+    counts.set(e.parent_id, (counts.get(e.parent_id) ?? 0) + 1)
+  }
+  return counts
+})
+
+/**
+ * 把扁平实体列表展开成"父 → 子"的行序列
+ *
+ * 排序规则刻意保持**后端给的 id 升序**：树只负责重排"谁跟在谁后面"，
+ * 不引入第二套排序（按名字、按启用状态等），否则同一批数据在不同界面
+ * 会呈现不同顺序。环在写入侧已被禁止，这里仍用 visited 兜底脏数据——
+ * 真正的环会让递归永不结束。
+ */
+const orderedEntities = computed<EntityRow[]>(() => {
+  const byId = new Map(entitiesStore.entities.map(e => [e.id, e]))
+  const children = new Map<number, Entity[]>()
+  const roots: Entity[] = []
+  for (const e of entitiesStore.entities) {
+    const pid = e.parent_id
+    if (pid !== null && pid !== undefined && pid !== e.id && byId.has(pid)) {
+      const list = children.get(pid) ?? []
+      list.push(e)
+      children.set(pid, list)
+    } else {
+      roots.push(e)
+    }
+  }
+
+  const rows: EntityRow[] = []
+  const visited = new Set<number>()
+  const walk = (entity: Entity, depth: number, parentName: string) => {
+    if (visited.has(entity.id)) return
+    visited.add(entity.id)
+    rows.push({ entity, depth, parentName })
+    for (const child of children.get(entity.id) ?? []) {
+      walk(child, depth + 1, entity.name)
+    }
+  }
+  for (const root of roots) walk(root, 0, '')
+  // 兜底：落在环里的行没有根可达，不补这一步它们会从列表里凭空消失
+  for (const entity of entitiesStore.entities) {
+    if (!visited.has(entity.id)) walk(entity, 0, '')
+  }
+  return rows
+})
+
+/** 还没定位成功的 focus 目标（列表尚未加载时会出现） */
+const pendingFocusId = ref<number | null>(null)
+
+/**
+ * 尝试把当前 focus 目标滚到视野中央
+ *
+ * 找不到行时不报错而是记进 `pendingFocusId`：外壳在实体列表加载完之前
+ * 就会把 focus 传进来（页签常驻挂载），此时行还没渲染，滚不动是正常的。
+ */
+async function locateFocus() {
+  const target = props.focus
+  if (!target) return
+  await nextTick()
+  const el = bodyRef.value?.querySelector<HTMLElement>(
+    `[data-entity-id="${target.id}"]`,
+  )
+  if (!el) {
+    pendingFocusId.value = target.id
+    return
+  }
+  pendingFocusId.value = null
+  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  el.scrollIntoView({ block: 'center', behavior: reduceMotion ? 'auto' : 'smooth' })
+  focusRowId.value = target.id
+  if (focusTimer) clearTimeout(focusTimer)
+  focusTimer = window.setTimeout(() => {
+    focusRowId.value = -1
+  }, 1400)
+}
+
+watch(() => props.focus, () => void locateFocus(), { immediate: true })
+
+/** 列表到位后补一次：focus 先于数据到达时，行是在这之后才渲染出来的 */
+watch(
+  () => entitiesStore.entities.length,
+  () => {
+    if (pendingFocusId.value !== null) void locateFocus()
+  },
+)
+
+onBeforeUnmount(() => {
+  if (focusTimer) clearTimeout(focusTimer)
+})
 
 /** 新实体的名称输入 */
 const newName = ref('')
@@ -546,6 +693,13 @@ onMounted(() => {
 .entity-type {
   font-size: var(--fs-modal-meta);
   color: var(--text-tertiary);
+}
+/* 归属标注 `.entity-parent` 是全局类（时间线组头共用），定义在 styles.css */
+/* 从时间线跳过来时的一次性落点提示：描边 + 淡底，1.4s 后自动消退（类由脚本摘掉）。
+   不用动画闪烁——「闪」在密集列表里读作"出错了"。 */
+.entity-item.is-focus {
+  background: var(--primary-tint);
+  box-shadow: inset 0 0 0 2px var(--primary);
 }
 /* 类型 + 状态挤在同一行：两者都是元信息，不该各占一行 */
 .entity-meta {

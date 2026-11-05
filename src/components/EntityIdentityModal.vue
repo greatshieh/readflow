@@ -61,7 +61,25 @@
         </div>
       </section>
 
-      <!-- ② 合并 -->
+      <!-- ② 归属 -->
+      <section class="eid-section">
+        <h4>归属</h4>
+        <p class="eid-desc">
+          它属于哪家公司：产品归到出品公司、子公司归到母公司、人物归到其任职公司。
+          归属只影响列表分组与时间线上的「属于」标注，<strong>不改变评分与事件归属</strong>——
+          产品的事件仍记在产品自己名下。
+        </p>
+
+        <AppSelect
+          v-model="parentValue"
+          :options="parentOptions"
+          placeholder="未设置归属"
+          @update:model-value="handleParentChange"
+        />
+        <p v-if="parentHint" class="eid-hint">{{ parentHint }}</p>
+      </section>
+
+      <!-- ③ 合并 -->
       <section class="eid-section">
         <h4>并入其他实体</h4>
         <p class="eid-desc">
@@ -175,6 +193,54 @@ const targetImpact = ref<EntityImpact | null>(null)
 /** 当前实体的影响面 */
 const selfImpact = ref<EntityImpact | null>(null)
 
+/** 归属下拉的当前值（'' = 不归属任何公司） */
+const parentValue = ref<string>('')
+/** 归属变更的行内提示 */
+const parentHint = ref('')
+
+/**
+ * 自己的后代集合（沿 `parent_id` 向下扩展）
+ *
+ * 用于过滤归属下拉：把自己的下级选成自己的上级，会直接成环。后端会拒绝，
+ * 但入口就不该出现——用户在这里看到的应该是"能选的东西"，不是"选了会报错的选项"。
+ * 循环用 `!out.has` 兜底脏数据里的环，避免这里先卡死。
+ */
+const descendantIds = computed(() => {
+  const out = new Set<number>()
+  const root = props.entity?.id
+  if (root === undefined) return out
+  let frontier: number[] = [root]
+  while (frontier.length > 0) {
+    const next: number[] = []
+    for (const e of entitiesStore.entities) {
+      if (e.parent_id !== null && e.parent_id !== undefined && frontier.includes(e.parent_id) && !out.has(e.id)) {
+        out.add(e.id)
+        next.push(e.id)
+      }
+    }
+    frontier = next
+  }
+  return out
+})
+
+/**
+ * 可选的归属目标：只列公司，且排除自己与自己的后代
+ *
+ * 首项是"不归属任何公司"：取消归属必须能在这里一次点掉，
+ * 否则用户只能去找另一个实体来"顶替"，反而制造错误归属。
+ */
+const parentOptions = computed<SelectOption[]>(() => [
+  { value: '', label: '不归属任何公司' },
+  ...entitiesStore.entities
+    .filter(
+      e =>
+        e.entity_type === 'company' &&
+        e.id !== props.entity?.id &&
+        !descendantIds.value.has(e.id),
+    )
+    .map(e => ({ value: String(e.id), label: e.name })),
+])
+
 /** 并入目标实体对象 */
 const target = computed(() => entitiesStore.entities.find(e => String(e.id) === targetId.value) ?? null)
 
@@ -205,6 +271,8 @@ watch(
     newAlias.value = ''
     hint.value = ''
     error.value = ''
+    parentValue.value = props.entity?.parent_id ? String(props.entity.parent_id) : ''
+    parentHint.value = ''
     // 预选目标：「AI 查重」点进来时直接落在建议的那一侧，仍可改
     targetId.value = props.suggestedTarget ? String(props.suggestedTarget) : ''
     targetImpact.value = null
@@ -331,6 +399,37 @@ async function handleSuggest() {
 }
 
 /**
+ * 改变归属（选中即保存）
+ *
+ * 归属是单值设置、没有"批量编辑"的语义，再要求点一次保存只会让人以为没生效。
+ * 失败必须把下拉退回原值：库里没变而界面显示变了，是最容易误导的一类状态。
+ *
+ * @param value - 下拉值（'' = 取消归属，其余为上级实体 ID 的字符串）
+ */
+async function handleParentChange(value: string | number) {
+  const entity = props.entity
+  if (!entity) return
+  const next = value === '' ? null : Number(value)
+  const current = entity.parent_id ?? null
+  if (next === current) return
+  error.value = ''
+  try {
+    await entitiesStore.setParent(entity.id, next)
+    const targetName = next === null
+      ? ''
+      : entitiesStore.entities.find(e => e.id === next)?.name ?? ''
+    parentHint.value = next === null
+      ? `已取消「${entity.name}」的归属`
+      : `「${entity.name}」已归属到「${targetName}」`
+    // 让外壳刷新列表分组（归属是列表排序的输入），不关闭弹窗
+    emit('changed', parentHint.value)
+  } catch (e) {
+    parentValue.value = current === null ? '' : String(current)
+    error.value = `设置归属失败：${e instanceof Error ? e.message : String(e)}`
+  }
+}
+
+/**
  * 保存别名表
  */
 async function handleSaveAliases() {
@@ -387,6 +486,8 @@ async function handleMerge() {
     if (report.theses_moved) parts.push(`搬走 ${report.theses_moved} 条论点`)
     if (report.symbols_moved) parts.push(`搬走 ${report.symbols_moved} 条市场标的`)
     if (report.financial_dropped) parts.push(`丢弃 ${report.financial_dropped} 条重复财务数据`)
+    // 下级（产品/子公司/人物）跟着搬家：不报出来，用户会以为那些行的归属丢了
+    if (report.children_moved) parts.push(`${report.children_moved} 个下级改挂到保留方`)
     if (report.aliases_skipped) {
       parts.push(`${report.aliases_skipped} 个别名因被其他实体占用而跳过`)
     }

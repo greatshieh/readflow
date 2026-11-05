@@ -230,6 +230,12 @@ export interface Entity {
   aliases: string
   /** 是否启用 */
   enabled: boolean
+  /**
+   * 上级实体 ID（"它属于谁"）：产品→公司、子公司→母公司、人物→其公司
+   *
+   * 只表达归属，不影响评分与事件匹配；上级被删除时置空。
+   */
+  parent_id: number | null
   /** 创建时间 */
   created_at: string
   /** 告警规则 JSON（实体级告警 P1-F；未配置时为 undefined） */
@@ -317,6 +323,8 @@ export interface MergeReport {
   symbols_moved: number
   /** 因唯一约束冲突丢掉的财务数据条数 */
   financial_dropped: number
+  /** 原本挂在并入方名下的下级（产品/子公司/人物）改挂到保留方的条数 */
+  children_moved: number
   /** 因"已被其它实体占用"而没写进来的别名个数（意味着那个写法仍可能长回来） */
   aliases_skipped: number
 }
