@@ -275,6 +275,68 @@ export interface EntityBlock {
 }
 
 /**
+ * 新增实体的结果
+ *
+ * 后端 `entities_create` 的返回。"新增"有两种结局：真的建了一行，
+ * 或者发现它是已有实体的另一种写法而并入（`merged_into` 有值）。
+ * 界面必须区分——否则用户点完「添加」发现列表没多出一行，会以为没生效。
+ */
+export interface EntityCreateOutcome {
+  /** 命中或新建的实体 ID */
+  id: number
+  /** 该实体的规范名（并入时是已有实体的名字，不是输入的那个） */
+  name: string
+  /** 是否真的新建了一行 */
+  created: boolean
+  /** 并入的已有实体名；null 表示确实新建 */
+  merged_into: string | null
+  /** 写入后的完整别名表 */
+  aliases: string[]
+}
+
+/**
+ * 两个实体合并会搬走什么、丢掉什么
+ *
+ * 后端 `entities_merge` 的返回。合并不是删除而是搬家，但撞唯一约束的那部分
+ * 必须丢一侧——这些数字就是"到底丢了什么"。
+ */
+export interface MergeReport {
+  /** 保留方名称 */
+  keep_name: string
+  /** 并入方名称（合并后成为保留方的别名） */
+  merged_name: string
+  /** 改挂到保留方的事件条数 */
+  events_moved: number
+  /** 因"同文同型同事实"被判重复而删掉的事件条数 */
+  events_dropped: number
+  /** 改挂到保留方的论点条数 */
+  theses_moved: number
+  /** 覆盖记录去向：keep 保留方原有 / merged 并入方被改挂 / none 两边都没有 */
+  coverage_kept: 'keep' | 'merged' | 'none'
+  /** 改挂到保留方的市场标的条数 */
+  symbols_moved: number
+  /** 因唯一约束冲突丢掉的财务数据条数 */
+  financial_dropped: number
+  /** 因"已被其它实体占用"而没写进来的别名个数（意味着那个写法仍可能长回来） */
+  aliases_skipped: number
+}
+
+/**
+ * 一条「疑似同一实体」的候选组
+ *
+ * 后端 `entities_suggest_merges` 的返回。**未经人工确认**——
+ * 模型只负责提出"这两行可能是一家"，是否合并由用户决定。
+ */
+export interface MergeCandidate {
+  /** 组内实体 ID（与 `names` 一一对应） */
+  entity_ids: number[]
+  /** 组内实体的规范名 */
+  names: string[]
+  /** 判定理由（模型给出的一句中文） */
+  reason: string
+}
+
+/**
  * 实体关系图的节点
  *
  * 后端 `entity_graph` 的返回元素。`article_count` 是**所选时间窗内**

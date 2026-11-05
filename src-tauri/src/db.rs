@@ -251,6 +251,39 @@ pub(crate) fn normalize_entity_key(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
+/// 合成别名表：剔除空串、主名自身与重复项
+///
+/// # 为什么必须只有一个实现
+/// 别名表有三处写入路径——抽取时合并、命名判定命中后追加、用户手动编辑——
+/// 三者若各写一套去重规则，同一张表里就会出现 `Google` 与 `google` 两条。
+/// 索引按归一化键建，两条都指向同一实体时不报错，但界面"删掉一个别名"
+/// 永远删不干净，而且下一次合并又会把删掉的那条加回来。
+///
+/// # 参数
+/// * `name` - 实体主名（别名表里出现主名等于自己给自己取外号）
+/// * `lists` - 待合并的多组别名，按给定顺序去重（保留首次出现的写法）
+///
+/// # 返回值
+/// 去重后的别名列表
+pub(crate) fn collect_aliases(name: &str, lists: &[&[String]]) -> Vec<String> {
+    let name_key = normalize_entity_key(name);
+    let mut out: Vec<String> = Vec::new();
+    for list in lists {
+        for alias in list.iter() {
+            let alias = alias.trim();
+            let key = normalize_entity_key(alias);
+            if key.is_empty() || key == name_key {
+                continue;
+            }
+            if out.iter().any(|a| normalize_entity_key(a) == key) {
+                continue;
+            }
+            out.push(alias.to_string());
+        }
+    }
+    out
+}
+
 /// 删除某个实体会连带清掉多少东西
 ///
 /// 对应 `entities` 被 5 张表以 `ON DELETE CASCADE` 引用的现实。删除是不可逆的，
@@ -285,6 +318,55 @@ pub struct EntityBlock {
     pub entity_type: String,
     /// 屏蔽时间
     pub created_at: DateTime<Utc>,
+}
+
+/// 两个实体合并（而不是删除）会带来什么
+///
+/// 给"合并确认框"的收尾提示用：合并是**搬东西**，不是删东西，但唯一约束
+/// 撞车的那部分必须丢掉一侧——这些数字就是"到底丢了什么"。
+/// 字段名保持 snake_case，与 [`EntityImpact`] 同一口径（跨边界契约）。
+#[derive(Debug, Clone, Serialize)]
+pub struct MergeReport {
+    /// 保留方名称
+    pub keep_name: String,
+    /// 并入方名称（合并后成为保留方的别名）
+    pub merged_name: String,
+    /// 改挂到保留方的事件条数
+    pub events_moved: i64,
+    /// 因"同文同型同事实"被判为重复而删掉的事件条数
+    pub events_dropped: i64,
+    /// 改挂到保留方的论点条数
+    pub theses_moved: i64,
+    /// 覆盖记录的去向：`keep` 保留方原有、`merged` 并入方的被改挂、`none` 两边都没有
+    pub coverage_kept: String,
+    /// 改挂到保留方的市场标的条数
+    pub symbols_moved: i64,
+    /// 因唯一约束冲突丢掉的财务数据条数
+    pub financial_dropped: i64,
+    /// 因"已被其它实体占用"而没写进来的别名个数
+    ///
+    /// 单独报出来的理由：它意味着**并入方的某个写法仍指向别人**，
+    /// 下次文章里出现那个写法仍可能重新建行。静默跳过会让用户以为合并万事大吉。
+    pub aliases_skipped: i64,
+}
+
+/// 新增实体的结果
+///
+/// 「新增」有两种结局：真的新建了一行，或者发现它其实是已有实体的另一种写法
+/// 而并入（`merged_into` 有值）。界面上必须区分——否则用户点「添加」之后
+/// 列表里没多出行，会以为没生效。
+#[derive(Debug, Clone, Serialize)]
+pub struct EntityCreateOutcome {
+    /// 命中或新建的实体 ID
+    pub id: i64,
+    /// 该实体的规范名
+    pub name: String,
+    /// 是否真的建了新行（`false` = 并入了已有实体）
+    pub created: bool,
+    /// 并入的已有实体名；`None` 表示确实新建
+    pub merged_into: Option<String>,
+    /// 写入后的完整别名表（前端据此回显，不必再查一次）
+    pub aliases: Vec<String>,
 }
 
 impl Entity {
@@ -361,6 +443,387 @@ impl Entity {
         .await
         .map_err(|e| e.to_string())?;
         Ok(id)
+    }
+
+    /// 按 ID 取单个实体
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    /// * `id` - 实体 ID
+    ///
+    /// # 返回值
+    /// 命中时返回实体；不存在时返回 `None`
+    ///
+    /// # 错误
+    /// 查询失败时返回错误信息
+    pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<Entity>, String> {
+        sqlx::query_as::<_, Entity>(
+            "SELECT id, name, entity_type, aliases, enabled, created_at FROM entities WHERE id = ? LIMIT 1",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// 按主名或别名查实体
+    ///
+    /// 口径与归一化的内存索引（`research::normalize::EntityIndex`）一致：
+    /// 先用 [`normalize_entity_key`] 比主名，再比别名，按 id 升序取第一个命中。
+    /// 三处口径统一（索引、屏蔽表、这里）才不会出现"列表里有、抽取却匹配不到"。
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    /// * `name` - 待查名称（大小写不敏感，忽略首尾空白）
+    ///
+    /// # 返回值
+    /// 命中的实体；空名或未命中时返回 `None`
+    ///
+    /// # 错误
+    /// 查询失败时返回错误信息
+    pub async fn find_by_name_or_alias(
+        pool: &SqlitePool,
+        name: &str,
+    ) -> Result<Option<Entity>, String> {
+        let key = normalize_entity_key(name);
+        if key.is_empty() {
+            return Ok(None);
+        }
+        for entity in Self::list_all(pool).await? {
+            if normalize_entity_key(&entity.name) == key {
+                return Ok(Some(entity));
+            }
+            let aliases: Vec<String> =
+                serde_json::from_str(&entity.aliases).unwrap_or_default();
+            if aliases.iter().any(|a| normalize_entity_key(a) == key) {
+                return Ok(Some(entity));
+            }
+        }
+        Ok(None)
+    }
+
+    /// 被**其它**实体占用的名字键（主名 + 别名）
+    ///
+    /// # 为什么自动写入别名前必须查这个
+    /// 同一个写法挂在两个实体上时，归一化按实体 id 先后命中——先建的赢。
+    /// 留着这种"看起来都能匹配"的状态不会报错，但下次抽取把事件记到谁头上
+    /// 取决于 id 大小，而用户以为是自己刚合并的那个。所以自动路径宁可跳过，
+    /// 并把跳过的个数报出来（[`MergeReport::aliases_skipped`]）。
+    ///
+    /// 只有自动路径用它；用户手动编辑别名（[`Self::set_aliases`]）不过滤——
+    /// 他明确写下的就是他要的。
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    /// * `exclude` - 不计入"占用方"的实体 ID（目标实体自身；合并时并入方也算）
+    ///
+    /// # 错误
+    /// 实体表读取失败时返回错误信息
+    async fn keys_owned_by_others(
+        pool: &SqlitePool,
+        exclude: &[i64],
+    ) -> Result<std::collections::HashSet<String>, String> {
+        let mut taken: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for other in Self::list_all(pool)
+            .await?
+            .into_iter()
+            .filter(|e| !exclude.contains(&e.id))
+        {
+            taken.insert(normalize_entity_key(&other.name));
+            if let Ok(aliases) = serde_json::from_str::<Vec<String>>(&other.aliases) {
+                for alias in aliases {
+                    taken.insert(normalize_entity_key(&alias));
+                }
+            }
+        }
+        Ok(taken)
+    }
+
+    /// 追加别名（自动路径：抽取合并、命名判定命中、新增实体时补全）
+    ///
+    /// 已被**其它**实体占用的名字不会被抢：同一个名字挂在两个实体上时，
+    /// 归一化按 id 先后命中，先建的赢——与其留下这种"看起来都能匹配"的
+    /// 不确定状态，不如让当前这次留在原实体上。
+    ///
+    /// 手动编辑不走这里，见 [`Self::set_aliases`]。
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    /// * `id` - 目标实体 ID
+    /// * `names` - 待追加的名字（可含主名与重复项，函数内部过滤）
+    ///
+    /// # 返回值
+    /// 写入后的完整别名表
+    ///
+    /// # 错误
+    /// 实体不存在或写入失败时返回错误信息
+    pub async fn add_aliases(
+        pool: &SqlitePool,
+        id: i64,
+        names: &[String],
+    ) -> Result<Vec<String>, String> {
+        let Some(entity) = Self::get(pool, id).await? else {
+            return Err(format!("实体不存在: {}", id));
+        };
+        let existing: Vec<String> = serde_json::from_str(&entity.aliases).unwrap_or_default();
+
+        // 收集"被别的实体占用"的键
+        let taken = Self::keys_owned_by_others(pool, &[id]).await?;
+        let accepted: Vec<String> = names
+            .iter()
+            .filter(|n| !taken.contains(&normalize_entity_key(n)))
+            .cloned()
+            .collect();
+
+        let merged = collect_aliases(&entity.name, &[&existing, &accepted]);
+        if merged.len() > existing.len() {
+            let aliases_json = serde_json::to_string(&merged).unwrap_or_else(|_| "[]".to_string());
+            sqlx::query("UPDATE entities SET aliases = ? WHERE id = ?")
+                .bind(aliases_json)
+                .bind(id)
+                .execute(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(merged)
+    }
+
+    /// 覆盖别名表（人工编辑路径）
+    ///
+    /// 与 [`Self::add_aliases`] 的差别是**不做占用检查**：用户明确写下的别名就是
+    /// 他要的，静默丢掉一条比留着一条更让人困惑。冲突的后果是归一化按 id 先后
+    /// 命中——仍然确定，只是可能不是他以为的那个实体。
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    /// * `id` - 实体 ID
+    /// * `aliases` - 完整别名表（函数内部去空、去重、去掉与主名重复的项）
+    ///
+    /// # 返回值
+    /// 实际写入的别名表
+    ///
+    /// # 错误
+    /// 实体不存在或写入失败时返回错误信息
+    pub async fn set_aliases(
+        pool: &SqlitePool,
+        id: i64,
+        aliases: &[String],
+    ) -> Result<Vec<String>, String> {
+        let Some(entity) = Self::get(pool, id).await? else {
+            return Err(format!("实体不存在: {}", id));
+        };
+        let merged = collect_aliases(&entity.name, &[aliases]);
+        let aliases_json = serde_json::to_string(&merged).unwrap_or_else(|_| "[]".to_string());
+        sqlx::query("UPDATE entities SET aliases = ? WHERE id = ?")
+            .bind(aliases_json)
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(merged)
+    }
+
+    /// 把一个实体并入另一个实体（不可逆，合并七张表的引用）
+    ///
+    /// # 为什么必须由人触发
+    /// 这不是删除而是"搬家"，但**一定会丢一部分**：两边都有覆盖记录时只能留一份；
+    /// 事件/标的/财务撞唯一约束的那部分必须丢一侧。规则写死在这里，
+    /// 选择与确认交给界面（先看影响面，再点合并）。
+    ///
+    /// # 冲突规则（每一条都是有意选择）
+    /// - `research_events`：`(article_id, event_type, fact)` 相同视为同一条，
+    ///   留保留方的；其余改挂。`event_sentiments` 靠外键跟着事件走。
+    /// - `theses` / `thesis_falsifiers`：无唯一约束，直接改挂。
+    /// - `coverage`：`entity_id` 就是主键。两边都有时留**保留方**那份
+    ///   （"为什么盯它、何时退出"写在保留方上更符合直觉），并入方的丢弃。
+    /// - `market_symbols` / `financial_data`：撞唯一约束时丢并入方的。
+    /// - 并入方的名字写进保留方的 `aliases`，否则下一轮抽取会把它当新实体建回来
+    ///   （与"删除"同一个坑）。注意**不写** `entity_blocklist`——那是删除的语义。
+    /// - 若某个写法已被**第三方**实体占用，则跳过并计入 `aliases_skipped`：
+    ///   抢别人的名字等于把那个实体的事件也吸过来，比分裂更糟。
+    ///
+    /// # 参数
+    /// * `pool` - 数据库连接池
+    /// * `keep_id` - 保留方实体 ID
+    /// * `merge_id` - 并入方实体 ID（完成后该行被删除）
+    ///
+    /// # 返回值
+    /// 搬家与丢弃的明细
+    ///
+    /// # 错误
+    /// 两个 ID 相同、任一实体不存在、或中途写库失败（整体回滚）时返回错误信息
+    pub async fn merge(
+        pool: &SqlitePool,
+        keep_id: i64,
+        merge_id: i64,
+    ) -> Result<MergeReport, String> {
+        if keep_id == merge_id {
+            return Err("不能把一个实体合并到它自己".to_string());
+        }
+        let keep = Self::get(pool, keep_id)
+            .await?
+            .ok_or_else(|| format!("实体不存在: {}", keep_id))?;
+        let merged = Self::get(pool, merge_id)
+            .await?
+            .ok_or_else(|| format!("实体不存在: {}", merge_id))?;
+
+        let keep_aliases: Vec<String> = serde_json::from_str(&keep.aliases).unwrap_or_default();
+        let merged_aliases: Vec<String> =
+            serde_json::from_str(&merged.aliases).unwrap_or_default();
+        // 并入方的名字必须留在别名里，否则下一轮抽取会把它当新实体建回来。
+        // 但它和其它写法一样要过"是否被第三方占用"这道闸：抢别人的名字等于
+        // 把那个实体的事件也吸过来，比分裂更糟。被跳过的个数如实上报。
+        let taken = Self::keys_owned_by_others(pool, &[keep_id, merge_id]).await?;
+        let mut candidates: Vec<String> = vec![merged.name.clone()];
+        candidates.extend(merged_aliases.iter().cloned());
+        let accepted: Vec<String> = candidates
+            .iter()
+            .filter(|a| !taken.contains(&normalize_entity_key(a)))
+            .cloned()
+            .collect();
+        let aliases_skipped = (candidates.len() - accepted.len()) as i64;
+        let aliases = collect_aliases(&keep.name, &[&keep_aliases, &accepted]);
+        let aliases_json = serde_json::to_string(&aliases).unwrap_or_else(|_| "[]".to_string());
+
+        // 整个搬家在一个事务里：中途失败时宁可什么都不做，
+        // 也不要留下"事件搬了、论点没搬"的半个实体。
+        let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+
+        // 1. 事件：先删重复（同文同型同事实），再改挂
+        let events_dropped = sqlx::query(
+            "DELETE FROM research_events WHERE entity_id = ? AND EXISTS (\
+                 SELECT 1 FROM research_events k \
+                 WHERE k.entity_id = ? \
+                   AND k.article_id = research_events.article_id \
+                   AND k.event_type = research_events.event_type \
+                   AND k.fact = research_events.fact)",
+        )
+        .bind(merge_id)
+        .bind(keep_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?
+        .rows_affected() as i64;
+        let events_moved = sqlx::query("UPDATE research_events SET entity_id = ? WHERE entity_id = ?")
+            .bind(keep_id)
+            .bind(merge_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?
+            .rows_affected() as i64;
+
+        // 2. 论点与其反驳线索：无唯一约束，直接改挂
+        let theses_moved = sqlx::query("UPDATE theses SET entity_id = ? WHERE entity_id = ?")
+            .bind(keep_id)
+            .bind(merge_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?
+            .rows_affected() as i64;
+        sqlx::query("UPDATE thesis_falsifiers SET entity_id = ? WHERE entity_id = ?")
+            .bind(keep_id)
+            .bind(merge_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // 3. 覆盖：entity_id 是主键，两边都有时必须丢一份
+        let keep_coverage: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM coverage WHERE entity_id = ?")
+                .bind(keep_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| e.to_string())?;
+        let merged_coverage: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM coverage WHERE entity_id = ?")
+                .bind(merge_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| e.to_string())?;
+        let coverage_kept = if merged_coverage == 0 {
+            if keep_coverage > 0 { "keep" } else { "none" }
+        } else if keep_coverage > 0 {
+            sqlx::query("DELETE FROM coverage WHERE entity_id = ?")
+                .bind(merge_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| e.to_string())?;
+            "keep"
+        } else {
+            sqlx::query("UPDATE coverage SET entity_id = ? WHERE entity_id = ?")
+                .bind(keep_id)
+                .bind(merge_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| e.to_string())?;
+            "merged"
+        };
+
+        // 4. 市场标的：UNIQUE(entity_id, symbol)
+        sqlx::query(
+            "DELETE FROM market_symbols WHERE entity_id = ? \
+             AND symbol IN (SELECT symbol FROM market_symbols WHERE entity_id = ?)",
+        )
+        .bind(merge_id)
+        .bind(keep_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+        let symbols_moved = sqlx::query("UPDATE market_symbols SET entity_id = ? WHERE entity_id = ?")
+            .bind(keep_id)
+            .bind(merge_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?
+            .rows_affected() as i64;
+
+        // 5. 财务：UNIQUE(article_id, entity_id, metric_key)
+        let financial_dropped = sqlx::query(
+            "DELETE FROM financial_data WHERE entity_id = ? AND EXISTS (\
+                 SELECT 1 FROM financial_data k \
+                 WHERE k.entity_id = ? \
+                   AND k.article_id = financial_data.article_id \
+                   AND k.metric_key = financial_data.metric_key)",
+        )
+        .bind(merge_id)
+        .bind(keep_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?
+        .rows_affected() as i64;
+        sqlx::query("UPDATE financial_data SET entity_id = ? WHERE entity_id = ?")
+            .bind(keep_id)
+            .bind(merge_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // 6. 收尾：写别名 → 删并入方那一行
+        sqlx::query("UPDATE entities SET aliases = ? WHERE id = ?")
+            .bind(&aliases_json)
+            .bind(keep_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        sqlx::query("DELETE FROM entities WHERE id = ?")
+            .bind(merge_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        tx.commit().await.map_err(|e| e.to_string())?;
+
+        Ok(MergeReport {
+            keep_name: keep.name,
+            merged_name: merged.name,
+            events_moved,
+            events_dropped,
+            theses_moved,
+            coverage_kept: coverage_kept.to_string(),
+            symbols_moved,
+            financial_dropped,
+            aliases_skipped,
+        })
     }
 
     /// 删除实体，并把它的名字记入屏蔽表
@@ -6319,6 +6782,216 @@ mod tests {
             .await
             .expect("计数失败");
         assert_eq!(by_tag, 1, "标签范围内的未读应为 1");
+    }
+
+    // ─── 实体合并 ─────────────────────────────────────────────────────────────
+
+    /// 建完整 schema 的内存库
+    ///
+    /// 合并要动七张表，手抄 DDL 必然漂移（本模块开头已经吃过一次亏），
+    /// 所以一律走 [`create_tables`]。
+    async fn setup_entities() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("建内存库失败");
+        create_tables(&pool).await.expect("建表失败");
+        pool
+    }
+
+    /// 插入一个订阅源与一篇文章，返回文章 ID
+    async fn seed_article(pool: &SqlitePool, title: &str) -> i64 {
+        let feed_id = sqlx::query("INSERT INTO feeds (name, url) VALUES ('源', ?)")
+            .bind(format!("https://example.com/{}", title))
+            .execute(pool)
+            .await
+            .expect("插入订阅源失败")
+            .last_insert_rowid();
+        sqlx::query(
+            "INSERT INTO articles (feed_id, guid, link, title, summary) VALUES (?, ?, ?, ?, '')",
+        )
+        .bind(feed_id)
+        .bind(title)
+        .bind(format!("https://example.com/a/{}", title))
+        .bind(title)
+        .execute(pool)
+        .await
+        .expect("插入文章失败")
+        .last_insert_rowid()
+    }
+
+    /// 给实体插一条研究事件
+    async fn seed_event(
+        pool: &SqlitePool,
+        article_id: i64,
+        entity_id: i64,
+        event_type: &str,
+        fact: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO research_events (article_id, entity_id, event_type, fact, evidence) \
+             VALUES (?, ?, ?, ?, '')",
+        )
+        .bind(article_id)
+        .bind(entity_id)
+        .bind(event_type)
+        .bind(fact)
+        .execute(pool)
+        .await
+        .expect("插入事件失败");
+    }
+
+    /// 合并：子表全部改挂、撞唯一约束的丢并入方、名字变成别名
+    ///
+    /// 这条用例盯的是"会静默丢数据"的四类冲突——事件同文同型同事实、
+    /// 覆盖主键冲突、标的唯一约束、财务唯一约束。任何一处写反，
+    /// 表现都不是报错，而是"某天的历史少了几条"。
+    #[tokio::test]
+    async fn merge_moves_children_and_resolves_conflicts() {
+        let pool = setup_entities().await;
+        let keep = Entity::create(&pool, "谷歌", "company").await.expect("建实体失败");
+        let merged = Entity::create(&pool, "Google", "company").await.expect("建实体失败");
+        let art1 = seed_article(&pool, "a1").await;
+        let art2 = seed_article(&pool, "a2").await;
+
+        // 事件：art1 上一条重复（应丢弃），art2 上一条独立（应改挂）
+        seed_event(&pool, art1, keep, "product", "发布 Gemini").await;
+        seed_event(&pool, art1, keep, "strategy", "重组").await;
+        seed_event(&pool, art1, merged, "product", "发布 Gemini").await;
+        seed_event(&pool, art2, merged, "product", "关闭项目").await;
+
+        // 覆盖：两边都有 → 留保留方
+        sqlx::query("INSERT INTO coverage (entity_id, tier, reason, exit_condition) VALUES (?, 'core', '保留方的理由', '')")
+            .bind(keep)
+            .execute(&pool)
+            .await
+            .expect("插入覆盖失败");
+        sqlx::query("INSERT INTO coverage (entity_id, tier, reason, exit_condition) VALUES (?, 'watch', '并入方的理由', '')")
+            .bind(merged)
+            .execute(&pool)
+            .await
+            .expect("插入覆盖失败");
+
+        // 标的：GOOG 冲突（丢并入方），GOOGL 独立（改挂）
+        for (entity, symbol) in [(keep, "GOOG"), (merged, "GOOG"), (merged, "GOOGL")] {
+            sqlx::query("INSERT INTO market_symbols (entity_id, symbol) VALUES (?, ?)")
+                .bind(entity)
+                .bind(symbol)
+                .execute(&pool)
+                .await
+                .expect("插入标的失败");
+        }
+
+        // 论点：落在并入方，必须跟着走
+        sqlx::query("INSERT INTO theses (statement, entity_id) VALUES ('广告业务见顶', ?)")
+            .bind(merged)
+            .execute(&pool)
+            .await
+            .expect("插入论点失败");
+
+        let report = Entity::merge(&pool, keep, merged).await.expect("合并失败");
+
+        assert_eq!(report.events_moved, 1, "art2 那条应改挂");
+        assert_eq!(report.events_dropped, 1, "art1 上的重复事件应丢弃");
+        assert_eq!(report.theses_moved, 1);
+        assert_eq!(report.symbols_moved, 1, "GOOGL 应改挂，GOOG 应丢弃");
+        assert_eq!(report.coverage_kept, "keep");
+
+        // 并入方那一行必须消失（不是禁用）
+        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entities WHERE id = ?")
+            .bind(merged)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(left, 0);
+
+        // 名字必须变成别名，否则下一轮抽取会把它当新实体建回来
+        let kept = Entity::get(&pool, keep).await.unwrap().expect("保留方应存在");
+        let aliases: Vec<String> = serde_json::from_str(&kept.aliases).unwrap();
+        assert!(aliases.iter().any(|a| a == "Google"), "并入方名字应成为别名: {:?}", aliases);
+
+        // 保留方名下：2 条自己的 + 1 条改挂的
+        let events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM research_events WHERE entity_id = ?")
+                .bind(keep)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(events, 3);
+
+        // 覆盖只留保留方那份（理由不能被并进来）
+        let reason: String = sqlx::query_scalar("SELECT reason FROM coverage WHERE entity_id = ?")
+            .bind(keep)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(reason, "保留方的理由");
+        let cov_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM coverage")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(cov_total, 1, "并入方的覆盖记录应被删除");
+
+        let symbols: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM market_symbols WHERE entity_id = ?")
+                .bind(keep)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(symbols, 2, "GOOG 与 GOOGL 都应在保留方名下");
+
+        let thesis_owner: i64 = sqlx::query_scalar("SELECT entity_id FROM theses LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(thesis_owner, keep);
+    }
+
+    /// 并入方的名字若已被第三方占用，不能被抢过来
+    ///
+    /// 抢名字的后果比分裂更糟：那个实体以后收到的事件会记到保留方头上，
+    /// 而它自己的名字反而匹配不到自己。跳过并把个数报出来，让用户知道
+    /// "这个写法还是别人的，可能还会长回来"。
+    #[tokio::test]
+    async fn merge_does_not_steal_alias_owned_by_third_entity() {
+        let pool = setup_entities().await;
+        let keep = Entity::create(&pool, "谷歌", "company").await.expect("建实体失败");
+        let merged = Entity::create(&pool, "Google", "company").await.expect("建实体失败");
+        // 第三方已经用着 "google" 这个写法（历史数据里很常见：子公司/项目实体）
+        let third = Entity::create(&pool, "谷歌DeepMind", "company")
+            .await
+            .expect("建实体失败");
+        Entity::set_aliases(&pool, third, &["Google".to_string()])
+            .await
+            .expect("写别名失败");
+
+        let report = Entity::merge(&pool, keep, merged).await.expect("合并失败");
+
+        assert_eq!(report.aliases_skipped, 1, "被第三方占用的名字应跳过并计数");
+        let kept = Entity::get(&pool, keep).await.unwrap().expect("保留方应存在");
+        let aliases: Vec<String> = serde_json::from_str(&kept.aliases).unwrap();
+        assert!(
+            !aliases.iter().any(|a| a.eq_ignore_ascii_case("Google")),
+            "不得抢占第三方的写法: {:?}",
+            aliases
+        );
+        // 第三方的别名必须原样保留
+        let third_row = Entity::get(&pool, third).await.unwrap().expect("第三方应存在");
+        assert!(third_row.aliases.contains("Google"));
+    }
+
+    /// 合并到自身，或任一侧不存在：报错且不留痕迹
+    #[tokio::test]
+    async fn merge_rejects_self_and_missing() {
+        let pool = setup_entities().await;
+        let keep = Entity::create(&pool, "苹果", "company").await.expect("建实体失败");
+
+        assert!(Entity::merge(&pool, keep, keep).await.is_err(), "不能合并到自己");
+        assert!(
+            Entity::merge(&pool, keep, 9999).await.is_err(),
+            "并入方不存在应报错"
+        );
+        // 失败后保留方必须完好
+        assert!(Entity::get(&pool, keep).await.unwrap().is_some());
     }
 
     // ─── 实体关系图 ───────────────────────────────────────────────────────────

@@ -465,6 +465,10 @@ pub fn run() {
             entities_toggle,
             entities_get_alert_rules,
             entities_set_alert_rules,
+            entities_merge,
+            entities_set_aliases,
+            entities_suggest_aliases,
+            entities_suggest_merges,
             entity_graph,
             // 智能评分命令
             score_articles,
@@ -2617,24 +2621,180 @@ async fn entities_list() -> Result<Vec<db::Entity>, String> {
     db::Entity::list_all(&pool).await
 }
 
-/// 新增实体
+/// 新增实体：先解析命名，必要时并入已有实体，并自动补全别名
 ///
-/// 建完之后顺手解除同名屏蔽项：用户手动把这个名字加了回来，就说明他要它，
-/// 拦着没有意义。不解的话会出现一种**不报错的不一致**——列表里明明有这个实体，
-/// 归一化却因为屏蔽表而跳过它的事件，表现为"实体在、但永远收不到东西"。
+/// # 为什么 AI 要参与
+/// 「Google」「谷歌」「Alphabet Inc.」是同一家，字符串层面永远认不出来。用户手动加
+/// 「Google」时库里很可能已有「谷歌」，直接建行就是**第二次分裂**——而且这次是
+/// 用户亲手造成的，比自动抽取造成的更难发现（列表里两个都像他加的）。
+///
+/// # 顺序（任何一步失败都往下退，绝不因为 AI 不可用就不让加）
+/// 1. 本地匹配主名/别名，命中则并入该实体、把这次的名字记成别名；
+/// 2. 问模型"这个名字是不是已有实体的另一种写法"，命中同样并入；
+/// 3. 都不是 → 新建，并把模型给出的其他写法（中英文名、简称）作为初始别名。
+///
+/// 三种结局由返回值的 `created` / `merged_into` 区分，界面必须据此提示——
+/// 否则用户点完「添加」发现列表没多出一行，会以为没生效。
 ///
 /// # 参数
-/// * `name` - 实体名称（如 "腾讯"、"GOOG"）
+/// * `name` - 实体名称（如 "腾讯"、"Google"）
 /// * `entity_type` - 实体类型（company/person/product/industry/other）
 ///
 /// # 返回值
-/// 新增实体的 ID
+/// 命中或新建的实体 ID、是否新建、并入的目标名、完整别名表
 #[tauri::command]
-async fn entities_create(name: String, entity_type: String) -> Result<i64, String> {
+async fn entities_create(name: String, entity_type: String) -> Result<db::EntityCreateOutcome, String> {
     let pool = db_pool().await.map_err(|e| e.to_string())?;
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("实体名不能为空".to_string());
+    }
+
+    // 1. 本地匹配：主名或别名命中即并入。
+    // 建完之后顺手解除同名屏蔽项：用户手动把这个名字加了回来，就说明他要它。
+    // 不解的话会出现一种**不报错的不一致**——列表里明明有这个实体，
+    // 归一化却因为屏蔽表而跳过它的事件，表现为"实体在、但永远收不到东西"。
+    if let Some(existing) = db::Entity::find_by_name_or_alias(&pool, &name).await? {
+        let aliases = db::Entity::add_aliases(&pool, existing.id, &[name.clone()]).await?;
+        db::Entity::unblock(&pool, &name).await?;
+        return Ok(db::EntityCreateOutcome {
+            id: existing.id,
+            name: existing.name.clone(),
+            created: false,
+            merged_into: Some(existing.name),
+            aliases,
+        });
+    }
+
+    // 2. 让模型判一次"是不是已有实体的另一种写法"。
+    // 取不到提供商、网络失败、模型答非所问，一律当作"没有建议"往下走——
+    // 加实体是纯本地操作，不该被一次外部调用挡住。
+    let suggestion = match ai::load_provider(&pool, "agnes").await {
+        Ok(provider) => match research::aliases::load_briefs(&pool).await {
+            Ok(briefs) => research::aliases::resolve_names(&provider, &briefs, &[name.clone()])
+                .await
+                .ok()
+                .and_then(|v| v.into_iter().next()),
+            Err(_) => None,
+        },
+        Err(_) => None,
+    };
+
+    if let Some(res) = &suggestion {
+        if let Some(canonical) = res.same_as.clone() {
+            if let Some(existing) = db::Entity::find_by_name_or_alias(&pool, &canonical).await? {
+                let mut names = vec![name.clone()];
+                names.extend(res.aliases.iter().cloned());
+                let aliases = db::Entity::add_aliases(&pool, existing.id, &names).await?;
+                db::Entity::unblock(&pool, &name).await?;
+                return Ok(db::EntityCreateOutcome {
+                    id: existing.id,
+                    name: existing.name.clone(),
+                    created: false,
+                    merged_into: Some(existing.name),
+                    aliases,
+                });
+            }
+        }
+    }
+
+    // 3. 确实是个新实体，带上模型给的写法
     let id = db::Entity::create(&pool, &name, &entity_type).await?;
     db::Entity::unblock(&pool, &name).await?;
-    Ok(id)
+    let aliases = match &suggestion {
+        Some(res) if !res.aliases.is_empty() => {
+            db::Entity::add_aliases(&pool, id, &res.aliases).await?
+        }
+        _ => Vec::new(),
+    };
+    Ok(db::EntityCreateOutcome {
+        id,
+        name,
+        created: true,
+        merged_into: None,
+        aliases,
+    })
+}
+
+/// 把一个实体并入另一个（不可逆）
+///
+/// 调用方必须先让用户看到影响面（两侧的 [`entities_impact`]）并确认：
+/// 合并会搬七张表的引用，撞唯一约束的部分会被丢弃。
+/// 规则与理由见 [`db::Entity::merge`]。
+///
+/// # 参数
+/// * `keep_id` - 保留方实体 ID
+/// * `merge_id` - 并入方实体 ID（完成后该行被删除，名字成为保留方的别名）
+///
+/// # 返回值
+/// 搬家与丢弃的明细
+#[tauri::command]
+async fn entities_merge(keep_id: i64, merge_id: i64) -> Result<db::MergeReport, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    db::Entity::merge(&pool, keep_id, merge_id).await
+}
+
+/// 覆盖某个实体的别名表（人工编辑）
+///
+/// 与自动路径不同，这里**不做占用检查**：用户明确写下的别名就是他要的，
+/// 静默丢一条比留着一条更让人困惑。
+///
+/// # 参数
+/// * `entity_id` - 实体 ID
+/// * `aliases` - 完整别名表（函数内部去空、去重、去掉与主名重复的项）
+///
+/// # 返回值
+/// 实际写入的别名表
+#[tauri::command]
+async fn entities_set_aliases(entity_id: i64, aliases: Vec<String>) -> Result<Vec<String>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    db::Entity::set_aliases(&pool, entity_id, &aliases).await
+}
+
+/// 让模型为某个实体补全别名（界面上「AI 补全」按钮）
+///
+/// 只返回建议，由用户点保存才落库——手动路径必须看得见再决定。
+///
+/// # 参数
+/// * `entity_id` - 实体 ID
+///
+/// # 返回值
+/// 建议新增的别名（已剔除与主名、现有别名重复的项）
+///
+/// # 错误
+/// 实体不存在、AI 未配置或请求失败时返回错误信息
+#[tauri::command]
+async fn entities_suggest_aliases(entity_id: i64) -> Result<Vec<String>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    let entity = db::Entity::get(&pool, entity_id)
+        .await?
+        .ok_or_else(|| format!("实体不存在: {}", entity_id))?;
+    let provider = ai::load_provider(&pool, "agnes")
+        .await
+        .map_err(|e| format!("AI 提供商未配置：{}", e))?;
+    let brief = research::aliases::EntityBrief::from_entity(&entity);
+    research::aliases::suggest_aliases(&provider, &brief).await
+}
+
+/// 全库查重：找出可能指代同一实体的条目（只出候选，不落库）
+///
+/// 命中的组会带上实体 ID 与规范名，界面据此逐组显示影响面。
+/// 合并不在这一步发生——见 [`entities_merge`]。
+///
+/// # 返回值
+/// 候选组（每组至少两个实体）；没有可疑项时为空数组
+///
+/// # 错误
+/// AI 未配置或请求失败时返回错误信息
+#[tauri::command]
+async fn entities_suggest_merges() -> Result<Vec<research::aliases::MergeCandidate>, String> {
+    let pool = db_pool().await.map_err(|e| e.to_string())?;
+    let provider = ai::load_provider(&pool, "agnes")
+        .await
+        .map_err(|e| format!("AI 提供商未配置：{}", e))?;
+    let briefs = research::aliases::load_briefs(&pool).await?;
+    let groups = research::aliases::suggest_merge_groups(&provider, &briefs).await?;
+    Ok(research::aliases::groups_to_candidates(&briefs, &groups))
 }
 
 /// 删除实体（同时把名字记入屏蔽表）
@@ -2926,12 +3086,16 @@ async fn research_extract_article(
     } else {
         None
     };
+    let effective = research::extract::effective_event_types(&pool).await?;
+    // 已知实体清单：与批量任务同一口径——不注入的话，手动提取又是第二个分裂源
+    let known = research::aliases::known_block(&pool).await?;
     let events = research::extract::extract_article(
         &pool,
         article_id,
         &provider,
         custom_prompt,
-        &research::extract::effective_event_types(&pool).await?,
+        &effective,
+        &known,
     )
     .await?;
     let inserted = research::normalize::normalize_and_store_events(
@@ -2939,6 +3103,7 @@ async fn research_extract_article(
         article_id,
         &events,
         &provider.model,
+        Some(&provider),
     )
     .await?;
     // 置位失败不影响本次结果（事件已经入库），只提示一下

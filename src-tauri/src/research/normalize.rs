@@ -6,10 +6,16 @@
 //! 归一化规则（按序匹配）：
 //! 1. canonical 名精确命中已有实体的主名（大小写不敏感）→ 复用该实体；
 //! 2. canonical 名命中已有实体的别名 → 复用该实体；
-//! 3. 未命中 → 新建实体，同时把模型给出的别称写入 `aliases` 字段。
+//! 3. 仍未命中 → 交给 [`super::aliases::resolve_names`] 判一次"是不是已有实体的
+//!    另一种写法"（例如模型没照抄清单、把「谷歌」写成 `Google`）：命中则复用，
+//!    否则新建实体，同时把模型给出的别称作为初始别名表。
 //!
 //! 复用已有实体时会做**别名合并**：模型本次给出的别称若不在实体别名表中，
 //! 追加进去，让"字节跳动/字节/ByteDance"这类写法随着使用逐步收敛到同一实体。
+//!
+//! 第 3 步的模型判定是**兜底**而不是主路径：主路径是把已知实体清单注入抽取提示词
+//! （见 [`super::aliases`] 模块头），模型照抄规范名后第 1 步就命中了。
+//! 判定的失败一律降级为"按新实体处理"——命名不完美可以人工合并，丢事件不行。
 //!
 //! 全程只读一次实体表（[`EntityIndex`]）：一篇文章的多条事件共享同一份内存索引，
 //! 批量内新建的实体也会立刻登记进去，避免"每条事件查一次全表"。
@@ -17,8 +23,10 @@
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 
-use crate::db::{Entity, ResearchEvent};
+use crate::ai;
+use crate::db::{collect_aliases, normalize_entity_key, Entity, ResearchEvent};
 
+use super::aliases;
 use super::ExtractedEvent;
 
 /// 「名称或别名 → 实体」的内存索引
@@ -114,6 +122,26 @@ impl EntityIndex {
         }
         self.entities.push(entity);
     }
+
+    /// 把一批新名字绑到已有实体上（别名合并后同步内存索引）
+    ///
+    /// 只动内存，不写库——落库由 [`merge_aliases`] 负责。
+    /// # 为什么必须同步
+    /// 同一篇文章里，实体第一次出现时被判为"已有实体的别名"、第二次出现时
+    /// 索引里却还没有这个名字，就会被当成新实体再建一行——一篇之内裂开两次，
+    /// 而且不报错。所以判定结果必须立刻回写索引。
+    ///
+    /// # 参数
+    /// * `entity_id` - 目标实体 ID
+    /// * `names` - 新绑定的名字（主名或别名）
+    fn bind(&mut self, entity_id: i64, names: &[String]) {
+        let Some(idx) = self.entities.iter().position(|e| e.id == entity_id) else {
+            return;
+        };
+        for name in names {
+            register(&mut self.by_key, name, idx);
+        }
+    }
 }
 
 /// 把一个名称登记进索引
@@ -153,6 +181,8 @@ struct EventExtras {
 /// * `article_id` - 来源文章 ID
 /// * `events` - 模型提取出的事件（应已通过 [`super::extract`] 的枚举校验）
 /// * `source_model` - 抽取所用模型标识，写入事件供溯源
+/// * `provider` - AI 提供商；给了才对"没命中任何实体的名字"做一次同一实体判定
+///   （`None` 时退化为纯字符串归一化，行为与引入别名解析前一致）
 ///
 /// # 返回值
 /// 实际新插入的事件条数（去重后）
@@ -164,6 +194,7 @@ pub async fn normalize_and_store_events(
     article_id: i64,
     events: &[ExtractedEvent],
     source_model: &str,
+    provider: Option<&ai::AIProvider>,
 ) -> Result<u64, String> {
     let mut rows: Vec<ResearchEvent> = Vec::with_capacity(events.len());
     // 与 `rows` 下标一一对应的附属数据（情感 + 财务）。原实现对齐用的是 `events` 的下标，
@@ -171,6 +202,11 @@ pub async fn normalize_and_store_events(
     // 改为在构建 `rows` 的同一循环里同步收集，用同一下标索引天然对齐。
     let mut extras: Vec<EventExtras> = Vec::with_capacity(events.len());
     let mut index = EntityIndex::load(pool).await?;
+
+    // 兜底命名解析：先问一次"这些没命中的名字是不是已有实体的另一种写法"，
+    // 结果直接改写索引（命中的）与返回的初始别名表（新实体）。
+    // 放在循环之前是必需的：判定要一次覆盖全篇，逐条问会把同一批名字重复提交。
+    let new_entity_aliases = resolve_unknown_names(pool, provider, &mut index, events).await;
 
     for event in events {
         let canonical = event.canonical_name.trim();
@@ -204,13 +240,22 @@ pub async fn normalize_and_store_events(
                     event.entity_type.trim()
                 };
                 let new_id = Entity::create(pool, canonical, entity_type).await?;
-                // 新实体直接以模型给出的别称作初始别名表
-                let aliases_json = if event.aliases.is_empty() {
-                    "[]".to_string()
-                } else {
-                    serde_json::to_string(&event.aliases).unwrap_or_else(|_| "[]".to_string())
-                };
-                if !event.aliases.is_empty() {
+                // 初始别名表 = 抽取时模型给的写法 ∪ 命名判定给出的写法。
+                // 后者常有前者没有的东西：抽取时模型眼里只有"三星电子"这一个词，
+                // 判定那一次问的是"这个实体还有哪些常见写法"，答案里才有 Samsung。
+                let initial_aliases = collect_aliases(
+                    canonical,
+                    &[
+                        &event.aliases,
+                        new_entity_aliases
+                            .get(&normalize_entity_key(canonical))
+                            .map(|v| v.as_slice())
+                            .unwrap_or(&[]),
+                    ],
+                );
+                let aliases_json = serde_json::to_string(&initial_aliases)
+                    .unwrap_or_else(|_| "[]".to_string());
+                if !initial_aliases.is_empty() {
                     sqlx::query("UPDATE entities SET aliases = ? WHERE id = ?")
                         .bind(&aliases_json)
                         .bind(new_id)
@@ -299,6 +344,87 @@ pub async fn normalize_and_store_events(
     Ok(inserted)
 }
 
+/// 对"没命中任何已有实体"的名字做一次同一实体判定（兜底路径）
+///
+/// 只有给了 `provider` 才会真的问模型；判定失败一律降级为"按新实体处理"。
+/// 这条兜底为什么值得多一次调用：字符串匹配永远认不出「谷歌 = Google」，
+/// 而每次认不出都会多出一个实体行，时间线与报告从此各记一半。
+///
+/// # 参数
+/// * `pool` - 数据库连接池（命中时要把名字写进目标实体的别名表）
+/// * `provider` - AI 提供商；`None` 时直接返回空表
+/// * `index` - 全文共享的实体索引；命中的名字会被就地绑定，后续事件直接复用
+/// * `events` - 本篇事件（只取其中的 canonical 名）
+///
+/// # 返回值
+/// 新名字的初始别名表（键为归一化后的名字）。命中的名字不在表里——
+/// 它们已经成为目标实体的别名。
+async fn resolve_unknown_names(
+    pool: &SqlitePool,
+    provider: Option<&ai::AIProvider>,
+    index: &mut EntityIndex,
+    events: &[ExtractedEvent],
+) -> HashMap<String, Vec<String>> {
+    let mut aliases_for_new: HashMap<String, Vec<String>> = HashMap::new();
+    let Some(provider) = provider else {
+        return aliases_for_new;
+    };
+
+    // 候选：未命中索引、未被屏蔽、篇内去重
+    let mut pending: Vec<String> = Vec::new();
+    for event in events {
+        let canonical = event.canonical_name.trim();
+        if canonical.is_empty() || index.get(canonical).is_some() || index.is_blocked(canonical) {
+            continue;
+        }
+        let key = normalize_entity_key(canonical);
+        if pending.iter().any(|n| normalize_entity_key(n) == key) {
+            continue;
+        }
+        pending.push(canonical.to_string());
+    }
+    if pending.is_empty() {
+        return aliases_for_new;
+    }
+
+    let briefs = aliases::briefs_from_entities(&index.entities);
+    let resolved = match aliases::resolve_names(provider, &briefs, &pending).await {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[research] 实体命名判定失败，按新实体处理: {}", e);
+            return aliases_for_new;
+        }
+    };
+
+    for item in resolved {
+        match item.same_as.as_deref() {
+            // 命中已有实体：名字与模型给的其他写法一并记成它的别名
+            Some(canonical) => {
+                let Some(target) = index.get(canonical).cloned() else {
+                    continue;
+                };
+                let mut names = vec![item.name.clone()];
+                names.extend(item.aliases.iter().cloned());
+                match merge_aliases(pool, &target, &names).await {
+                    Ok(()) => index.bind(target.id, &names),
+                    Err(e) => eprintln!(
+                        "[research] 别名合并失败（{} → {}）: {}",
+                        item.name, target.name, e
+                    ),
+                }
+            }
+            // 确实是新实体：记下它的其他写法，等新建时一起入库
+            None => {
+                aliases_for_new
+                    .entry(normalize_entity_key(&item.name))
+                    .or_default()
+                    .extend(item.aliases);
+            }
+        }
+    }
+    aliases_for_new
+}
+
 /// 把模型给出的别称合并进已有实体的别名表
 ///
 /// 大小写不敏感去重后追加；无新增别名时跳过写入，避免无谓的 UPDATE。
@@ -317,25 +443,14 @@ async fn merge_aliases(
     new_aliases: &[String],
 ) -> Result<(), String> {
     // 解析现有别名表；损坏的 JSON 按空表处理（下次合并会重建）
-    let mut aliases: Vec<String> =
-        serde_json::from_str(&entity.aliases).unwrap_or_default();
-    let before = aliases.len();
+    let existing: Vec<String> = serde_json::from_str(&entity.aliases).unwrap_or_default();
+    // 去重口径与索引、屏蔽表共用 `normalize_entity_key`，不再单独写一套
+    // `eq_ignore_ascii_case`——那样 "Google"/"google" 会留下两条，索引里
+    // 有两个键指向同一实体，界面上删掉一个别名却删不干净。
+    let merged = collect_aliases(&entity.name, &[&existing, new_aliases]);
 
-    for alias in new_aliases {
-        let alias = alias.trim();
-        if alias.is_empty() {
-            continue;
-        }
-        // 与主名、现有别名做大小写不敏感去重
-        let dup = alias.eq_ignore_ascii_case(&entity.name)
-            || aliases.iter().any(|a| a.eq_ignore_ascii_case(alias));
-        if !dup {
-            aliases.push(alias.to_string());
-        }
-    }
-
-    if aliases.len() > before {
-        let aliases_json = serde_json::to_string(&aliases).unwrap_or_else(|_| "[]".to_string());
+    if merged.len() > existing.len() {
+        let aliases_json = serde_json::to_string(&merged).unwrap_or_else(|_| "[]".to_string());
         sqlx::query("UPDATE entities SET aliases = ? WHERE id = ?")
             .bind(aliases_json)
             .bind(entity.id)
@@ -511,7 +626,7 @@ mod tests {
         ];
 
         // 修复前此处会因 event_id=0 抛 FOREIGN KEY constraint failed (code: 787)
-        let inserted = normalize_and_store_events(&pool, article_id, &events, "test-model")
+        let inserted = normalize_and_store_events(&pool, article_id, &events, "test-model", None)
             .await
             .expect("抽取落库不应失败");
         assert_eq!(inserted, 2, "空 canonical 事件应被跳过，仅 2 条入库");
@@ -633,7 +748,7 @@ mod tests {
             },
         ];
 
-        let inserted = normalize_and_store_events(&pool, article_id, &events, "test-model")
+        let inserted = normalize_and_store_events(&pool, article_id, &events, "test-model", None)
             .await
             .expect("落库不应失败");
         assert_eq!(inserted, 1, "被屏蔽实体的事件应被跳过，只有 Anthropic 入库");
@@ -645,5 +760,29 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(left, 0, "被屏蔽的名字不得被重建");
+    }
+
+    /// 命名判定命中后，同一批内后续事件必须立刻能匹配到新别名
+    ///
+    /// 缺了这次索引回写，一篇之内会裂开两次：第一次把「Google」判成「谷歌」的
+    /// 别名并写库，第二次仍按索引查不到、于是新建实体——库里两个「谷歌」，
+    /// 而且都不报错。
+    #[tokio::test]
+    async fn bind_makes_new_alias_matchable_within_batch() {
+        let pool = setup().await;
+        sqlx::query("INSERT INTO entities (name, entity_type) VALUES ('谷歌', 'company')")
+            .execute(&pool)
+            .await
+            .expect("插入实体失败");
+        let mut index = EntityIndex::load(&pool).await.expect("载入索引失败");
+        assert!(index.get("Google").is_none(), "绑定前不应命中");
+
+        index.bind(1, &["Google".to_string()]);
+
+        assert_eq!(
+            index.get("GOOGLE").map(|e| e.name.as_str()),
+            Some("谷歌"),
+            "绑定后应命中同一实体（大小写不敏感）"
+        );
     }
 }

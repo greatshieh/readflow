@@ -138,17 +138,23 @@ const MAX_CONTENT_CHARS: usize = 8000;
 
 /// 组装结构化提取 prompt
 ///
-/// 结构：任务定性 → 固定枚举说明 → 输出 schema → few-shot 示例 → 正文。
+/// 结构：任务定性 → 固定枚举说明 → 输出 schema → **已知实体清单** → few-shot 示例 → 正文。
 /// 正文放在最后，让模型先带着明确的输出契约再读内容。
 ///
 /// # 参数
 /// * `title` - 文章标题
 /// * `content` - 纯文本正文（调用方已做 HTML 剥离与截断）
 /// * `event_types` - 生效的事件类型枚举（预设领域并集 + 自定义类型）
+/// * `known` - 已知实体清单段落（见 `research::aliases::render_known`），空串表示跳过
 ///
 /// # 返回值
 /// 完整提示词
-fn build_extract_prompt(title: &str, content: &str, event_types: &[String]) -> String {
+fn build_extract_prompt(
+    title: &str,
+    content: &str,
+    event_types: &[String],
+    known: &str,
+) -> String {
     // 枚举清单：用顿号连接，作为"只能从以下枚举选择"的候选
     let enum_list = if event_types.is_empty() {
         String::new()
@@ -161,6 +167,10 @@ fn build_extract_prompt(title: &str, content: &str, event_types: &[String]) -> S
         1 => (event_types[0].clone(), event_types[0].clone()),
         _ => (event_types[0].clone(), event_types[1].clone()),
     };
+    // 已知实体段：只有库里已有实体时才出现。
+    // 这段是"自动不分裂"的主路径——模型看到清单就会照抄规范名，
+    // 归一化随即命中已有实体，`aliases` 自动累积（见 research::aliases 模块头）。
+    let known_section = render_known_section(known);
     format!(
         "你是一名严格的信息抽取员，负责从行业与公司研究类文章中抽取结构化事件。\
 你不是分析师：禁止概括、禁止情绪判断、禁止推测，只抽取原文明确陈述的事实。\
@@ -172,11 +182,15 @@ fn build_extract_prompt(title: &str, content: &str, event_types: &[String]) -> S
 3. evidence 必须是原文中连续的片段（原样复制，不得超过60字），用于溯源
 4. event_date 为事件发生日期（YYYY-MM-DD）；原文未明确提到日期时留空字符串
 5. canonical_name 为实体规范名（用最通用的完整名称）；\
-aliases 列出文中出现的其他写法；entity_type 从 company/person/product/industry/other 中选择
+aliases 列出文中出现的其他写法；entity_type 从 company/person/product/industry/other 中选择。\
+**aliases 只收同一实体的其他写法**（音译、缩写、全称、旧名）；\
+不要把人物、产品、母公司、子公司或相关方列为别名——那会把两家不同的东西并成一个
+5.1 canonical_name 必须**恰好是一个实体**。一句话涉及多家公司（如“英特尔、高通、AMD 同时涨价”）时\
+拆成多条事件，每家一条，不得把几个名字拼成一个 canonical_name
 6. sentiment 判断事件对市场的影响倾向（positive/negative/neutral），置信度 0-1
 7. 若文章涉及财务数据（营收、利润、增长率等），提取 financial_metrics 列表，每项为键值对
 8. 文章中没有可抽取的事件时输出 {{\"events\": []}}；某个维度没有事实就不要编造
-
+{known_section}
 输出格式（只输出 JSON，不要任何其他文字或代码围栏）：
 {{\"events\": [{{\"canonical_name\": \"...\", \"aliases\": [\"...\"], \
 \"entity_type\": \"company\", \"event_type\": \"product\", \
@@ -209,11 +223,8 @@ aliases 列出文中出现的其他写法；entity_type 从 company/person/produ
 
 /// 从模型输出中容错地解析出事件列表
 ///
-/// 解析策略（按序降级）：
-/// 1. 直接 `serde_json::from_str`（理想路径：模型严格输出 JSON）；
-/// 2. 剥离 ```json ... ``` 围栏后重试；
-/// 3. 截取首个 `{` 到末个 `}` 之间的子串重试（应对模型在 JSON 前后加说明文字）。
-///
+/// 剥离代码围栏、截取 JSON 片段这套降级逻辑在 [`super::parse_json_loose`]，
+/// 本函数只负责"取出 events 字段并按 [`ExtractedEvent`] 反序列化"。
 /// 全部失败时返回空列表而不是错误——批量提取场景下单篇解析失败
 /// 不应中断整批任务，调用方以"0 条事件"记录该篇即可。
 ///
@@ -223,35 +234,12 @@ aliases 列出文中出现的其他写法；entity_type 从 company/person/produ
 /// # 返回值
 /// 解析出的事件列表（可能为空）
 fn parse_events_loose(raw: &str) -> Vec<ExtractedEvent> {
-    // 尝试按三种策略提取 JSON 文本
-    let candidates: Vec<String> = {
-        let mut v = Vec::new();
-        v.push(raw.trim().to_string());
-        // 剥离 markdown 代码围栏：```json ... ``` 或 ``` ... ```
-        if let Some(start) = raw.find('{') {
-            if let Some(end) = raw.rfind('}') {
-                if end > start {
-                    v.push(raw[start..=end].to_string());
-                }
-            }
-        }
-        v
+    let Some(value) = super::parse_json_loose(raw) else {
+        return Vec::new();
     };
-
-    for candidate in candidates {
-        // 先按整体对象解析（{"events": [...]}）；
-        // 失败再尝试把整段文本当作裸数组解析（模型偶尔省略外层对象）
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&candidate) {
-            let events_value = value
-                .get("events")
-                .cloned()
-                .unwrap_or(value);
-            if let Ok(events) = serde_json::from_value::<Vec<ExtractedEvent>>(events_value) {
-                return events;
-            }
-        }
-    }
-    Vec::new()
+    // 模型偶尔省略外层对象，直接给数组：此时 value 本身就是事件数组
+    let events_value = value.get("events").cloned().unwrap_or(value);
+    serde_json::from_value::<Vec<ExtractedEvent>>(events_value).unwrap_or_default()
 }
 
 /// 过滤非法事件：枚举校验 + 空事实剔除
@@ -289,6 +277,29 @@ fn validate_events(events: Vec<ExtractedEvent>, valid_types: &[String]) -> Vec<E
         .collect()
 }
 
+/// 渲染提示词里的「已收录实体」段落
+///
+/// 单独抽出来是因为它要用在**两处**：默认提示词里（[`build_extract_prompt`]）
+/// 和用户自定义提示词的后面。自定义提示词描述"抽什么"，而这份清单约束的是
+/// "抽出来的名字怎么叫"——那是归一化的前提，属于系统约束，不该因为用户换了
+/// 提示词就失效。两处各写一份的话，改一处的措辞就会让两条路径的命名口径分叉。
+///
+/// # 参数
+/// * `known` - 实体清单正文（空串表示库中无实体，返回空串）
+///
+/// # 返回值
+/// 可直接拼进提示词的段落，以换行开头
+fn render_known_section(known: &str) -> String {
+    if known.trim().is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n已收录的实体（若正文提到的是同一个实体，canonical_name 必须**原样照抄**下面的名字，\
+不得翻译、不得改写、不得另起新名；文中出现的其它写法请放进 aliases）：\n{}\n",
+        known.trim_end()
+    )
+}
+
 /// 对单篇文章执行结构化提取（只提取，不落库）
 ///
 /// # 参数
@@ -296,6 +307,8 @@ fn validate_events(events: Vec<ExtractedEvent>, valid_types: &[String]) -> Vec<E
 /// * `article_id` - 文章 ID
 /// * `provider` - AI 提供商配置
 /// * `custom_extract_prompt` - 可选的自定义提取 prompt；若为空则使用默认 prompt
+/// * `effective` - 生效的事件类型枚举
+/// * `known` - 已知实体清单段落；批量调用时由调用方读一次、整批复用
 ///
 /// # 返回值
 /// 校验通过的事件列表；文章无内容或模型无可抽取事件时为空列表
@@ -308,6 +321,7 @@ pub async fn extract_article(
     provider: &ai::AIProvider,
     custom_extract_prompt: Option<&str>,
     effective: &[String],
+    known: &str,
 ) -> Result<Vec<ExtractedEvent>, String> {
     let article = sqlx::query_as::<_, Article>("SELECT * FROM articles WHERE id = ? LIMIT 1")
         .bind(article_id)
@@ -327,9 +341,15 @@ pub async fn extract_article(
     };
 
     let prompt = if let Some(custom) = custom_extract_prompt {
-        format!("{}\n\n现在处理以下文章。\n\n标题：{}\n\n正文：\n{}", custom, article.title, truncated)
+        format!(
+            "{}{}\n\n现在处理以下文章。\n\n标题：{}\n\n正文：\n{}",
+            custom,
+            render_known_section(known),
+            article.title,
+            truncated
+        )
     } else {
-        build_extract_prompt(&article.title, &truncated, effective)
+        build_extract_prompt(&article.title, &truncated, effective, known)
     };
     let raw_output = ai::chat_completion(provider, &prompt, Some(0.1)).await?;
 
@@ -431,6 +451,9 @@ pub async fn extract_batch(
     // 整批抽取共用同一套生效枚举：预设领域并集 + 自定义类型，
     // 只算一次避免每篇重复读库；空枚举会让所有事件被 validate 丢弃（无类型可归类）。
     let effective = effective_event_types(pool).await?;
+    // 已知实体清单同理：整批读一次。它在抽取期间不会变（本批新建的实体会被
+    // 归一化的内存索引接住），所以不必每篇重读。
+    let known = super::aliases::known_block(pool).await?;
 
     let mut processed = 0usize;
     let mut total_events: u64 = 0;
@@ -438,7 +461,7 @@ pub async fn extract_batch(
     // notify 侧按各自门槛二次筛选，这里只负责原样回传，避免重复往返查库
     let mut all_events: Vec<ExtractedEvent> = Vec::new();
     for article_id in candidates {
-        match extract_article(pool, article_id, provider, None, &effective).await {
+        match extract_article(pool, article_id, provider, None, &effective, &known).await {
             Ok(events) => {
                 // 入库失败只影响本篇：标记留在未置位状态，下一轮会重试
                 match super::normalize::normalize_and_store_events(
@@ -446,6 +469,7 @@ pub async fn extract_batch(
                     article_id,
                     &events,
                     &provider.model,
+                    Some(provider),
                 )
                 .await
                 {
@@ -558,16 +582,26 @@ pub async fn reextract_entity(pool: &SqlitePool, entity_id: i64) -> Result<Strin
         Err(e) => return Err(format!("AI 提供商未配置：{}", e)),
     };
     let effective = effective_event_types(pool).await?;
+    // 重抽是"补历史"，同样要带上已知实体清单，否则补进来的名字又是一批新实体
+    let known = super::aliases::known_block(pool).await?;
 
     let mut processed = 0usize;
     let mut total_events: u64 = 0;
     for article_id in article_ids {
-        match extract_article(pool, article_id, &provider, None, &effective).await {
+        match extract_article(pool, article_id, &provider, None, &effective, &known).await {
             Ok(events) => {
                 if events.is_empty() {
                     continue;
                 }
-                match super::normalize::normalize_and_store_events(pool, article_id, &events, &provider.model).await {
+                match super::normalize::normalize_and_store_events(
+                    pool,
+                    article_id,
+                    &events,
+                    &provider.model,
+                    Some(&provider),
+                )
+                .await
+                {
                     Ok(inserted) => {
                         if let Err(e) = mark_extracted(pool, article_id).await {
                             eprintln!("[research] 文章 {} 标记提取时间失败: {}", article_id, e);
@@ -676,5 +710,28 @@ mod tests {
         let mut e = make_with_type("product");
         e.fact = String::new(); // 事实为空，底线不合规
         assert_eq!(validate_events(vec![e], &valid).len(), 0);
+    }
+
+    /// 容错解析：围栏、前后夹带说明文字、裸数组、纯文本
+    ///
+    /// 这四条路径来自真实模型的四种输出习惯。解析失败的表现是"0 条事件"，
+    /// 与"文章确实没事件"无法区分——不测就只能等用户发现漏抽。
+    #[test]
+    fn parse_events_loose_handles_wrapped_output() {
+        let body = r#"{"events":[{"canonical_name":"OpenAI","event_type":"product","fact":"发布 GPT-5"}]}"#;
+        for raw in [
+            body.to_string(),
+            format!("```json\n{}\n```", body),
+            format!("结果如下：\n{}\n以上。", body),
+        ] {
+            let events = parse_events_loose(&raw);
+            assert_eq!(events.len(), 1, "应能解析出事件: {}", raw);
+            assert_eq!(events[0].canonical_name, "OpenAI");
+        }
+        // 裸数组：模型偶尔省略外层 {"events": ...}
+        let bare = r#"[{"canonical_name":"Anthropic","event_type":"ma","fact":"完成融资"}]"#;
+        assert_eq!(parse_events_loose(bare).len(), 1);
+        // 完全不是 JSON：返回空而不是 panic（单篇失败不能中断整批）
+        assert!(parse_events_loose("抱歉，我无法处理这段内容").is_empty());
     }
 }

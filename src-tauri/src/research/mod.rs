@@ -10,6 +10,7 @@
 //! - 实体经 canonical/alias 归一后落库，"字节跳动/字节"合并为同一实体。
 //!
 //! # 模块结构
+//! - [`aliases`]：实体命名解析——自动补别名、判定"是不是同一实体"、全库查重
 //! - [`extract`]：prompt 组装、JSON 容错解析、单篇/批量提取
 //! - [`normalize`]：实体归一化（canonical/别名匹配、未命中自动新建）与事件落库
 //! - [`report`]：日报/周报 Markdown 渲染与多通道输出（应用内 / Obsidian / 文件）
@@ -22,6 +23,7 @@
 //! 本模块同时承载自动化任务的**统一执行器**（[`run_task_once`]）：
 //! cron 调度与手动触发共用同一条执行路径，运行结果统一回写任务行。
 
+pub mod aliases;
 pub mod coverage;
 pub mod extract;
 pub mod normalize;
@@ -60,6 +62,33 @@ pub enum TaskOutcome {
     Unconfigured(String),
     /// 执行失败，携带错误原因
     Failed(String),
+}
+
+/// 从模型输出里容错取出一个 JSON 值
+///
+/// # 为什么需要
+/// 本地/小参数模型常做三件"多余的事"：包一层 ```json 围栏、在 JSON 前后写一句说明、
+/// 把外层对象省掉直接给数组。抽取与别名判定都要面对同样的输出，所以这段剥离逻辑
+/// 收敛在这里，避免每个调用点各写一份、各漏一种情况。
+///
+/// # 参数
+/// * `raw` - 模型原始输出
+///
+/// # 返回值
+/// 解析成功时返回 JSON 值；连片段都取不出时返回 `None`
+pub(crate) fn parse_json_loose(raw: &str) -> Option<serde_json::Value> {
+    let trimmed = raw.trim();
+    // 理想路径：模型严格输出 JSON
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        return Some(value);
+    }
+    // 降级：截取首个 `{` 到末个 `}` 之间（覆盖代码围栏与前后说明文字）
+    let start = trimmed.find('{')?;
+    let end = trimmed.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    serde_json::from_str(&trimmed[start..=end]).ok()
 }
 
 /// 单篇文章抽取出的结构化事件（模型原始输出，实体尚未归一化）

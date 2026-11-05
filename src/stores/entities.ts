@@ -20,7 +20,14 @@
 import { acceptHMRUpdate, defineStore } from 'pinia'
 import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import type { Entity, EntityBlock, EntityImpact } from '@/types'
+import type {
+  Entity,
+  EntityBlock,
+  EntityCreateOutcome,
+  EntityImpact,
+  MergeCandidate,
+  MergeReport,
+} from '@/types'
 
 export const useEntitiesStore = defineStore('entities', () => {
   /** 实体列表缓存 */
@@ -55,23 +62,105 @@ export const useEntitiesStore = defineStore('entities', () => {
   }
 
   /**
-   * 新增实体
+   * 新增实体（自动完成命名解析与别名补全）
    *
-   * @param name - 实体名称（如 "腾讯"、"GOOG"）
+   * 后端会先判"这个名字是不是已有实体的另一种写法"：是则**并入**（返回
+   * `merged_into`），否则新建并把模型给的中英文写法作为初始别名。
+   * 调用方必须看返回值而不是看"列表是否变长"——并入时列表只多了一个别名。
+   *
+   * @param name - 实体名称（如 "腾讯"、"Google"）
    * @param entityType - 实体类型（company / person / product / industry / other）
-   * @returns 新实体的 ID
+   * @returns 新建或并入的结果
    * @throws 后端失败时原样抛出
    */
-  async function createEntity(name: string, entityType: string): Promise<number> {
+  async function createEntity(name: string, entityType: string): Promise<EntityCreateOutcome> {
     try {
-      const id = await invoke<number>('entities_create', {
+      const outcome = await invoke<EntityCreateOutcome>('entities_create', {
         name,
         entityType
       })
       await loadEntities()
-      return id
+      return outcome
     } catch (e) {
       console.error('创建实体失败:', e)
+      throw e
+    }
+  }
+
+  /**
+   * 把一个实体并入另一个（不可逆）
+   *
+   * 后端在一个事务里搬七张表的引用，撞唯一约束的丢并入方一侧。
+   * 调用方必须先让用户看到两侧影响面并确认——这不是"改个名"。
+   *
+   * @param keepId - 保留方实体 ID
+   * @param mergeId - 并入方实体 ID（完成后该行被删除）
+   * @returns 搬家与丢弃的明细
+   * @throws 后端失败时原样抛出
+   */
+  async function mergeEntities(keepId: number, mergeId: number): Promise<MergeReport> {
+    try {
+      const report = await invoke<MergeReport>('entities_merge', { keepId, mergeId })
+      // 保留方的别名表变了（并入方名字成为别名），必须重新拉取才对得上；
+      // 并入方那一行已不存在，随这次拉取一起消失
+      await loadEntities()
+      return report
+    } catch (e) {
+      console.error('合并实体失败:', e)
+      throw e
+    }
+  }
+
+  /**
+   * 覆盖某个实体的别名表（人工编辑）
+   *
+   * @param entityId - 实体 ID
+   * @param aliases - 完整别名表
+   * @returns 实际写入的别名表（后端已去空、去重、去掉与主名重复的项）
+   * @throws 后端失败时原样抛出
+   */
+  async function setAliases(entityId: number, aliases: string[]): Promise<string[]> {
+    try {
+      const written = await invoke<string[]>('entities_set_aliases', { entityId, aliases })
+      // 本地列表里的别名字符串同步更新，免得弹窗关掉后行内还是旧值
+      const entity = entities.value.find(e => e.id === entityId)
+      if (entity) {
+        entity.aliases = JSON.stringify(written)
+      }
+      return written
+    } catch (e) {
+      console.error('保存别名失败:', e)
+      throw e
+    }
+  }
+
+  /**
+   * 让模型为某个实体补全别名（只返回建议，不落库）
+   *
+   * @param entityId - 实体 ID
+   * @returns 建议新增的别名
+   * @throws AI 未配置或后端失败时原样抛出
+   */
+  async function suggestAliases(entityId: number): Promise<string[]> {
+    try {
+      return await invoke<string[]>('entities_suggest_aliases', { entityId })
+    } catch (e) {
+      console.error('AI 补全别名失败:', e)
+      throw e
+    }
+  }
+
+  /**
+   * 全库查重：让模型找出可能指代同一实体的条目（只出候选）
+   *
+   * @returns 候选组；没有可疑项时为空数组
+   * @throws AI 未配置或后端失败时原样抛出
+   */
+  async function suggestMerges(): Promise<MergeCandidate[]> {
+    try {
+      return await invoke<MergeCandidate[]>('entities_suggest_merges')
+    } catch (e) {
+      console.error('AI 查重失败:', e)
       throw e
     }
   }
@@ -231,6 +320,10 @@ export const useEntitiesStore = defineStore('entities', () => {
     error,
     loadEntities,
     createEntity,
+    mergeEntities,
+    setAliases,
+    suggestAliases,
+    suggestMerges,
     deleteEntity,
     toggleEntity,
     scoreArticles,

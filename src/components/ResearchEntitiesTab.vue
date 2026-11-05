@@ -54,6 +54,20 @@
               <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
             </svg>
           </button>
+          <!-- 名称与合并：别名维护 + 把重复条目并走。
+               与「删除」的区别是它不丢历史——合并只是搬家，删的是那一行。 -->
+          <button
+            class="btn btn-icon btn-quiet"
+            @click="openIdentity(entity)"
+            title="名称与合并"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 7h9a4 4 0 0 1 0 8H8"></path>
+              <polyline points="11 12 8 15 11 18"></polyline>
+              <path d="M20 17h-9"></path>
+              <path d="M3 4v4M6 4v4"></path>
+            </svg>
+          </button>
           <!-- 告警规则按钮（实体级告警 P1-F） -->
           <button
             class="btn btn-icon btn-quiet"
@@ -102,9 +116,43 @@
          例行操作不该弹窗打断，失败也不该只写进控制台 -->
     <div class="batch-actions">
       <span v-if="scoreMsg" class="score-msg" :class="{ err: scoreError }">{{ scoreMsg }}</span>
-      <button class="btn btn-soft" @click="handleScore" :disabled="entitiesStore.loading">
-        {{ entitiesStore.loading ? '评分中...' : '重新评分' }}
-      </button>
+      <div class="batch-buttons">
+        <button class="btn btn-soft" @click="handleFindDuplicates" :disabled="dedupeLoading">
+          {{ dedupeLoading ? '查重中...' : 'AI 查重' }}
+        </button>
+        <button class="btn btn-soft" @click="handleScore" :disabled="entitiesStore.loading">
+          {{ entitiesStore.loading ? '评分中...' : '重新评分' }}
+        </button>
+      </div>
+    </div>
+
+    <!-- AI 查重结果：只出候选，合并要逐组点。
+         不做"一键全并"——合并会搬七张表的引用、撞唯一约束的还会丢数据，
+         让模型连点确认一起替人做掉是不负责任的。 -->
+    <div v-if="duplicates.length" class="dup-box">
+      <div class="dup-head">
+        <span class="dup-title">可能重复的实体（{{ duplicates.length }} 组）</span>
+        <button class="btn btn-quiet btn-sm" @click="duplicates = []">收起</button>
+      </div>
+      <p class="dup-hint">
+        模型认为同一条目有多个写法。点右边的按钮把重复的那行并到第一个上，
+        会先显示影响面再让你确认。
+      </p>
+      <div v-for="(group, gi) in duplicates" :key="gi" class="dup-group">
+        <div class="dup-names">{{ group.names.join(' / ') }}</div>
+        <p class="dup-reason">{{ group.reason }}</p>
+        <div class="dup-actions">
+          <button
+            v-for="name in group.names.slice(1)"
+            :key="name"
+            class="btn btn-soft btn-mini"
+            :disabled="group.entity_ids.length < 2"
+            @click="mergeSuggestion(group.entity_ids[0], name)"
+          >
+            「{{ name }}」并到「{{ group.names[0] }}」
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- 已删除（屏蔽）的实体：删除的"持久"部分就落在这里。
@@ -134,6 +182,15 @@
       :entity="ruleEntity"
       @close="ruleModalOpen = false"
     />
+
+    <!-- 名称与合并：别名维护 + 把重复条目并走 -->
+    <EntityIdentityModal
+      :open="identityOpen"
+      :entity="identityEntity"
+      :suggested-target="identityTarget"
+      @close="identityOpen = false"
+      @changed="handleIdentityChanged"
+    />
   </div>
 </template>
 
@@ -159,10 +216,11 @@
 import { onMounted, ref } from 'vue'
 import AppSelect, { type SelectOption } from './AppSelect.vue'
 import EntityAlertRuleModal from './EntityAlertRuleModal.vue'
+import EntityIdentityModal from './EntityIdentityModal.vue'
 import { useEntitiesStore } from '@/stores/entities'
 import { showConfirm } from '@/stores/modal'
 import { ENTITY_TYPE_LABELS, entityTypeLabel } from '@/utils/entityLabels'
-import type { EntityBlock, EntityImpact } from '@/types'
+import type { EntityBlock, EntityImpact, MergeCandidate } from '@/types'
 
 const emit = defineEmits<{
   /** 实体集合或评分已变化，已加载的关系图随之过期（外壳转交失效处理） */
@@ -186,6 +244,18 @@ const scoreError = ref(false)
 const ruleModalOpen = ref(false)
 /** 当前正在编辑规则的实体（弹窗关闭前保持引用） */
 const ruleEntity = ref<(typeof entitiesStore.entities[0]) | null>(null)
+
+/** 「名称与合并」弹窗开关 */
+const identityOpen = ref(false)
+/** 正在编辑身份的实体（别名主体 / 并入方） */
+const identityEntity = ref<(typeof entitiesStore.entities[0]) | null>(null)
+/** 预选的并入目标：从 AI 查重结果点进来时直接填好，省掉再选一次 */
+const identityTarget = ref<number | null>(null)
+
+/** AI 查重结果（只出候选，合并要逐组确认） */
+const duplicates = ref<MergeCandidate[]>([])
+/** 查重请求进行中 */
+const dedupeLoading = ref(false)
 
 /** 实体类型下拉选项：直接从全局映射派生，新增类型只改 utils/entityLabels.ts 一处 */
 const entityTypeOptions: SelectOption[] = Object.entries(ENTITY_TYPE_LABELS).map(
@@ -216,6 +286,10 @@ async function runScore() {
 /**
  * 添加新实体
  *
+ * 后端会先判"这个名字是不是已有实体的另一种写法"：是则并入并返回 `merged_into`，
+ * 否则新建并补全别名。所以提示语必须按返回值分三种写——用户点完「添加」
+ * 发现列表没多出一行时，只有明确告诉他"已并入「谷歌」"才不会以为没生效。
+ *
  * 新实体必须立刻参与评分才对存量文章生效，否则批量提取仍然捞不到它们
  * （候选条件是评分达到阈值）。评分为纯本地字符串匹配，不消耗 AI 额度。
  */
@@ -223,12 +297,90 @@ async function handleAdd() {
   const name = newName.value.trim()
   if (!name) return
   try {
-    await entitiesStore.createEntity(name, newType.value)
+    const outcome = await entitiesStore.createEntity(name, newType.value)
     newName.value = ''
+    // 实体集合变了，上一轮查重结果已经不作数
+    duplicates.value = []
+    const message = outcome.merged_into
+      ? `「${name}」已并入已有实体「${outcome.merged_into}」，并记为它的别名`
+      : outcome.aliases.length
+        ? `已添加「${outcome.name}」，同时补全 ${outcome.aliases.length} 个别名`
+        : `已添加「${outcome.name}」`
     await runScore()
+    // runScore 会写自己的评分提示，这里覆盖成更有信息量的那句
+    scoreError.value = false
+    scoreMsg.value = message
   } catch (e) {
     // 错误已在 store 中处理
   }
+}
+
+/**
+ * 打开「名称与合并」弹窗（别名维护 + 并入其他实体）
+ *
+ * @param entity - 被点击的实体
+ */
+function openIdentity(entity: typeof entitiesStore.entities[0]) {
+  identityEntity.value = entity
+  identityTarget.value = null
+  identityOpen.value = true
+}
+
+/**
+ * 身份弹窗报告变化：重新评分并刷新提示
+ *
+ * 别名与合并都会改变"哪篇文章算命中这个实体"，所以评分必须重算；
+ * 关系图的失效交给外壳（emit `entities-changed`，由 `runScore` 一并触发）。
+ *
+ * @param message - 可展示的结果描述
+ */
+async function handleIdentityChanged(message: string) {
+  // 合并后上一轮候选里可能有已被删掉的实体，继续展示会点到空
+  duplicates.value = []
+  await runScore()
+  scoreError.value = false
+  scoreMsg.value = message
+}
+
+/**
+ * 让模型找出可能重复的实体（只出候选，不合并）
+ */
+async function handleFindDuplicates() {
+  dedupeLoading.value = true
+  scoreError.value = false
+  scoreMsg.value = ''
+  try {
+    const found = await entitiesStore.suggestMerges()
+    duplicates.value = found
+    if (!found.length) scoreMsg.value = '没有发现疑似重复的实体'
+  } catch (e) {
+    duplicates.value = []
+    scoreError.value = true
+    scoreMsg.value = `查重失败：${e instanceof Error ? e.message : String(e)}`
+  } finally {
+    dedupeLoading.value = false
+  }
+}
+
+/**
+ * 按 AI 建议发起一次合并：把「sourceName」并到 targetEntityId
+ *
+ * 只负责把弹窗摆好（选中并入方、预选目标），真正的确认与执行在弹窗里——
+ * 影响面必须先展示，不能在这里直接合并。
+ *
+ * @param targetEntityId - 保留方实体 ID（候选组里的第一个）
+ * @param sourceName - 并入方实体名
+ */
+function mergeSuggestion(targetEntityId: number, sourceName: string) {
+  const source = entitiesStore.entities.find(e => e.name === sourceName)
+  if (!source) {
+    scoreError.value = true
+    scoreMsg.value = `找不到实体「${sourceName}」，可能已被合并或删除`
+    return
+  }
+  identityEntity.value = source
+  identityTarget.value = targetEntityId
+  identityOpen.value = true
 }
 
 /**
@@ -480,6 +632,66 @@ onMounted(() => {
   justify-content: space-between;
   gap: var(--sp-2);
   padding-top: var(--sp-1);
+}
+/* 右侧两个批量动作成组：与左侧的行内提示分开，提示再长也只挤自己 */
+.batch-buttons {
+  display: flex;
+  gap: var(--sp-1);
+  flex-shrink: 0;
+}
+
+/* ═══ AI 查重结果 ═══
+   一组一块淡底卡片：候选是"待决定的事"，不是日常配置，
+   用块面与上面的实体列表区分开，扫一眼就知道这块是一次性清理任务。 */
+.dup-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--fill);
+}
+.dup-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+.dup-title {
+  font-size: var(--fs-modal-label);
+  font-weight: 500;
+  line-height: var(--lh-modal-label);
+  color: var(--text-primary);
+}
+.dup-hint {
+  margin: 0;
+  font-size: var(--fs-modal-meta);
+  line-height: var(--lh-modal-meta);
+  color: var(--text-tertiary);
+}
+.dup-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-05);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border);
+}
+.dup-names {
+  font-size: var(--fs-modal-label);
+  color: var(--text-primary);
+  word-break: break-word;
+}
+.dup-reason {
+  margin: 0;
+  font-size: var(--fs-modal-meta);
+  line-height: var(--lh-modal-meta);
+  color: var(--text-tertiary);
+}
+.dup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  padding-top: var(--sp-05);
 }
 /* 评分结果提示：成功/空态走中性色，失败走警告色。整句 → 正文档 14 / 1.65 */
 .score-msg {
