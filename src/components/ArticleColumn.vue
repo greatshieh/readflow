@@ -477,6 +477,20 @@ function syncCapsule(sliding = false) {
 }
 
 /**
+ * 把列表滚动条复位到顶部
+ *
+ * 换源 / 换排序时列表被整体替换，但 `.article-body` 这个滚动容器一直挂载着，
+ * 浏览器会保留旧 scrollTop——若不复位，新列表会从原来的滚动位置继续显示，
+ * 用户看到的不是新范围的开头。列表为空的源会经骨架屏卸载重建、天然归零，
+ * 这里对 null 取保护即可两种情形都覆盖。
+ *
+ * @returns 无返回值
+ */
+function resetListScroll(): void {
+  if (articleBodyRef.value) articleBodyRef.value.scrollTop = 0
+}
+
+/**
  * 指针移动时把 hover 胶囊跟到所在条目上
  *
  * 用捕获型事件委托而非逐条绑定：条目列表会随加载更多 / 换排序重排，
@@ -554,6 +568,8 @@ async function changeSort(key: ArticleSortKey) {
   articlesStore.setSortMode(key)
   clearThumbnailCache()
   await articlesStore.loadArticles(selectedFeed.value?.id ?? null, undefined, 0)
+  // 排序后列表整体替换，与换源同理回到顶部
+  void nextTick(resetListScroll)
 }
 
 /**
@@ -603,8 +619,11 @@ watch(scopeKey, async () => {
   const feedId = articlesStore.tagFilterId !== null ? null : (feedsStore.selectedFeed?.id ?? null)
   await articlesStore.loadArticles(feedId)
   showArticleList.value = true
-  // 列表整体换掉了，胶囊要跟着落到新列表里当前选中的那一篇
-  void nextTick(() => syncCapsule())
+  // 列表整体换掉了，先回到顶部再同步胶囊（布局已变，胶囊应瞬时落位在首屏选中项上）
+  void nextTick(() => {
+    resetListScroll()
+    syncCapsule()
+  })
 })
 
 // 切换范围（源 / 标签 / 全部）时退出搜索：搜索结果来自全库 FTS（`articles_search` 不带
