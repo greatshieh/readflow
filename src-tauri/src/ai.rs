@@ -688,6 +688,49 @@ pub(crate) fn truncate_chars(text: &str, max_chars: usize) -> (String, bool) {
     (text.chars().take(max_chars).collect(), true)
 }
 
+/// 默认摘要指令：让摘要呈现正文内容，而不是把标题扩写一遍
+///
+/// 旧默认只有"100字以内、简洁明了"，模型最容易走的路就是复述标题；
+/// 这里把标题明确降为背景材料，并要求输出带事实/数字/因果的要点，
+/// 让没打开原文的人也能知道文章讲了什么。
+/// 纯函数：prompt 组装可单测，不必起数据库或发网络请求。
+///
+/// # 参数
+/// * `title` - 文章标题（仅作背景，不作为摘要素材）
+/// * `content` - 已剥标签的正文纯文本（可能为空）
+///
+/// # 返回值
+/// 可直接送模型的完整 prompt
+pub(crate) fn build_summary_prompt(title: &str, content: &str) -> String {
+    let body = if content.trim().is_empty() {
+        "（没有可用正文，无法生成内容摘要，请如实说明信息不足，不要依据标题猜测）"
+    } else {
+        content
+    };
+    format!(
+        r#"你是一名资讯编辑。请依据【文章正文】写一份中文摘要，让没打开原文的人也能知道文章到底讲了什么。
+
+要求：
+1. 标题只作背景，摘要内容必须来自正文。不要复述或扩写标题，不要写"本文介绍了""文章讨论了"这类空话。
+2. 按下面的格式输出，不要加其它段落：
+一句话结论：<正文支持的核心判断，40字以内>
+要点：
+- <要点1：主体 + 动作 + 结果或数字>
+- <要点2>
+- <要点3>
+（最多5条，每条30～60字；正文信息足够时总计200～350字，不足时按实际内容写）
+3. 优先保留正文中的机构或人名、数字、时间、因果与结论；删掉导航、广告、推荐阅读、版权声明等无关内容。
+4. 不编造正文没有的信息；信息不足时如实说明，不要靠标题补全。
+
+【文章标题】
+{}
+
+【文章正文】
+{}"#,
+        title, body
+    )
+}
+
 /// 文章追问的上下文素材
 ///
 /// 由调用方（命令层）从数据库取好并完成加工：正文已剥标签、已截断，实体是命中的
@@ -1102,6 +1145,28 @@ mod tests {
         assert!(cut, "超限时应当报截断");
         // 结果必须是合法字符串（能正常比较即已证明未落在半个字符上）
         assert_eq!(out.chars().count(), 3);
+    }
+
+    #[test]
+    fn summary_prompt_uses_body_and_demotes_title() {
+        let prompt = build_summary_prompt("某公司发布新品", "营收同比增长30%，新品订单达10万。");
+
+        assert!(prompt.contains("【文章标题】\n某公司发布新品"));
+        assert!(prompt.contains("【文章正文】\n营收同比增长30%，新品订单达10万。"));
+        // 明确禁止把标题扩写成摘要，并要求正文里的事实
+        assert!(prompt.contains("不要复述或扩写标题"));
+        assert!(prompt.contains("数字"));
+        assert!(prompt.contains("一句话结论"));
+        assert!(prompt.contains("要点："));
+    }
+
+    #[test]
+    fn summary_prompt_marks_empty_body() {
+        let prompt = build_summary_prompt("只有标题的文章", "   \n ");
+
+        assert!(prompt.contains("没有可用正文"));
+        assert!(prompt.contains("不要依据标题猜测"));
+        assert!(prompt.contains("【文章标题】\n只有标题的文章"));
     }
 
     #[test]

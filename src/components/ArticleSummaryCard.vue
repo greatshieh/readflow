@@ -126,6 +126,8 @@ html[data-theme="dark"] .summary-card .summary-text { color: var(--text-secondar
   color: var(--text-secondary);
   word-break: break-word;
   font-family: var(--reading-font, inherit);
+  /* 摘要按「一句话结论 + 要点」分行输出；保留换行但不合并空格 */
+  white-space: pre-line;
 }
 /* 流式生成中的摘要：行尾跟一个闪烁光标，明确表达"还在往下写" */
 .summary-stream::after {

@@ -2272,10 +2272,9 @@ async fn ai_generate_summary(
     let summary_prompt = if !feed_cfg.summary_prompt.trim().is_empty() {
         format!("{}\n\n{}", feed_cfg.summary_prompt.trim(), content)
     } else {
-        format!(
-            "请为以下文章生成一段100字以内的摘要，要求简洁明了，突出核心内容：\n\n{}",
-            content
-        )
+        // 标题只作背景、素材取自正文：旧版 100 字指令太短且没传标题，
+        // 模型最容易直接把标题扩写一遍（见 ai::build_summary_prompt）
+        ai::build_summary_prompt(&article.title, &content)
     };
 
     // 把模型吐出的每一批增量转发成事件；requestId 由前端生成并回传，
