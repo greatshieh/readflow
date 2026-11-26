@@ -346,16 +346,19 @@
   /* ── 字号阶梯 ──
      xs 起用于元信息（时间、来源名），md 是全应用正文基准，
      xl 起进入标题区。2xl 供正文内 h1 与弹窗标题使用。
+     2026-11-26 整体上调并拉开档距：旧阶梯 11/13/14/16/18/22 相邻档只差
+     1~2px，扫读时"什么都一样大"，层级感塌掉；新阶梯 12/14/15/17/19/24
+     恢复每档之间可感知的差，并让界面字不再压过正文（正文 16px 见 ContentColumn）。
      ⚠️ 2xl 曾被 ContentColumn 的 `.content-body h1` 引用但**从未定义**——
         CSS 里 `var(--未定义)` 会让整条声明失效，导致正文 h1 静默继承 body 的
         --fs-md（13px），渲染成与普通段落同大。补上定义即修复。 */
-  --fs-xs: 11px;
-  --fs-sm: 13px;
-  --fs-md: 14px;
-  --fs-base: 14px;
-  --fs-lg: 16px;
-  --fs-xl: 18px;
-  --fs-2xl: 22px;
+  --fs-xs: 12px;
+  --fs-sm: 14px;
+  --fs-md: 15px;
+  --fs-base: 15px;
+  --fs-lg: 17px;
+  --fs-xl: 19px;
+  --fs-2xl: 24px;
   --tb-h: 42px;
   /* 滚动条占位宽度：必须与下方 ::-webkit-scrollbar 的 width 保持一致。
      所有可滚动容器都要按这个值补一个等宽左内边距做"视觉配重"，
@@ -1270,16 +1273,18 @@ select:focus-visible {
 
 /* ─── 未读数角标（全局工具类）─────────────────────────────────────────────────
    侧边栏三个位置共用（FeedListItem 条目行 / FeedPanel 文件夹分组头 / 标签行），
-   故从 FeedPanel 的 scoped 提升为全局。纯数字 + 主色，不用 pill 背景。 */
+   故从 FeedPanel 的 scoped 提升为全局。纯数字 + 中性灰底胶囊。
+   2026-11-26 降频主色：侧栏每一行未读都曾是一粒紫胶囊，主色被稀释成背景噪音；
+   未读的紧迫感由字重与数字本身承担，主色只留给主按钮 / 选中项 / 未读圆点。 */
 .feed-item-count {
   margin-left: auto;
   flex-shrink: 0;
   padding: 1px var(--sp-2);
   border-radius: var(--r-pill);
-  background: var(--primary-soft);
+  background: var(--fill-secondary);
   font-size: var(--fs-xs);
   font-weight: 600;
-  color: var(--primary-text);
+  color: var(--text-tertiary);
   line-height: 1.5;
   font-variant-numeric: tabular-nums;
 }

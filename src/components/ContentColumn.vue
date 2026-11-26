@@ -1107,7 +1107,7 @@ onUnmounted(() => {
   padding: var(--sp-5) 0;
   max-width: var(--read-max);
   margin: 0 auto;
-  font-size: calc(15px * var(--reading-scale, 1));
+  font-size: calc(16px * var(--reading-scale, 1));
   line-height: 1.8;
   /* 正文文字色走 --read-fg：它在深色下比 --text-primary 略暗一档，
      大段正文用主色会偏亮偏累。标题等强调层级仍用 --text-primary。 */
@@ -1118,12 +1118,15 @@ onUnmounted(() => {
 }
 .content-body :deep(p) { margin: 0 0 var(--sp-4); line-height: 1.85; }
 /* 标题刻意用 --text-primary 而非 --read-fg：正文已降到略暗的一档，
-   标题再与之同色会失去层级。h5/h6 用 secondary，是正文与标题之间的过渡层。 */
+   标题再与之同色会失去层级。h5/h6 用 secondary，是正文与标题之间的过渡层。
+   2026-11-26 层级修复：正文提到 16px 后，h3（原 15px）反而小于正文、h2 只比
+   正文大 1px——现在 h2 = 17px/600、h3 = 16px/600（与正文同大，靠字重区分）、
+   h4 = 15px，恢复"标题不小于正文"的底线。 */
 .content-body :deep(h1) { font-size: var(--fs-2xl); font-weight: 600; line-height: 1.3; margin: var(--sp-6) 0 var(--sp-3); color: var(--read-fg); }
-.content-body :deep(h2) { font-size: var(--fs-lg); font-weight: 500; margin: var(--sp-5) 0 var(--sp-15); color: var(--text-primary); }
-.content-body :deep(h3) { font-size: var(--fs-base); font-weight: 500; margin: var(--sp-4) 0 var(--sp-2); color: var(--text-primary); }
-.content-body :deep(h4) { font-size: var(--fs-base); font-weight: 500; margin: var(--sp-35) 0 var(--sp-05); color: var(--text-primary); }
-.content-body :deep(h5), .content-body :deep(h6) { font-size: var(--fs-sm); font-weight: 500; margin: var(--sp-3) 0 var(--sp-05); color: var(--text-secondary); }
+.content-body :deep(h2) { font-size: var(--fs-lg); font-weight: 600; margin: var(--sp-5) 0 var(--sp-15); color: var(--text-primary); }
+.content-body :deep(h3) { font-size: calc(16px * var(--reading-scale, 1)); font-weight: 600; margin: var(--sp-4) 0 var(--sp-2); color: var(--text-primary); }
+.content-body :deep(h4) { font-size: var(--fs-base); font-weight: 600; margin: var(--sp-35) 0 var(--sp-05); color: var(--text-primary); }
+.content-body :deep(h5), .content-body :deep(h6) { font-size: var(--fs-sm); font-weight: 600; margin: var(--sp-3) 0 var(--sp-05); color: var(--text-secondary); }
 .content-body :deep(strong), .content-body :deep(b) { font-weight: 600; color: var(--text-primary); }
 .content-body :deep(em), .content-body :deep(i) { font-style: italic; }
 .content-body :deep(a) { color: var(--primary); text-decoration: none; border-bottom: 1px solid var(--primary-tint); }

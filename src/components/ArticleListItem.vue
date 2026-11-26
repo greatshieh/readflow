@@ -205,7 +205,9 @@ function onPreferenceClick(preference: 'like' | 'skip') {
   min-width: 0;
 }
 .feed-item-title {
-  font-size: var(--fs-md);
+  /* 比界面基准大 1px（15→16）：列表标题必须高于侧栏文字与元信息，
+     否则"正文比标题大"的层级倒挂会把整屏读平。未读再加字重（见下方 unread 规则）。 */
+  font-size: calc(var(--fs-md) + 1px);
   color: var(--text-primary);
   font-weight: 500;
   line-height: 1.45;
@@ -233,8 +235,10 @@ function onPreferenceClick(preference: 'like' | 'skip') {
   flex-shrink: 0;
   white-space: nowrap;
 }
+/* 来源名走中性三级灰：它每行都出现，曾用主色紫让"来源"比标题还抢眼；
+   来源是定位信息不是行动召唤，回归灰色后紫色只留给选中态。 */
 .feed-item-source {
-  color: var(--primary);
+  color: var(--text-tertiary);
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);

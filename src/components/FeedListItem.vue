@@ -170,8 +170,9 @@ function hideBrokenIcon(e: Event) {
 }
 /* transform 在 :active 下生效；hover 不再有位移，避免与 hover 胶囊产生位差 */
 .feed-item:active { transform: scale(0.985); }
-/* 未读只靠三条线索：标题字重（600 / 400）、头像染色（--primary-tint）、
-   右端未读数。三者任一单独出现都能读出"有未读"，不必再补一个颜色单线索的点。 */
+/* 未读只靠两条线索：标题字重（600 / 400）、右端未读数。
+   头像不再随未读染成主色——侧栏每一行都有一粒紫头像时，主色被稀释成
+   背景噪音；主色只留给选中态（滑动胶囊）与未读圆点。 */
 .feed-item.unread .feed-item-title { font-weight: 600; color: var(--text-primary); }
 /* 选中态：底色与左侧指示条已移除，改由 FeedPanel 里的滑动胶囊统一表达
    （竖条与胶囊会重叠成两道标记，且竖条只对源有效、对标签行无效）。
@@ -205,10 +206,6 @@ function hideBrokenIcon(e: Event) {
   width: 100%;
   height: 100%;
   object-fit: cover;
-}
-.feed-item.unread .feed-item-avatar {
-  background: var(--primary-tint);
-  color: var(--primary-text);
 }
 
 .feed-item-info {

@@ -1,6 +1,6 @@
 <template>
   <!-- 文章列表栏：三栏布局的"中间列"，自身是一个独立的 flex 列。
-       顶部是操作条组件与排序栏，下方是分组后的文章列表。
+       顶部是今日概览 / 待办条与操作条（排序已并入操作条），下方是分组后的文章列表。
        列表行渲染见 ArticleListItem.vue，头部控件见 ArticleListToolbar.vue。
        窄屏（<=768px）下整列变为抽屉，由 showArticleList 控制滑出。 -->
   <div class="article-column" :class="{ open: showArticleList }">
@@ -11,14 +11,19 @@
     <!-- 「今天要处理」摘要条：放在操作条之上，打开应用第一眼是"该处理什么"。
          无待办时自身整条不渲染（不留 0 项的空壳），收起态只占一行 40px。 -->
     <TodayBar />
-    <!-- 顶部固定操作条：搜索 / 标签范围 / 仅未读 / 仅书签 / 刷新 / 全部已读 -->
+    <!-- 顶部固定操作条：搜索 / 排序下拉 / 标签范围 / 仅未读 / 仅书签 / 刷新 / 全部已读。
+         2026-11-26：排序（与书签视图的分组）自独立的 ArticleSortBar 并入本行，
+         列表栏从「统计 + 搜索 + 排序」三行 chrome 减为两行，第一篇文章不再被推得太深。 -->
     <ArticleListToolbar
       :active-tag="activeTag"
       :unread-in-scope="unreadInScope"
+      :group-mode="bookmarkGroupMode"
       @clear-search="clearSearch"
       @clear-tag-scope="clearTagScope"
       @refresh="refreshCurrent"
       @mark-all="markAll"
+      @change-sort="changeSort"
+      @update:group-mode="bookmarkGroupMode = $event"
     />
 
     <!-- 操作反馈浮层：标记已读等批量动作完成后短暂显示，2.5s 后自动消失。
@@ -27,15 +32,6 @@
     <transition name="toast-fade">
       <div v-if="toast" class="tb-toast">{{ toast }}</div>
     </transition>
-
-    <!-- 排序栏：切换后按当前范围重新从第 0 页加载（排序由后端在全库范围内完成）。
-         书签视图额外露出「分组」维度——默认按标签（收藏夹），可切回时间。
-         外观与交互见 ArticleSortBar.vue；排序动作（清缩略图缓存 + 重载）留在本组件。 -->
-    <ArticleSortBar
-      :group-mode="bookmarkGroupMode"
-      @update:group-mode="bookmarkGroupMode = $event"
-      @change-sort="changeSort"
-    />
 
     <!-- 文章条目列表：按当前排序方式渲染（时间序按日期分组，其它排序平铺）。
          SelectCapsule 是选中态的唯一视觉载体（accent 描边变体），必须与条目同处
@@ -104,9 +100,9 @@
  * 文章列表栏组件（三栏布局的中间列）
  *
  * # 职责
- * 只负责本列的**编排**：操作条与排序栏的摆放、按「当前范围 + 视图筛选」加载文章、
+ * 只负责本列的**编排**：概览 / 待办条与操作条的摆放、按「当前范围 + 视图筛选」加载文章、
  * 分组渲染、加载更多与空态。渲染细节已拆给两个子组件：
- * - `ArticleListToolbar.vue`：搜索框 / 标签范围指示 / 仅未读 / 仅书签 / 刷新 / 全部已读；
+ * - `ArticleListToolbar.vue`：搜索框 / 排序与分组下拉 / 标签范围指示 / 仅未读 / 仅书签 / 刷新 / 全部已读；
  * - `ArticleListItem.vue`：单篇文章那一行（圆点 / 标题 / 来源 / 时间 / 标签 chip / 缩略图）。
  * 分组规则（时间线 / 收藏夹）是纯函数，住在 `utils/articleGroups.ts`。
  *
@@ -132,7 +128,6 @@ import ArticleListSkeleton from './ArticleListSkeleton.vue'
 import ArticleListToolbar from './ArticleListToolbar.vue'
 import TodayBar from './TodayBar.vue'
 import TodayOverview from './TodayOverview.vue'
-import ArticleSortBar from './ArticleSortBar.vue'
 import SelectCapsule from './SelectCapsule.vue'
 import type { Feed, Article, Tag } from '@/types'
 
@@ -705,8 +700,10 @@ onUnmounted(() => {
   width: var(--article-w, 360px);
   /* 作为内部绝对定位元素（操作反馈浮层 .tb-toast、滑动胶囊）的定位基准 */
   position: relative;
-  /* 不透明面板，与订阅栏同材质。分区只靠右侧一道发丝线。 */
-  background: var(--surface);
+  /* 不透明面板，与订阅栏同材质。分区只靠右侧一道发丝线。
+     2026-11-26 与订阅栏一起压深一档（--surface-muted）：列表是导航面，
+     让正文栏的纸色成为全屏最亮处（见 FeedPanel 同日注释）。 */
+  background: var(--surface-muted);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -806,7 +803,7 @@ onUnmounted(() => {
   font-size: var(--fs-xs);
   font-weight: 500;
   color: var(--text-tertiary);
-  background: var(--surface);
+  background: var(--surface-muted);
   border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;

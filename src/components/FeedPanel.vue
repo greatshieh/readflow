@@ -1195,8 +1195,10 @@ onUnmounted(() => {
   width: var(--feed-w, 260px);
   /* 不透明面板。三栏都是外壳内的分区，壳本身已是不透明的 --surface，
      再给分区叠半透明白 + 背景模糊没有任何东西可折射（背后就是壳），
-     纯粹是每帧一次无用的合成。分区只靠右侧一道发丝线。 */
-  background: var(--surface);
+     纯粹是每帧一次无用的合成。分区只靠右侧一道发丝线。
+     2026-11-26 压深一档（--surface-muted）：左侧两栏是"导航面"，正文栏的
+     纸色才是全屏最亮处——明度台阶让"往哪儿看"有物理答案，不再三栏同白。 */
+  background: var(--surface-muted);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;

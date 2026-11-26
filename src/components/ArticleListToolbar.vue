@@ -15,6 +15,26 @@
         <!-- 清空搜索：点击后回到本地列表，避免残留后端结果 -->
         <button v-if="searchActive" class="tb-search-clear" @click="emit('clear-search')" aria-label="清空">×</button>
       </div>
+      <!-- 排序下拉：自排序栏（ArticleSortBar，已删除）合并进本操作条，
+           列表栏省出一整行 chrome。展示态直读 store 的 sortMode（只读），
+           动作 emit 回父组件——清缩略图缓存与重载归父组件所有。
+           紧凑触发器（28px）与右侧图标按钮同一行高，见 .tb-sort。 -->
+      <AppSelect
+        class="tb-sort"
+        width="auto"
+        :model-value="articlesStore.sortMode"
+        :options="SORT_OPTIONS"
+        @change="onSortChange"
+      />
+      <!-- 书签视图的分组维度下拉：与排序同处一行，仅在书签视图露出 -->
+      <AppSelect
+        v-if="articlesStore.viewFilter === 'bookmarked'"
+        class="tb-sort"
+        width="auto"
+        :model-value="groupMode"
+        :options="GROUP_OPTIONS"
+        @change="onGroupChange"
+      />
       <!-- 标签范围指示：侧边栏选中标签后出现。标签是范围而非叠加筛选，
            必须有一个显式的"当前处于某标签视图"指示与退出入口，否则用户会误以为
            列表变空是 bug（实际是被标签过滤了） -->
@@ -80,13 +100,16 @@
  * 文章列表顶部操作条（ArticleColumn 的头部控件区）
  *
  * # 职责
- * 渲染列表顶端那一排控件：搜索框、标签范围指示、仅未读 / 仅书签切换、刷新、全部已读。
+ * 渲染列表顶端那一排控件：搜索框、排序（及书签视图的分组）下拉、
+ * 标签范围指示、仅未读 / 仅书签切换、刷新、全部已读。
+ * 2026-11-26 起，原独立的排序栏（ArticleSortBar）并入本行，列表栏少一行 chrome。
  *
  * # 为什么是「直接写 store + 事件回调」的混合边界
  * - 搜索词、视图筛选（viewFilter）**只改 store 状态**：父组件的范围键 watcher 会据此重新
  *   拉取列表，因此这里直接读写 store 更短，也避免把两个双向绑定再透传一层；
- * - 刷新、全部已读、清空搜索、退出标签视图**要触发父组件的动作**（重载列表 / 弹提示 /
- *   复位后端结果），一律 emit 出去，由父组件决定怎么做——组件不掌握"重新取数"这件事。
+ * - 排序 / 分组切换、刷新、全部已读、清空搜索、退出标签视图**要触发父组件的动作**
+ *   （重载列表 / 清缩略图缓存 / 弹提示 / 复位后端结果），一律 emit 出去，
+ *   由父组件决定怎么做——组件不掌握"重新取数"这件事。
  *
  * # 依赖的全局选择器
  * `.tb-search input` 被 `App.vue` 的「/」快捷键用 `document.querySelector` 查找并聚焦，
@@ -94,7 +117,9 @@
  */
 
 import { computed } from 'vue'
-import { useArticlesStore } from '@/stores/articles'
+import AppSelect from './AppSelect.vue'
+import type { SelectOption } from './AppSelect.vue'
+import { useArticlesStore, type ArticleSortKey } from '@/stores/articles'
 import { useFeedsStore } from '@/stores/feeds'
 import { tagColorVar } from '@/stores/tags'
 import type { Tag } from '@/types'
@@ -104,6 +129,8 @@ const props = defineProps<{
   activeTag: Tag | null
   /** 当前范围内的未读总数，决定「全部已读」是否可用 */
   unreadInScope: number
+  /** 书签视图的分组维度（父组件持有，经本组件透传给分组下拉） */
+  groupMode: 'tag' | 'time'
 }>()
 
 const emit = defineEmits<{
@@ -115,6 +142,10 @@ const emit = defineEmits<{
   (e: 'refresh'): void
   /** 请求把当前范围全部标记为已读 */
   (e: 'mark-all'): void
+  /** 切换排序方式；清缓存与重载逻辑在父组件 */
+  (e: 'change-sort', key: ArticleSortKey): void
+  /** 切换书签视图的分组维度 */
+  (e: 'update:groupMode', mode: 'tag' | 'time'): void
 }>()
 
 const articlesStore = useArticlesStore()
@@ -122,6 +153,29 @@ const feedsStore = useFeedsStore()
 
 /** 是否处于后端全文搜索模式（搜索框非空），决定清空按钮是否显示 */
 const searchActive = computed<boolean>(() => articlesStore.search.trim().length > 0)
+
+/** 排序下拉的可选项：key 与原排序栏一致，直接对应后端 `articles_list` 的 sort 参数 */
+const SORT_OPTIONS: SelectOption[] = [
+  { value: 'latest', label: '最新' },
+  { value: 'score', label: '重要' },
+  { value: 'title', label: '名称' }
+]
+
+/** 书签视图分组维度下拉的可选项 */
+const GROUP_OPTIONS: SelectOption[] = [
+  { value: 'tag', label: '按标签分组' },
+  { value: 'time', label: '按时间分组' }
+]
+
+/** 排序下拉选中：AppSelect 回传 string | number，收窄为排序键后上抛 */
+function onSortChange(value: string | number) {
+  emit('change-sort', value as ArticleSortKey)
+}
+
+/** 分组下拉选中：同上，收窄为分组维度后上抛 */
+function onGroupChange(value: string | number) {
+  emit('update:groupMode', value as 'tag' | 'time')
+}
 
 /** 在 全部 / 未读 视图间切换（仅未读按钮） */
 function toggleUnread() {
@@ -222,6 +276,18 @@ function toggleStarred() {
 .tb-icon.active { background: var(--primary-tint); color: var(--primary-text); }
 .tb-icon:disabled { opacity: 0.5; cursor: default; }
 .tb-icon svg { width: 15px; height: 15px; }
+/* 排序 / 分组下拉：覆盖 AppSelect 的表单默认（min-width 96px、34px 高、md 字级），
+   收成与右侧图标按钮同一行高的紧凑触发器，融进本行而不另起一块 */
+.tb-sort {
+  min-width: 0;
+  width: auto;
+  flex-shrink: 0;
+}
+.tb-sort :deep(.as-trigger) {
+  height: 28px;
+  padding: 0 24px 0 var(--sp-2);
+  font-size: var(--fs-sm);
+}
 /* 标签范围指示条：表明"列表正在按标签过滤"，点击即退出。
    色彩取该标签自身的颜色（内联 --tag-c），与列表项里的 chip 呼应 */
 .tb-tag {
