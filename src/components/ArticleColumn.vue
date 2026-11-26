@@ -602,6 +602,30 @@ async function markAll() {
 }
 
 /**
+ * 列表整体替换时把滚动条复位到顶部（数据层统一出口）
+ *
+ * `loadArticles` 仅在 offset=0 时**整体替换**数组（新引用）——换源 / 换标签 /
+ * 切视图筛选（scopeKey watcher）、`k` 键回顶（App.vue 的 reloadArticlesFromTop）、
+ * 「全部文章」（gotoAllArticles）、空态的「刷新全部」（ContentColumn）、
+ * 外部跳转编排（navigateToArticle）全都走这条路。任何一处漏调
+ * resetListScroll()，新列表就会从旧滚动位置继续显示：滚动位置超过新内容时
+ * 用户面对的是一段滚不到头的空行程。
+ *
+ * 与其要求每个调用点记得复位，不如在数据层收口：watch 数组**引用**变化即可
+ * 精确区分「替换」与「追加」——loadMore 翻页走 push（原引用），不触发本 watcher，
+ * 用户的阅读位置不会被翻页打断。
+ *
+ * scopeKey watcher 里仍保留一次复位：它还要同步选中胶囊，且列表未替换
+ * （加载失败保留旧数据）时数据层不会触发，那条兜底路径仍然需要。
+ */
+watch(
+  () => articlesStore.articles,
+  () => {
+    void nextTick(resetListScroll)
+  },
+)
+
+/**
  * 监听「范围键」变化，重新加载对应范围的文章
  *
  * 范围三选一：标签 > 订阅源 > 全部（标签优先级最高，因为选中标签时会先清空源选择）。
